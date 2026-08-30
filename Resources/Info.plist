@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>CodexUsageBar</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.lawis.codexusagebar</string>
+    <key>CodexUsageBarLocalIdentity</key>
+    <string>5529296C-6C3A-4E4A-885A-4B403191D828</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Codex Usage Bar</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+	<string>0.3.0</string>
+    <key>CFBundleVersion</key>
+	<string>3</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.developer-tools</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>用于只读访问文稿中的 KSF 知识库、项目目录与任务投影。</string>
+</dict>
+</plist>
