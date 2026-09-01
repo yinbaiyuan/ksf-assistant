@@ -266,7 +266,7 @@ public actor WeChatILinkClient {
         cursor: String,
         timeoutMilliseconds: Int
     ) async throws -> WeChatUpdateBatch {
-        struct BaseInfo: Encodable { let channel_version = "0.3.0"; let bot_agent = "CodexUsageBar/0.3.0" }
+        struct BaseInfo: Encodable { let channel_version = "0.4.0"; let bot_agent = "CodexUsageBar/0.4.0" }
         struct Body: Encodable { let get_updates_buf: String; let base_info = BaseInfo() }
         struct TextItem: Decodable { let text: String? }
         struct Item: Decodable { let type: Int; let text_item: TextItem? }
@@ -321,7 +321,7 @@ public actor WeChatILinkClient {
         text: String,
         contextToken: String?
     ) async throws {
-        struct BaseInfo: Encodable { let channel_version = "0.3.0"; let bot_agent = "CodexUsageBar/0.3.0" }
+        struct BaseInfo: Encodable { let channel_version = "0.4.0"; let bot_agent = "CodexUsageBar/0.4.0" }
         struct TextItem: Encodable { let text: String }
         struct Item: Encodable { let type = 1; let text_item: TextItem }
         struct Message: Encodable {

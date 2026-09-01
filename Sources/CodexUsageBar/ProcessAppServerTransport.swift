@@ -10,7 +10,7 @@ final class ProcessAppServerTransport: AppServerTransport {
     private let inputPipe = Pipe()
     private let outputPipe = Pipe()
     private let errorPipe = Pipe()
-    private let bufferQueue = DispatchQueue(label: "com.lawis.codexusagebar.stdout")
+    private let bufferQueue = DispatchQueue(label: AppConfiguration.appServerQueueLabel)
     private let stateLock = NSLock()
     private var buffer = Data()
     private var finished = false
@@ -91,4 +91,3 @@ final class ProcessAppServerTransport: AppServerTransport {
         continuation.finish()
     }
 }
-

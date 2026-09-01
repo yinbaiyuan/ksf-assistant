@@ -167,6 +167,194 @@ private func testLocalTodayUsage() throws {
     try expect(account.dailyUsage(on: "2026-08-30"), nil, "missing account day remains unsynchronized")
 }
 
+private func testLocalTokenHistory() throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory
+        .appendingPathComponent("codex-usage-history-\(UUID().uuidString)", isDirectory: true)
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: root) }
+
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+    let now = calendar.date(from: DateComponents(year: 2026, month: 8, day: 30, hour: 12))!
+    let lines = [
+        #"{"timestamp":"2026-08-27T15:59:59Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":100,"input_tokens":90,"cached_input_tokens":60,"output_tokens":10}}}}"#,
+        #"{"timestamp":"2026-08-27T16:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":140,"input_tokens":125,"cached_input_tokens":85,"output_tokens":15}}}}"#,
+        #"{"timestamp":"2026-08-28T15:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":180,"input_tokens":160,"cached_input_tokens":110,"output_tokens":20}}}}"#,
+        #"{"timestamp":"2026-08-29T16:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":220,"input_tokens":195,"cached_input_tokens":135,"output_tokens":25}}}}"#,
+    ]
+    let sessionURL = root.appendingPathComponent("history.jsonl")
+    try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: sessionURL)
+    try fileManager.setAttributes([.modificationDate: now], ofItemAtPath: sessionURL.path)
+
+    let history = LocalTokenUsageReader(sessionRoot: root, fileManager: fileManager)
+        .readHistory(through: now, dayCount: 3, calendar: calendar)
+    try expect(
+        history?.map(\.startDate),
+        ["2026-08-28", "2026-08-29", "2026-08-30"],
+        "history returns every requested natural day"
+    )
+    try expect(history?.map(\.tokens), [80, 0, 40], "history preserves zero-use days")
+    try expect(history?.first?.breakdown?.totalTokens, 80, "history split reconciles")
+}
+
+private func testLocalTokenHistoryIncludesArchivedSessionsWithoutDuplicates() throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory
+        .appendingPathComponent("codex-usage-roots-\(UUID().uuidString)", isDirectory: true)
+    let active = root.appendingPathComponent("sessions", isDirectory: true)
+    let archived = root.appendingPathComponent("archived_sessions", isDirectory: true)
+    try fileManager.createDirectory(at: active, withIntermediateDirectories: true)
+    try fileManager.createDirectory(at: archived, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: root) }
+
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+    let now = calendar.date(from: DateComponents(year: 2026, month: 8, day: 30, hour: 12))!
+    let activeLines = [
+        #"{"timestamp":"2026-08-30T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":100,"input_tokens":90,"cached_input_tokens":60,"output_tokens":10}}}}"#,
+    ]
+    let archivedLines = [
+        #"{"timestamp":"2026-08-30T02:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":200,"input_tokens":180,"cached_input_tokens":120,"output_tokens":20}}}}"#,
+    ]
+    let duplicateName = "rollout-2026-08-30T09-00-00-01a050b4-3c9a-7582-aaf4-c83d099b75c0.jsonl"
+    let archivedOnlyName = "rollout-2026-08-30T10-00-00-01a05180-b488-7231-a230-f5024b9d8d18.jsonl"
+    try Data((activeLines.joined(separator: "\n") + "\n").utf8)
+        .write(to: active.appendingPathComponent(duplicateName))
+    try Data((activeLines.joined(separator: "\n") + "\n").utf8)
+        .write(to: archived.appendingPathComponent(duplicateName))
+    try Data((archivedLines.joined(separator: "\n") + "\n").utf8)
+        .write(to: archived.appendingPathComponent(archivedOnlyName))
+
+    let usage = LocalTokenUsageReader(
+        sessionRoots: [active, archived],
+        fileManager: fileManager
+    ).readToday(now: now, calendar: calendar)
+    try expect(usage?.tokens, 300, "active and archived roots merge and duplicate sessions count once")
+}
+
+private func testLocalTokenHistoryStoreKeepsMonotonicHistory() throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory
+        .appendingPathComponent("codex-history-store-\(UUID().uuidString)", isDirectory: true)
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: root) }
+
+    let store = LocalTokenHistoryStore(ksfRootURL: root, fileManager: fileManager)
+    let legacyURL = root
+        .appendingPathComponent(".agents/runtime-data/codex-usage-bar", isDirectory: true)
+        .appendingPathComponent("token-history-v1.json")
+    try fileManager.createDirectory(at: legacyURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let legacyData = Data(#"{"protocol":"codex-local-token-history-v1","days":[]}"#.utf8)
+    try legacyData.write(to: legacyURL)
+    try expect(try store.load().days.isEmpty, true, "v2 history does not import the personal v1 cache")
+    try expect(try Data(contentsOf: legacyURL), legacyData, "v2 history leaves the personal v1 cache untouched")
+    let first = DailyUsageBucket(
+        startDate: "2026-08-30",
+        tokens: 600,
+        breakdown: TokenUsageBreakdown(
+            regularInputTokens: 100,
+            cachedInputTokens: 450,
+            outputTokens: 50
+        )
+    )
+    let smaller = DailyUsageBucket(startDate: "2026-08-30", tokens: 200)
+    let prior = DailyUsageBucket(startDate: "2026-08-29", tokens: 50)
+    _ = try store.mergeAndSave([prior, first], observedAt: Date(timeIntervalSince1970: 10))
+    let merged = try store.mergeAndSave([smaller], observedAt: Date(timeIntervalSince1970: 20))
+
+    try expect(merged.days.map(\.tokens), [50, 600], "history cache never decreases after logs disappear")
+    try expect(
+        merged.days.last?.breakdown?.totalTokens,
+        600,
+        "an incomplete smaller observation does not replace a complete cached split"
+    )
+    try expect(store.fileURL.path.hasSuffix(".agents/runtime-data/codex-usage-bar/token-history-v2.json"), true, "history cache uses the KSF runtime path")
+
+    let invalidLarger = DailyUsageBucket(
+        startDate: "2026-08-30",
+        tokens: 700,
+        breakdown: TokenUsageBreakdown(
+            regularInputTokens: 100,
+            cachedInputTokens: 450,
+            outputTokens: 50
+        )
+    )
+    let afterInvalid = try store.mergeAndSave(
+        [invalidLarger],
+        observedAt: Date(timeIntervalSince1970: 30)
+    )
+    try expect(
+        afterInvalid.days.last?.tokens,
+        600,
+        "a split that does not reconcile cannot replace verified history"
+    )
+    let encoded = try JSONSerialization.jsonObject(
+        with: Data(contentsOf: store.fileURL)
+    ) as? [String: Any]
+    let encodedDays = encoded?["days"] as? [[String: Any]]
+    let untouched = encodedDays?.first { $0["date"] as? String == "2026-08-29" }
+    try expect(
+        untouched?["lastObservedAt"] as? String,
+        "1970-01-01T00:00:10Z",
+        "unobserved historical days keep their own observation timestamp"
+    )
+
+    let directoryPermissions = try fileManager.attributesOfItem(
+        atPath: store.fileURL.deletingLastPathComponent().path
+    )[.posixPermissions] as? NSNumber
+    let filePermissions = try fileManager.attributesOfItem(
+        atPath: store.fileURL.path
+    )[.posixPermissions] as? NSNumber
+    try expect(directoryPermissions?.intValue, 0o700, "history directory is private")
+    try expect(filePermissions?.intValue, 0o600, "history file is private")
+
+    let corrupt = Data("not-json".utf8)
+    try corrupt.write(to: store.fileURL)
+    var rejectedCorruption = false
+    do {
+        _ = try store.mergeAndSave([first])
+    } catch LocalTokenHistoryStoreError.corrupted {
+        rejectedCorruption = true
+    }
+    try expect(rejectedCorruption, true, "corrupt history is rejected")
+    try expect(try Data(contentsOf: store.fileURL), corrupt, "corrupt history is not overwritten")
+
+    let unsafeRoot = root.appendingPathComponent("unsafe", isDirectory: true)
+    let outside = root.appendingPathComponent("outside", isDirectory: true)
+    try fileManager.createDirectory(at: unsafeRoot, withIntermediateDirectories: true)
+    try fileManager.createDirectory(at: outside, withIntermediateDirectories: true)
+    try fileManager.createSymbolicLink(
+        at: unsafeRoot.appendingPathComponent(".agents"),
+        withDestinationURL: outside
+    )
+    var rejectedSymlink = false
+    do {
+        _ = try LocalTokenHistoryStore(ksfRootURL: unsafeRoot, fileManager: fileManager).load()
+    } catch LocalTokenHistoryStoreError.unsafePath {
+        rejectedSymlink = true
+    }
+    try expect(rejectedSymlink, true, "history cache rejects symbolic-link paths")
+}
+
+private func testLocalTokenHistorySeries() throws {
+    let series = LocalTokenHistorySeries(days: [
+        DailyUsageBucket(startDate: "2026-08-30", tokens: 20),
+        DailyUsageBucket(startDate: "2026-08-28", tokens: 0),
+        DailyUsageBucket(startDate: "2026-08-29", tokens: 80),
+    ])
+    try expect(
+        series.days.map(\.startDate),
+        ["2026-08-28", "2026-08-29", "2026-08-30"],
+        "history series orders days"
+    )
+    try expect(series.totalTokens, 100, "history series sums the visible range")
+    try expect(series.averageTokens, 33, "history series averages every requested day")
+    try expect(series.activeDayCount, 2, "history series counts non-zero days")
+    try expect(series.maximumTokens, 80, "history series exposes the factual scale maximum")
+    try expect(series.latestDay?.startDate, "2026-08-30", "history series defaults to the latest day")
+}
+
 private func testResetDetection() throws {
     let previous = RateLimitBucket(
         limitId: "codex",
@@ -241,6 +429,10 @@ private enum StandaloneTestRunner {
             ("token normalization", testTokenNormalization),
             ("million token formatting", testMillionTokenFormatting),
             ("local today usage", testLocalTodayUsage),
+            ("local token history", testLocalTokenHistory),
+            ("local token roots", testLocalTokenHistoryIncludesArchivedSessionsWithoutDuplicates),
+            ("local token history store", testLocalTokenHistoryStoreKeepsMonotonicHistory),
+            ("local token history series", testLocalTokenHistorySeries),
             ("reset detection", testResetDetection),
         ]
 

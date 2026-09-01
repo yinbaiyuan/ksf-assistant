@@ -7,9 +7,7 @@
     <key>CFBundleExecutable</key>
     <string>CodexUsageBar</string>
     <key>CFBundleIdentifier</key>
-    <string>com.lawis.codexusagebar</string>
-    <key>CodexUsageBarLocalIdentity</key>
-    <string>5529296C-6C3A-4E4A-885A-4B403191D828</string>
+    <string>com.ksf.codexusagebar</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -17,9 +15,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-	<string>0.3.0</string>
+	<string>0.4.0</string>
     <key>CFBundleVersion</key>
-	<string>3</string>
+	<string>4</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.developer-tools</string>
     <key>LSMinimumSystemVersion</key>

@@ -104,6 +104,7 @@ cp "$repo_root/Resources/Info.plist" "$view_model_test_app/Contents/Info.plist"
     -I "$build_dir" \
     -L "$build_dir" \
     -lCodexUsageCore \
+    "$repo_root/Sources/CodexUsageBar/AppConfiguration.swift" \
     "$repo_root/Sources/CodexUsageBar/CodexLocator.swift" \
     "$repo_root/Sources/CodexUsageBar/CodexTaskOpener.swift" \
     "$repo_root/Sources/CodexUsageBar/KSFBridgeClient.swift" \
@@ -131,5 +132,13 @@ cp "$repo_root/Resources/Info.plist" "$view_model_test_app/Contents/Info.plist"
     -framework AppKit \
     -o "$build_dir/status-item-image-tests"
 "$build_dir/status-item-image-tests"
+
+/usr/bin/swiftc \
+    -parse-as-library \
+    -target arm64-apple-macos13.0 \
+    "$repo_root/Tests/UILayoutStandalone/main.swift" \
+    -o "$build_dir/ui-layout-tests"
+"$build_dir/ui-layout-tests" \
+    "$repo_root/Sources/CodexUsageBar/UsagePopoverView.swift"
 
 "$repo_root/scripts/build-app.sh"

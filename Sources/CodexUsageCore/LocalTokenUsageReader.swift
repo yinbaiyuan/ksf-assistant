@@ -13,6 +13,12 @@ public struct LocalTokenUsageReader {
         let breakdown: CumulativeBreakdown?
     }
 
+    private struct TokenDelta {
+        let date: Date
+        let totalTokens: Int64
+        let breakdown: TokenUsageBreakdown?
+    }
+
     private struct UsageAccumulator {
         var totalTokens: Int64 = 0
         var regularInputTokens: Int64 = 0
@@ -52,7 +58,7 @@ public struct LocalTokenUsageReader {
         }
     }
 
-    private let sessionRoot: URL
+    private let sessionRoots: [URL]
     private let fileManager: FileManager
     private let tokenCountNeedle = Data(#""token_count""#.utf8)
 
@@ -61,9 +67,24 @@ public struct LocalTokenUsageReader {
         fileManager: FileManager = .default
     ) {
         self.fileManager = fileManager
-        self.sessionRoot = sessionRoot
-            ?? fileManager.homeDirectoryForCurrentUser
-                .appendingPathComponent(".codex/sessions", isDirectory: true)
+        if let sessionRoot {
+            self.sessionRoots = [sessionRoot]
+        } else {
+            let codexRoot = fileManager.homeDirectoryForCurrentUser
+                .appendingPathComponent(".codex", isDirectory: true)
+            self.sessionRoots = [
+                codexRoot.appendingPathComponent("sessions", isDirectory: true),
+                codexRoot.appendingPathComponent("archived_sessions", isDirectory: true),
+            ]
+        }
+    }
+
+    public init(
+        sessionRoots: [URL],
+        fileManager: FileManager = .default
+    ) {
+        self.fileManager = fileManager
+        self.sessionRoots = sessionRoots
     }
 
     public func readToday(
@@ -77,33 +98,17 @@ public struct LocalTokenUsageReader {
         on day: Date,
         calendar: Calendar = .current
     ) -> DailyUsageBucket? {
-        var isDirectory: ObjCBool = false
         guard
-            fileManager.fileExists(atPath: sessionRoot.path, isDirectory: &isDirectory),
-            isDirectory.boolValue,
             let endOfDay = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: day))
         else {
             return nil
         }
 
         let startOfDay = calendar.startOfDay(for: day)
-        let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey]
-        guard let enumerator = fileManager.enumerator(
-            at: sessionRoot,
-            includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles]
-        ) else {
-            return nil
-        }
+        guard let files = sessionFiles(modifiedOnOrAfter: startOfDay) else { return nil }
 
         var usage = UsageAccumulator()
-        for case let fileURL as URL in enumerator {
-            guard fileURL.pathExtension == "jsonl" else { continue }
-            let values = try? fileURL.resourceValues(forKeys: Set(keys))
-            guard values?.isRegularFile != false else { continue }
-            if let modifiedAt = values?.contentModificationDate, modifiedAt < startOfDay {
-                continue
-            }
+        for fileURL in files {
             usage.merge(tokensUsed(
                 in: fileURL,
                 from: startOfDay,
@@ -118,6 +123,114 @@ public struct LocalTokenUsageReader {
         )
     }
 
+    public func readHistory(
+        through day: Date = Date(),
+        dayCount: Int = 30,
+        calendar: Calendar = .current
+    ) -> [DailyUsageBucket]? {
+        guard dayCount > 0 else { return [] }
+
+        let latestStart = calendar.startOfDay(for: day)
+        guard
+            let earliestStart = calendar.date(
+                byAdding: .day,
+                value: -(dayCount - 1),
+                to: latestStart
+            ),
+            let end = calendar.date(byAdding: .day, value: 1, to: latestStart)
+        else {
+            return nil
+        }
+
+        var dayStarts: [Date] = []
+        for offset in 0..<dayCount {
+            guard let start = calendar.date(byAdding: .day, value: offset, to: earliestStart) else {
+                return nil
+            }
+            dayStarts.append(start)
+        }
+
+        guard let files = sessionFiles(modifiedOnOrAfter: earliestStart) else { return nil }
+
+        var usageByDate: [String: UsageAccumulator] = [:]
+        for fileURL in files {
+            let fileUsage = tokensUsedByDay(
+                in: fileURL,
+                from: earliestStart,
+                to: end,
+                calendar: calendar
+            )
+            for (date, usage) in fileUsage {
+                var accumulated = usageByDate[date] ?? UsageAccumulator()
+                accumulated.merge(usage)
+                usageByDate[date] = accumulated
+            }
+        }
+
+        return dayStarts.map { start in
+            let date = Self.dateString(for: start, calendar: calendar)
+            let usage = usageByDate[date] ?? UsageAccumulator()
+            return DailyUsageBucket(
+                startDate: date,
+                tokens: usage.totalTokens,
+                breakdown: usage.breakdown
+            )
+        }
+    }
+
+    private func sessionFiles(modifiedOnOrAfter earliestDate: Date) -> [URL]? {
+        let keys: Set<URLResourceKey> = [
+            .isRegularFileKey,
+            .contentModificationDateKey,
+            .fileSizeKey,
+        ]
+        var foundRoot = false
+        var selected: [String: (url: URL, size: Int, modifiedAt: Date)] = [:]
+
+        for root in sessionRoots {
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: root.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue
+            else { continue }
+            foundRoot = true
+            guard let enumerator = fileManager.enumerator(
+                at: root,
+                includingPropertiesForKeys: Array(keys),
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+
+            for case let fileURL as URL in enumerator where fileURL.pathExtension == "jsonl" {
+                guard let values = try? fileURL.resourceValues(forKeys: keys),
+                      values.isRegularFile != false
+                else { continue }
+                let modifiedAt = values.contentModificationDate ?? .distantPast
+                guard modifiedAt >= earliestDate else { continue }
+                let candidate = (fileURL, values.fileSize ?? 0, modifiedAt)
+                let identity = sessionIdentity(for: fileURL)
+                if let existing = selected[identity],
+                   existing.size > candidate.1
+                    || (existing.size == candidate.1 && existing.modifiedAt >= candidate.2)
+                {
+                    continue
+                }
+                selected[identity] = candidate
+            }
+        }
+
+        guard foundRoot else { return nil }
+        return selected.values.map(\.url).sorted { $0.path < $1.path }
+    }
+
+    private func sessionIdentity(for fileURL: URL) -> String {
+        let stem = fileURL.deletingPathExtension().lastPathComponent
+        let suffix = String(stem.suffix(36))
+        let parts = suffix.split(separator: "-", omittingEmptySubsequences: false)
+        if parts.map(\.count) == [8, 4, 4, 4, 12] {
+            return suffix.lowercased()
+        }
+        return stem
+    }
+
     public static func dateString(for date: Date, calendar: Calendar = .current) -> String {
         let parts = calendar.dateComponents([.year, .month, .day], from: date)
         guard let year = parts.year, let month = parts.month, let day = parts.day else {
@@ -127,11 +240,35 @@ public struct LocalTokenUsageReader {
     }
 
     private func tokensUsed(in fileURL: URL, from start: Date, to end: Date) -> UsageAccumulator {
+        var accumulated = UsageAccumulator()
+        for delta in tokenDeltas(in: fileURL, from: start, to: end) {
+            accumulated.add(totalDelta: delta.totalTokens, breakdown: delta.breakdown)
+        }
+        return accumulated
+    }
+
+    private func tokensUsedByDay(
+        in fileURL: URL,
+        from start: Date,
+        to end: Date,
+        calendar: Calendar
+    ) -> [String: UsageAccumulator] {
+        var usageByDate: [String: UsageAccumulator] = [:]
+        for delta in tokenDeltas(in: fileURL, from: start, to: end) {
+            let date = Self.dateString(for: delta.date, calendar: calendar)
+            var usage = usageByDate[date] ?? UsageAccumulator()
+            usage.add(totalDelta: delta.totalTokens, breakdown: delta.breakdown)
+            usageByDate[date] = usage
+        }
+        return usageByDate
+    }
+
+    private func tokenDeltas(in fileURL: URL, from start: Date, to end: Date) -> [TokenDelta] {
         // Session files can remain active for days and grow very large. The token counter is
-        // cumulative, so search backward and stop after the last pre-midnight sample instead
-        // of parsing historical conversation events from the beginning of the file.
+        // cumulative, so search backward and stop after the last sample before the requested
+        // range instead of parsing historical conversation events from the beginning.
         guard let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe) else {
-            return UsageAccumulator()
+            return []
         }
 
         var reverseSamples: [TokenSample] = []
@@ -164,7 +301,7 @@ public struct LocalTokenUsageReader {
         }
 
         var previous = baseline
-        var accumulated = UsageAccumulator()
+        var deltas: [TokenDelta] = []
         for sample in reverseSamples.reversed() {
             let totalDelta: Int64
             if let previous {
@@ -172,13 +309,18 @@ public struct LocalTokenUsageReader {
             } else {
                 totalDelta = max(0, sample.totalTokens)
             }
-            accumulated.add(
-                totalDelta: totalDelta,
-                breakdown: breakdownDelta(current: sample, previous: previous, totalDelta: totalDelta)
-            )
+            deltas.append(TokenDelta(
+                date: sample.date,
+                totalTokens: totalDelta,
+                breakdown: breakdownDelta(
+                    current: sample,
+                    previous: previous,
+                    totalDelta: totalDelta
+                )
+            ))
             previous = sample
         }
-        return accumulated
+        return deltas
     }
 
     private func breakdownDelta(

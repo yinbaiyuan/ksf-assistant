@@ -187,6 +187,71 @@ public struct KSFRouteSummary: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+public struct KSFRouteAbilityGroup: Equatable, Sendable {
+    public let ability: KSFRouteAbility
+    public let skills: [KSFDispatchableSkill]
+
+    public init(ability: KSFRouteAbility, skills: [KSFDispatchableSkill]) {
+        self.ability = ability
+        self.skills = skills
+    }
+}
+
+public struct KSFRouteJobGroup: Equatable, Sendable {
+    public let job: KSFRouteJob?
+    public let abilities: [KSFRouteAbilityGroup]
+
+    public init(job: KSFRouteJob?, abilities: [KSFRouteAbilityGroup]) {
+        self.job = job
+        self.abilities = abilities
+    }
+}
+
+public struct KSFRoutePresentation: Equatable, Sendable {
+    public let category: KSFRouteCategory?
+    public let jobGroups: [KSFRouteJobGroup]
+    public let unassignedSkills: [KSFDispatchableSkill]
+
+    public init(route: KSFRouteSummary) {
+        category = route.category
+        let skillsByAbility = Dictionary(grouping: route.dispatchableSkills.compactMap { skill in
+            skill.abilityID.map { ($0, skill) }
+        }, by: \.0)
+        let abilityGroups = route.abilities.map { ability in
+            KSFRouteAbilityGroup(
+                ability: ability,
+                skills: ability.abilityID.flatMap { abilityID in
+                    skillsByAbility[abilityID]?.map(\.1)
+                } ?? []
+            )
+        }
+        let abilitiesByJob = Dictionary(grouping: abilityGroups.compactMap { group in
+            group.ability.jobID.map { ($0, group) }
+        }, by: \.0)
+        let knownJobIDs = Set(route.jobs.compactMap(\.jobID))
+        jobGroups = route.jobs.map { job in
+            let abilities = job.jobID.flatMap { jobID in
+                abilitiesByJob[jobID]?.map(\.1)
+            } ?? []
+            return KSFRouteJobGroup(job: job, abilities: abilities)
+        } + [
+            KSFRouteJobGroup(
+                job: nil,
+                abilities: abilityGroups.filter { group in
+                    guard let jobID = group.ability.jobID else { return true }
+                    return !knownJobIDs.contains(jobID)
+                }
+            )
+        ].filter { !$0.abilities.isEmpty }
+
+        let knownAbilityIDs = Set(route.abilities.compactMap(\.abilityID))
+        unassignedSkills = route.dispatchableSkills.filter { skill in
+            guard let abilityID = skill.abilityID else { return true }
+            return !knownAbilityIDs.contains(abilityID)
+        }
+    }
+}
+
 public struct KSFTaskBinding: Codable, Equatable, Hashable, Sendable {
     public let projectCard: String
     public let boundAt: String
@@ -309,37 +374,25 @@ public struct ProjectUsageSummary: Codable, Equatable, Hashable, Sendable {
     }
 }
 
-public struct ProjectLaunchAction: Codable, Equatable, Hashable, Sendable, Identifiable {
+public struct ProjectLaunchAction: Equatable, Hashable, Sendable, Identifiable {
     public let id: String
     public let title: String
     public let symbol: String
-    public let primary: Bool
-    public let executable: String
-    public let arguments: [String]
+    public let scriptPath: String
     public let workingDirectory: String
-    public let engineeringID: String
-    public let engineeringRoot: String
 
     public init(
-        id: String,
-        title: String,
+        projectID: String,
+        title: String = "启动项目",
         symbol: String = "play.fill",
-        primary: Bool = false,
-        executable: String,
-        arguments: [String] = [],
-        workingDirectory: String,
-        engineeringID: String,
-        engineeringRoot: String
+        scriptPath: String,
+        workingDirectory: String
     ) {
-        self.id = "\(engineeringID):\(id)"
+        id = "\(projectID):start.sh"
         self.title = title
         self.symbol = symbol
-        self.primary = primary
-        self.executable = executable
-        self.arguments = arguments
+        self.scriptPath = scriptPath
         self.workingDirectory = workingDirectory
-        self.engineeringID = engineeringID
-        self.engineeringRoot = engineeringRoot
     }
 }
 
@@ -389,40 +442,47 @@ public struct ProjectTaskItem: Equatable, Sendable, Identifiable {
     }
 }
 
+public enum ProjectDashboardKind: Equatable, Sendable {
+    case project
+    case unassigned
+    case unavailablePinned
+}
+
 public struct ProjectDashboardItem: Equatable, Sendable, Identifiable {
     public let id: String
+    public let kind: ProjectDashboardKind
     public let project: KSFProject?
     public let isPinned: Bool
     public let tasks: [ProjectTaskItem]
     public let latestActivity: Date?
-    public let primaryRoute: KSFRouteSummary?
     public let usage: ProjectUsageSummary?
-    public let actions: [ProjectLaunchAction]
+    public let launchAction: ProjectLaunchAction?
     public let preferredEngineeringID: String?
 
     public init(
         id: String,
         project: KSFProject?,
+        kind: ProjectDashboardKind? = nil,
         isPinned: Bool,
         tasks: [ProjectTaskItem] = [],
         latestActivity: Date? = nil,
-        primaryRoute: KSFRouteSummary? = nil,
         usage: ProjectUsageSummary? = nil,
-        actions: [ProjectLaunchAction] = [],
+        launchAction: ProjectLaunchAction? = nil,
         preferredEngineeringID: String? = nil
     ) {
         self.id = id
+        self.kind = kind ?? (project == nil ? .unavailablePinned : .project)
         self.project = project
         self.isPinned = isPinned
         self.tasks = tasks
         self.latestActivity = latestActivity
-        self.primaryRoute = primaryRoute
         self.usage = usage
-        self.actions = actions
+        self.launchAction = launchAction
         self.preferredEngineeringID = preferredEngineeringID
     }
 
     public var isAvailable: Bool { project != nil }
+    public var isUnassigned: Bool { kind == .unassigned }
     public var runningCount: Int { tasks.filter { $0.classification == .running }.count }
     public var waitingCount: Int { tasks.filter { $0.classification == .waiting }.count }
     public var activeTaskCount: Int { tasks.count }
@@ -431,12 +491,12 @@ public struct ProjectDashboardItem: Equatable, Sendable, Identifiable {
         ProjectDashboardItem(
             id: id,
             project: project,
+            kind: kind,
             isPinned: isPinned,
             tasks: tasks,
             latestActivity: latestActivity,
-            primaryRoute: primaryRoute,
             usage: usage,
-            actions: actions,
+            launchAction: launchAction,
             preferredEngineeringID: preferredEngineeringID
         )
     }
@@ -514,6 +574,9 @@ public enum KSFProjectListOrdering {
         let fallbackStart = stablePositions.count
 
         return items.sorted { left, right in
+            if left.isUnassigned != right.isUnassigned {
+                return left.isUnassigned
+            }
             if left.isPinned != right.isPinned {
                 return left.isPinned && !right.isPinned
             }
@@ -590,6 +653,8 @@ public enum CodexTaskDeepLink {
 }
 
 public enum KSFProjectDashboardBuilder {
+    public static let unassignedProjectID = "runtime://unassigned-tasks"
+
     public static func localTaskCandidateIDs(
         catalog: [KSFProject],
         threads: [CodexThreadMetadata],
@@ -616,9 +681,8 @@ public enum KSFProjectDashboardBuilder {
         threads: [CodexThreadMetadata],
         projections: [String: KSFTaskProjection],
         pinnedProjectIDs: Set<String>,
-        selectedProjectID: String? = nil,
         usage: [String: ProjectUsageSummary],
-        actions: [String: [ProjectLaunchAction]],
+        launchActions: [String: ProjectLaunchAction],
         now: Date = Date()
     ) -> [ProjectDashboardItem] {
         let projectsByID = Dictionary(uniqueKeysWithValues: catalog.map { ($0.id, $0) })
@@ -628,18 +692,24 @@ public enum KSFProjectDashboardBuilder {
             }
         }
         var aggregates: [String: Aggregate] = [:]
+        var unassignedAggregate = Aggregate()
 
         let activeTasks = deduplicated(activeTasks)
         for observation in activeTasks {
             let classification = TaskActivityClassifier.classification(for: observation)
             guard classification != .ignored else { continue }
             let metadata = metadataByID[observation.id]
+            guard metadata?.parentThreadId == nil,
+                  metadata?.agentNickname?.isEmpty != false
+            else { continue }
             let projected = projections[observation.id]?.currentBinding
             let cwdMatch = engineeringMatch(matching: metadata?.cwd, projects: catalog)
             let projectID = projected?.projectCard ?? cwdMatch?.projectID
-            guard let projectID, projectsByID[projectID] != nil else { continue }
+            let assignedProjectID = projectID.flatMap { projectsByID[$0] == nil ? nil : $0 }
+            let taskProjectID = assignedProjectID ?? unassignedProjectID
 
-            var aggregate = aggregates[projectID] ?? Aggregate()
+            var aggregate = assignedProjectID.map { aggregates[$0] ?? Aggregate() }
+                ?? unassignedAggregate
             let created = metadata.map { Date(timeIntervalSince1970: TimeInterval($0.createdAt)) } ?? now
             aggregate.tasks.append(ProjectTaskItem(
                 threadID: observation.id,
@@ -649,18 +719,11 @@ public enum KSFProjectDashboardBuilder {
                 waitingReason: TaskActivityClassifier.waitingReason(for: observation),
                 route: projected?.route,
                 createdAt: created,
-                projectID: projectID
+                projectID: taskProjectID
             ))
             let updated = metadata.map { Date(timeIntervalSince1970: TimeInterval($0.updatedAt)) } ?? now
             aggregate.latestActivity = max(aggregate.latestActivity ?? .distantPast, updated)
-            if let route = projected?.route {
-                let priority = classification == .waiting ? 2 : 1
-                let candidate = RouteCandidate(priority: priority, updatedAt: updated, route: route)
-                if aggregate.routeCandidate == nil || candidate > aggregate.routeCandidate! {
-                    aggregate.routeCandidate = candidate
-                }
-            }
-            if let cwdMatch, cwdMatch.projectID == projectID {
+            if let assignedProjectID, let cwdMatch, cwdMatch.projectID == assignedProjectID {
                 let priority = classification == .waiting ? 2 : 1
                 let candidate = EngineeringCandidate(
                     priority: priority,
@@ -671,11 +734,14 @@ public enum KSFProjectDashboardBuilder {
                     aggregate.engineeringCandidate = candidate
                 }
             }
-            aggregates[projectID] = aggregate
+            if let assignedProjectID {
+                aggregates[assignedProjectID] = aggregate
+            } else {
+                unassignedAggregate = aggregate
+            }
         }
 
-        var includedIDs = Set(aggregates.keys).union(pinnedProjectIDs)
-        if let selectedProjectID { includedIDs.insert(selectedProjectID) }
+        let includedIDs = Set(aggregates.keys).union(pinnedProjectIDs)
         let catalogOrder = catalog.map(\.id).filter { includedIDs.contains($0) }
         let missingOrder = includedIDs.subtracting(Set(catalogOrder)).sorted()
         let stableOrder = KSFProjectListOrdering.reconcile(
@@ -693,13 +759,26 @@ public enum KSFProjectDashboardBuilder {
                     return $0.id < $1.id
                 },
                 latestActivity: aggregate.latestActivity,
-                primaryRoute: aggregate.routeCandidate?.route,
                 usage: usage[id],
-                actions: actions[id] ?? [],
+                launchAction: launchActions[id],
                 preferredEngineeringID: aggregate.engineeringCandidate?.engineeringID
             )
         }
-        return KSFProjectListOrdering.sort(items, stableOrder: stableOrder)
+        var result = KSFProjectListOrdering.sort(items, stableOrder: stableOrder)
+        if !unassignedAggregate.tasks.isEmpty {
+            result.insert(ProjectDashboardItem(
+                id: unassignedProjectID,
+                project: nil,
+                kind: .unassigned,
+                isPinned: false,
+                tasks: unassignedAggregate.tasks.sorted {
+                    if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+                    return $0.id < $1.id
+                },
+                latestActivity: unassignedAggregate.latestActivity
+            ), at: 0)
+        }
+        return result
     }
 
     private static func engineeringMatch(
@@ -749,19 +828,7 @@ public enum KSFProjectDashboardBuilder {
     private struct Aggregate {
         var tasks: [ProjectTaskItem] = []
         var latestActivity: Date?
-        var routeCandidate: RouteCandidate?
         var engineeringCandidate: EngineeringCandidate?
-    }
-
-    private struct RouteCandidate: Comparable {
-        let priority: Int
-        let updatedAt: Date
-        let route: KSFRouteSummary
-
-        static func < (lhs: RouteCandidate, rhs: RouteCandidate) -> Bool {
-            if lhs.priority != rhs.priority { return lhs.priority < rhs.priority }
-            return lhs.updatedAt < rhs.updatedAt
-        }
     }
 
     private struct EngineeringCandidate: Comparable {

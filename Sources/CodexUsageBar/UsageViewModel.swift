@@ -19,16 +19,22 @@ final class UsageViewModel: ObservableObject {
     @Published private(set) var isRefreshing = false
     @Published private(set) var lastErrorMessage: String?
     @Published private(set) var tokenErrorMessage: String?
+    @Published private(set) var localTokenHistory: [DailyUsageBucket] = []
+    @Published private(set) var isRefreshingLocalTokenHistory = false
+    @Published private(set) var localTokenHistoryError: String?
     @Published private(set) var taskActivity = TaskActivitySnapshot(availability: .loading)
     @Published private(set) var projectDashboard = ProjectDashboardSnapshot()
-    @Published private(set) var selectedProjectID: String?
     @Published private(set) var pinnedProjectIDs: Set<String>
     @Published private(set) var isRefreshingProjects = false
     @Published private(set) var projectActionError: String?
     @Published private(set) var taskOpenFailure: ProjectTaskOpenFailure?
     @Published private(set) var creatingProjectTaskIDs: Set<String> = []
+    @Published private(set) var archivingProjectTaskIDs: Set<String> = []
     @Published private(set) var projectTaskCreationErrors: [String: String] = [:]
     @Published private(set) var ksfRootPath: String
+    @Published private(set) var isOnboardingComplete: Bool
+    @Published private(set) var onboardingInProgress = false
+    @Published private(set) var onboardingError: String?
     @Published private(set) var notificationPermission: NotificationPermissionState = .unknown
     @Published private(set) var loginItemState: LoginItemState = .disabled
     @Published private(set) var weChatState: WeChatConnectionState = .disconnected
@@ -45,6 +51,7 @@ final class UsageViewModel: ObservableObject {
     private let taskActivityProvider: CodexTaskActivityProviding
     private let bridge = KSFBridgeClient()
     private let projectUsageStore = ProjectUsageStore()
+    private let localTokenHistoryCache = LocalTokenHistoryCache()
     private let actionLauncher = TerminalActionLauncher()
     private let taskOpener: CodexTaskOpening = WorkspaceCodexTaskOpener()
     private let taskSubmissionClient: CodexDesktopTaskSubmissionClient
@@ -58,6 +65,7 @@ final class UsageViewModel: ObservableObject {
     private var accountTokenTimerTask: Task<Void, Never>?
     private var activeLocalTokenTimerTask: Task<Void, Never>?
     private var localTokenReadTask: Task<DailyUsageBucket?, Never>?
+    private var localTokenHistoryTask: Task<Void, Never>?
     private var retryTask: Task<Void, Never>?
     private var taskActivityUpdateTask: Task<Void, Never>?
     private var projectRefreshTask: Task<Void, Never>?
@@ -70,7 +78,7 @@ final class UsageViewModel: ObservableObject {
     private var projectTaskObservations: [CodexTaskObservation] = []
     private var projectProjections: [String: KSFTaskProjection] = [:]
     private var projectUsage: [String: ProjectUsageSummary]
-    private var projectActions: [String: [ProjectLaunchAction]] = [:]
+    private var projectLaunchActions: [String: ProjectLaunchAction] = [:]
     private var projectListOrder: [String]
     private var projectTaskOrder: [String: [String]] = [:]
     private var retryAttempt = 0
@@ -91,17 +99,19 @@ final class UsageViewModel: ObservableObject {
             transportFactory: { UnixSocketDesktopIPCTransport(socketURL: socketURL) }
         )
         defaults.register(defaults: [
-            "launchAtLoginEnabled": true,
-            "resetNotificationsEnabled": true,
-            "ksfRootPath": "/Users/lawis/Documents/KSF",
+            "launchAtLoginEnabled": false,
+            "resetNotificationsEnabled": false,
+            "onboardingComplete": false,
         ])
+        defaults.removeObject(forKey: "selectedProjectID")
         let cached = store.load()
         snapshot = cached
         status = cached?.headlineRemainingPercent == nil ? .loading : .stale
         launchAtLoginEnabled = defaults.bool(forKey: "launchAtLoginEnabled")
         resetNotificationsEnabled = defaults.bool(forKey: "resetNotificationsEnabled")
-        ksfRootPath = defaults.string(forKey: "ksfRootPath") ?? "/Users/lawis/Documents/KSF"
-        selectedProjectID = defaults.string(forKey: "selectedProjectID")
+        ksfRootPath = defaults.string(forKey: "ksfRootPath")
+            ?? AppConfiguration.suggestedKSFRoot()
+        isOnboardingComplete = defaults.bool(forKey: "onboardingComplete")
         pinnedProjectIDs = Set(defaults.stringArray(forKey: "pinnedProjectIDs") ?? [])
         projectUsage = projectUsageStore.load()
         projectListOrder = KSFProjectListOrdering.reconcile(
@@ -121,6 +131,7 @@ final class UsageViewModel: ObservableObject {
         accountTokenTimerTask?.cancel()
         activeLocalTokenTimerTask?.cancel()
         localTokenReadTask?.cancel()
+        localTokenHistoryTask?.cancel()
         retryTask?.cancel()
         taskActivityUpdateTask?.cancel()
         projectRefreshTask?.cancel()
@@ -274,8 +285,13 @@ final class UsageViewModel: ObservableObject {
         }
         await taskActivityProvider.start()
         await refreshUsageData()
-        await refreshProjects()
+        if isOnboardingComplete {
+            await refreshProjects()
+        }
         startTimers()
+        if isOnboardingComplete {
+            refreshLocalTokenHistory()
+        }
     }
 
     func applyTaskActivityUpdate(_ update: TaskActivitySnapshot) {
@@ -301,7 +317,9 @@ final class UsageViewModel: ObservableObject {
         defer { endRefreshActivity() }
         await taskActivityProvider.refresh()
         await refreshUsageData()
-        await refreshProjects()
+        if isOnboardingComplete {
+            await refreshProjects()
+        }
     }
 
     private func refreshUsageData() async {
@@ -315,9 +333,88 @@ final class UsageViewModel: ObservableObject {
         Task { [weak self] in await self?.refreshAll() }
     }
 
-    var selectedProject: ProjectDashboardItem? {
-        guard let selectedProjectID else { return nil }
-        return projectDashboard.projects.first { $0.id == selectedProjectID }
+    func completeOnboarding() {
+        guard !onboardingInProgress else { return }
+        let path = ksfRootPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else {
+            onboardingError = "请先选择 KSF 根目录。"
+            return
+        }
+        onboardingInProgress = true
+        onboardingError = nil
+        let rootURL = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let bridge = self.bridge
+                try await Task.detached(priority: .utility) {
+                    try bridge.validate(rootURL: rootURL)
+                }.value
+                self.ksfRootPath = rootURL.path
+                self.defaults.set(rootURL.path, forKey: "ksfRootPath")
+                self.defaults.set(true, forKey: "onboardingComplete")
+                self.isOnboardingComplete = true
+                self.onboardingError = nil
+                await self.refreshProjects()
+                self.refreshLocalTokenHistory()
+            } catch {
+                self.onboardingError = error.localizedDescription
+            }
+            self.onboardingInProgress = false
+        }
+    }
+
+    func refreshLocalTokenHistory() {
+        guard localTokenHistoryTask == nil else { return }
+        isRefreshingLocalTokenHistory = true
+        localTokenHistoryError = nil
+
+        let rootURL = URL(fileURLWithPath: ksfRootPath, isDirectory: true).standardizedFileURL
+        localTokenHistoryTask = Task { [weak self, localTokenHistoryCache] in
+            do {
+                let cached = try await localTokenHistoryCache.load(ksfRootURL: rootURL)
+                guard let self, !Task.isCancelled else { return }
+
+                // The cache is the history page's fast path. Show it before touching session
+                // logs; archived sessions can span many gigabytes even though the cache is tiny.
+                self.localTokenHistory = Array(cached.days.suffix(30))
+
+                let dayCount = Self.localHistoryRefreshDayCount(
+                    cachedAt: cached.updatedAt,
+                    hasCachedDays: !cached.days.isEmpty
+                )
+                let observed = await Task.detached(priority: .utility) {
+                    LocalTokenUsageReader().readHistory(dayCount: dayCount)
+                }.value
+                guard !Task.isCancelled else { return }
+
+                if let observed {
+                    let merged = try await localTokenHistoryCache.merge(
+                        ksfRootURL: rootURL,
+                        observed: observed
+                    )
+                    self.localTokenHistory = Array(merged.days.suffix(30))
+                }
+                self.localTokenHistoryError = nil
+            } catch {
+                self?.localTokenHistoryError = error.localizedDescription
+            }
+            self?.isRefreshingLocalTokenHistory = false
+            self?.localTokenHistoryTask = nil
+        }
+    }
+
+    static func localHistoryRefreshDayCount(
+        cachedAt: Date,
+        hasCachedDays: Bool,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> Int {
+        guard hasCachedDays, cachedAt != .distantPast else { return 30 }
+        let cachedDay = calendar.startOfDay(for: cachedAt)
+        let today = calendar.startOfDay(for: now)
+        let elapsed = calendar.dateComponents([.day], from: cachedDay, to: today).day ?? 0
+        return min(30, max(1, elapsed + 1))
     }
 
     var homeProjectItems: [ProjectDashboardItem] {
@@ -332,18 +429,14 @@ final class UsageViewModel: ObservableObject {
                 project: project,
                 isPinned: pinnedProjectIDs.contains(project.id),
                 usage: projectUsage[project.id],
-                actions: projectActions[project.id] ?? []
+                launchAction: projectLaunchActions[project.id]
             )
         }
         let catalogIDs = Set(items.map(\.id))
-        items.append(contentsOf: projectDashboard.projects.filter { !catalogIDs.contains($0.id) })
+        items.append(contentsOf: projectDashboard.projects.filter {
+            !$0.isUnassigned && !catalogIDs.contains($0.id)
+        })
         return KSFProjectListOrdering.sort(items, stableOrder: projectListOrder)
-    }
-
-    func selectProject(_ id: String) {
-        selectedProjectID = id
-        defaults.set(id, forKey: "selectedProjectID")
-        rebuildProjectDashboard()
     }
 
     func togglePinned(_ id: String) {
@@ -407,6 +500,14 @@ final class UsageViewModel: ObservableObject {
     }
 
     func createTask(for project: KSFProject) {
+        createTask(for: project, purpose: .contextPreparation)
+    }
+
+    func createArchiveTask(for project: KSFProject) {
+        createTask(for: project, purpose: .archiveProject)
+    }
+
+    private func createTask(for project: KSFProject, purpose: ProjectTaskPurpose) {
         guard !creatingProjectTaskIDs.contains(project.id) else { return }
 
         guard isDirectory(atPath: ksfRootPath) else {
@@ -426,7 +527,8 @@ final class UsageViewModel: ObservableObject {
         do {
             bootstrap = try ProjectTaskBootstrap.prepare(
                 project: project,
-                ksfRootPath: ksfRootPath
+                ksfRootPath: ksfRootPath,
+                purpose: purpose
             )
         } catch {
             projectTaskCreationErrors[project.id] = error.localizedDescription
@@ -441,9 +543,15 @@ final class UsageViewModel: ObservableObject {
 
         projectTaskCreationErrors[project.id] = nil
         creatingProjectTaskIDs.insert(project.id)
+        if purpose == .archiveProject {
+            archivingProjectTaskIDs.insert(project.id)
+        }
         Task { [weak self] in
             guard let self else { return }
-            defer { self.creatingProjectTaskIDs.remove(project.id) }
+            defer {
+                self.creatingProjectTaskIDs.remove(project.id)
+                self.archivingProjectTaskIDs.remove(project.id)
+            }
             do {
                 let threadID = try await client.createDraftThread(
                     cwd: bootstrap.cwd,
@@ -480,13 +588,23 @@ final class UsageViewModel: ObservableObject {
         panel.allowsMultipleSelection = false
         panel.prompt = "选择"
         panel.message = "选择 KSF 知识库根目录"
-        panel.directoryURL = URL(fileURLWithPath: ksfRootPath, isDirectory: true)
+        panel.directoryURL = ksfRootPath.isEmpty
+            ? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents", isDirectory: true)
+            : URL(fileURLWithPath: ksfRootPath, isDirectory: true)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         ksfRootPath = url.standardizedFileURL.path
         defaults.set(ksfRootPath, forKey: "ksfRootPath")
         bridgeEnabledAt = nil
         projectDashboard = ProjectDashboardSnapshot(availability: .loading)
-        Task { [weak self] in await self?.refreshProjects() }
+        localTokenHistoryTask?.cancel()
+        localTokenHistoryTask = nil
+        localTokenHistory = []
+        localTokenHistoryError = nil
+        onboardingError = nil
+        if isOnboardingComplete {
+            Task { [weak self] in await self?.refreshProjects() }
+            refreshLocalTokenHistory()
+        }
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
@@ -739,25 +857,21 @@ final class UsageViewModel: ObservableObject {
 
         let catalog = projectCatalog
         let loaderResult = await Task.detached(priority: .utility) {
-            var actions: [String: [ProjectLaunchAction]] = [:]
+            var actions: [String: ProjectLaunchAction] = [:]
             var errors = 0
-            let loader = ProjectActionManifestLoader()
+            let resolver = ProjectStartScriptResolver()
             for project in catalog {
-                var projectActions: [ProjectLaunchAction] = []
-                for mapping in project.engineeringMappings {
-                    do {
-                        projectActions.append(contentsOf: try loader.load(mapping: mapping))
-                    } catch {
-                        errors += 1
-                    }
+                do {
+                    actions[project.id] = try resolver.load(project: project)
+                } catch {
+                    errors += 1
                 }
-                actions[project.id] = projectActions
             }
             return (actions, errors)
         }.value
-        projectActions = loaderResult.0
+        projectLaunchActions = loaderResult.0
         if loaderResult.1 > 0 {
-            partialMessage = [partialMessage, "有 \(loaderResult.1) 个启动动作清单未通过安全校验。"]
+            partialMessage = [partialMessage, "有 \(loaderResult.1) 个项目的 start.sh 未通过安全校验。"]
                 .compactMap { $0 }.joined(separator: " ")
         }
 
@@ -771,13 +885,12 @@ final class UsageViewModel: ObservableObject {
             threads: projectThreads,
             projections: projectProjections,
             pinnedProjectIDs: pinnedProjectIDs,
-            selectedProjectID: selectedProjectID,
             usage: projectUsage,
-            actions: projectActions
+            launchActions: projectLaunchActions
         )
         let reconciledOrder = KSFProjectListOrdering.reconcile(
             previous: projectListOrder,
-            candidates: projectCatalog.map(\.id) + items.map(\.id)
+            candidates: projectCatalog.map(\.id) + items.filter { !$0.isUnassigned }.map(\.id)
         )
         if reconciledOrder != projectListOrder {
             projectListOrder = reconciledOrder
@@ -808,20 +921,6 @@ final class UsageViewModel: ObservableObject {
             observedAt: Date(),
             message: message
         )
-        reconcileSelectedProject()
-    }
-
-    private func reconcileSelectedProject() {
-        if let selectedProjectID,
-           projectDashboard.projects.contains(where: { $0.id == selectedProjectID }) {
-            return
-        }
-        selectedProjectID = projectDashboard.projects.first?.id
-        if let selectedProjectID {
-            defaults.set(selectedProjectID, forKey: "selectedProjectID")
-        } else {
-            defaults.removeObject(forKey: "selectedProjectID")
-        }
     }
 
     private func unavailablePinnedProjects() -> [ProjectDashboardItem] {
@@ -963,6 +1062,9 @@ final class UsageViewModel: ObservableObject {
         updated.localTokenUpdatedAt = Date()
         snapshot = updated
         store.save(updated)
+        persistLocalHistoryCache(
+            [usage, previousDayUsage].compactMap { $0 }
+        )
     }
 
     private func mergeLocalUsage(
@@ -988,6 +1090,25 @@ final class UsageViewModel: ObservableObject {
 
     private func refreshLocalTokenUsage() async {
         persistLocalUsage(await readLocalTokenUsage())
+    }
+
+    private func persistLocalHistoryCache(_ observed: [DailyUsageBucket]) {
+        guard !observed.isEmpty else { return }
+        let rootURL = URL(fileURLWithPath: ksfRootPath, isDirectory: true).standardizedFileURL
+        Task { [weak self, localTokenHistoryCache] in
+            do {
+                let cached = try await localTokenHistoryCache.merge(
+                    ksfRootURL: rootURL,
+                    observed: observed
+                )
+                guard let self else { return }
+                if !self.localTokenHistory.isEmpty {
+                    self.localTokenHistory = Array(cached.days.suffix(30))
+                }
+            } catch {
+                self?.localTokenHistoryError = error.localizedDescription
+            }
+        }
     }
 
     private func readLocalTokenUsage() async -> DailyUsageBucket? {

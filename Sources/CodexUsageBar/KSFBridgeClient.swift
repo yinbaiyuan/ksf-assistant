@@ -31,6 +31,14 @@ struct KSFBridgeClient {
         return date
     }
 
+    func validate(rootURL: URL) throws {
+        let agents = rootURL.appendingPathComponent("AGENTS.md")
+        guard FileManager.default.fileExists(atPath: agents.path) else {
+            throw KSFBridgeError.failed("所选目录不是有效的 KSF 根目录：缺少 AGENTS.md。")
+        }
+        _ = try fetchCatalog(rootURL: rootURL)
+    }
+
     func fetchCatalog(rootURL: URL) throws -> KSFProjectCatalogResponse {
         let data = try run(rootURL: rootURL, arguments: ["--export-catalog"])
         let response = try decoder.decode(KSFProjectCatalogResponse.self, from: data)

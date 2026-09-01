@@ -25,39 +25,65 @@ final class ProjectWorkbenchTests: XCTestCase {
                 runtimeStatus: .active,
                 activeFlags: [.waitingOnApproval]
             ),
+            CodexTaskObservation(id: "loose", hostID: "local", runtimeStatus: .active),
+            CodexTaskObservation(
+                id: "orphaned-route",
+                hostID: "local",
+                runtimeStatus: .active,
+                activeFlags: [.waitingOnUserInput]
+            ),
             CodexTaskObservation(id: "child", hostID: "local", agentNickname: "helper", runtimeStatus: .active),
+            CodexTaskObservation(id: "metadata-child", hostID: "local", runtimeStatus: .active),
         ]
         let threads = [
             CodexThreadMetadata(id: "run", name: "实现列表", cwd: "/git/alpha", createdAt: 1, updatedAt: 10),
             CodexThreadMetadata(id: "wait", name: "确认权限", cwd: "/unrelated", createdAt: 2, updatedAt: 20),
+            CodexThreadMetadata(id: "loose", name: "临时任务", cwd: "/unrelated", createdAt: 3, updatedAt: 30),
+            CodexThreadMetadata(id: "orphaned-route", name: "项目已移除", cwd: "/unrelated", createdAt: 4, updatedAt: 40),
             CodexThreadMetadata(id: "child", cwd: "/git/alpha", createdAt: 1, updatedAt: 30),
+            CodexThreadMetadata(id: "metadata-child", cwd: "/git/alpha", parentThreadId: "run", createdAt: 5, updatedAt: 50),
         ]
+        let orphanedProjection = KSFTaskProjection(
+            threadKey: "opaque-orphan",
+            bindings: [KSFTaskBinding(projectCard: "removed", boundAt: "2026-08-30T00:00:00Z", route: route)],
+            updatedAt: "2026-08-30T00:00:00Z"
+        )
+        let alphaLaunch = ProjectLaunchAction(
+            projectID: "alpha",
+            scriptPath: "/ksf/alpha/start.sh",
+            workingDirectory: "/ksf/alpha"
+        )
 
         let items = KSFProjectDashboardBuilder.build(
             catalog: [alpha, beta],
             activeTasks: tasks,
             threads: threads,
-            projections: ["wait": projection],
+            projections: ["wait": projection, "orphaned-route": orphanedProjection],
             pinnedProjectIDs: ["missing"],
-            selectedProjectID: "alpha",
             usage: [:],
-            actions: [:]
+            launchActions: ["alpha": alphaLaunch]
         )
-        XCTAssertEqual(items.map(\.id), ["missing", "alpha", "beta"])
-        XCTAssertFalse(items[0].isAvailable)
-        XCTAssertEqual(items[1].runningCount, 1)
-        XCTAssertEqual(items[1].tasks.map(\.name), ["实现列表"])
-        XCTAssertEqual(items[1].preferredEngineeringID, "git")
-        XCTAssertEqual(items[2].waitingCount, 1)
-        XCTAssertEqual(items[2].runningCount, 0)
-        XCTAssertEqual(items[2].tasks.first?.waitingReason, .approval)
-        XCTAssertEqual(items[2].tasks.first?.route?.mainJob?.name, "高级软件工程师")
-        XCTAssertEqual(items[2].primaryRoute?.mainJob?.name, "高级软件工程师")
+        XCTAssertEqual(items.map(\.id), [KSFProjectDashboardBuilder.unassignedProjectID, "missing", "alpha", "beta"])
+        XCTAssertEqual(items[0].kind, .unassigned)
+        XCTAssertEqual(items[0].runningCount, 1)
+        XCTAssertEqual(items[0].waitingCount, 1)
+        XCTAssertEqual(items[0].tasks.map(\.name), ["临时任务", "项目已移除"])
+        XCTAssertEqual(items[0].tasks.last?.route?.mainJob?.name, "高级软件工程师")
+        XCTAssertFalse(items[1].isAvailable)
+        XCTAssertEqual(items[1].kind, .unavailablePinned)
+        XCTAssertEqual(items[2].runningCount, 1)
+        XCTAssertEqual(items[2].tasks.map(\.name), ["实现列表"])
+        XCTAssertEqual(items[2].preferredEngineeringID, "git")
+        XCTAssertEqual(items[2].launchAction, alphaLaunch)
+        XCTAssertEqual(items[3].waitingCount, 1)
+        XCTAssertEqual(items[3].runningCount, 0)
+        XCTAssertEqual(items[3].tasks.first?.waitingReason, .approval)
+        XCTAssertEqual(items[3].tasks.first?.route?.mainJob?.name, "高级软件工程师")
 
         let idle = ProjectDashboardItem(id: "idle", project: project("idle", root: "/git/idle"), isPinned: false)
         XCTAssertEqual(
             KSFProjectWorkset.select(from: items + [idle]).map(\.id),
-            ["missing", "alpha", "beta"]
+            [KSFProjectDashboardBuilder.unassignedProjectID, "missing", "alpha", "beta"]
         )
 
         let nested = KSFProjectDashboardBuilder.build(
@@ -67,9 +93,50 @@ final class ProjectWorkbenchTests: XCTestCase {
             projections: [:],
             pinnedProjectIDs: [],
             usage: [:],
-            actions: [:]
+            launchActions: [:]
         )
-        XCTAssertTrue(nested.isEmpty)
+        XCTAssertEqual(nested.map(\.kind), [.unassigned])
+        XCTAssertEqual(nested.first?.tasks.map(\.threadID), ["nested"])
+
+        let catalogOnly = KSFProjectDashboardBuilder.build(
+            catalog: [alpha],
+            activeTasks: [],
+            threads: [],
+            projections: [:],
+            pinnedProjectIDs: [],
+            usage: [:],
+            launchActions: [:]
+        )
+        XCTAssertTrue(catalogOnly.isEmpty)
+    }
+
+    func testRoutePresentationGroupsAbilitiesAndSkillsWithoutDroppingOrphans() {
+        let route = KSFRouteSummary(
+            category: KSFRouteCategory(name: "产品研发", validationStatus: "草案"),
+            jobs: [
+                KSFRouteJob(jobID: "product", name: "高级产品经理", role: "main", validationStatus: "待验证"),
+                KSFRouteJob(jobID: "interaction", name: "交互设计师", role: "collaborator", validationStatus: "草案"),
+            ],
+            abilities: [
+                KSFRouteAbility(abilityID: "rules", name: "范围与规则", jobID: "product", validationStatus: "待验证"),
+                KSFRouteAbility(abilityID: "flow", name: "主流程", jobID: "interaction", validationStatus: "草案"),
+                KSFRouteAbility(abilityID: "orphan-ability", name: "待归属能力", jobID: "missing"),
+            ],
+            dispatchableSkills: [
+                KSFDispatchableSkill(skillID: "rules-check", skillStage: "active", abilityID: "rules"),
+                KSFDispatchableSkill(skillID: "flow-check", skillStage: "trial", abilityID: "flow"),
+                KSFDispatchableSkill(skillID: "orphan-skill", skillStage: "trial", abilityID: "missing"),
+            ]
+        )
+
+        let presentation = KSFRoutePresentation(route: route)
+
+        XCTAssertEqual(presentation.category?.name, "产品研发")
+        XCTAssertEqual(presentation.jobGroups.map { $0.job?.name }, ["高级产品经理", "交互设计师", nil])
+        XCTAssertEqual(presentation.jobGroups[0].abilities[0].skills.map(\.skillID), ["rules-check"])
+        XCTAssertEqual(presentation.jobGroups[1].abilities[0].skills.map(\.skillID), ["flow-check"])
+        XCTAssertEqual(presentation.jobGroups[2].abilities.map { $0.ability.name }, ["待归属能力"])
+        XCTAssertEqual(presentation.unassignedSkills.map(\.skillID), ["orphan-skill"])
     }
 
     func testProjectListKeepsStableOrderAcrossActivityUpdates() {
@@ -80,6 +147,7 @@ final class ProjectWorkbenchTests: XCTestCase {
         XCTAssertEqual(stableOrder, ["alpha", "pinned", "beta", "gamma"])
 
         let initial = [
+            ProjectDashboardItem(id: KSFProjectDashboardBuilder.unassignedProjectID, project: nil, kind: .unassigned, isPinned: false, tasks: [task("loose", .running)]),
             ProjectDashboardItem(id: "beta", project: nil, isPinned: false, tasks: [task("beta", .running)], latestActivity: Date(timeIntervalSince1970: 30)),
             ProjectDashboardItem(id: "pinned", project: nil, isPinned: true),
             ProjectDashboardItem(id: "alpha", project: nil, isPinned: false, tasks: [task("alpha", .waiting)], latestActivity: Date(timeIntervalSince1970: 10)),
@@ -87,10 +155,11 @@ final class ProjectWorkbenchTests: XCTestCase {
         ]
         XCTAssertEqual(
             KSFProjectListOrdering.sort(initial, stableOrder: stableOrder).map(\.id),
-            ["pinned", "alpha", "beta", "gamma"]
+            [KSFProjectDashboardBuilder.unassignedProjectID, "pinned", "alpha", "beta", "gamma"]
         )
 
         let activityChanged = [
+            ProjectDashboardItem(id: KSFProjectDashboardBuilder.unassignedProjectID, project: nil, kind: .unassigned, isPinned: false, tasks: [task("loose", .waiting)]),
             ProjectDashboardItem(id: "gamma", project: nil, isPinned: false, tasks: [task("gamma", .running)], latestActivity: Date(timeIntervalSince1970: 50)),
             ProjectDashboardItem(id: "alpha", project: nil, isPinned: false, tasks: [task("alpha", .running)], latestActivity: Date(timeIntervalSince1970: 60)),
             ProjectDashboardItem(id: "beta", project: nil, isPinned: false, tasks: [task("beta", .waiting)], latestActivity: Date(timeIntervalSince1970: 70)),
@@ -98,7 +167,7 @@ final class ProjectWorkbenchTests: XCTestCase {
         ]
         XCTAssertEqual(
             KSFProjectListOrdering.sort(activityChanged, stableOrder: stableOrder).map(\.id),
-            ["pinned", "alpha", "beta", "gamma"]
+            [KSFProjectDashboardBuilder.unassignedProjectID, "pinned", "alpha", "beta", "gamma"]
         )
 
         let pinnedOrder = KSFProjectListOrdering.moving(
@@ -112,12 +181,13 @@ final class ProjectWorkbenchTests: XCTestCase {
                 ProjectDashboardItem(
                     id: item.id,
                     project: item.project,
+                    kind: item.kind,
                     isPinned: item.id == "pinned" || item.id == "beta",
                     tasks: item.tasks,
                     latestActivity: item.latestActivity
                 )
             }, stableOrder: pinnedOrder).map(\.id),
-            ["pinned", "beta", "alpha", "gamma"]
+            [KSFProjectDashboardBuilder.unassignedProjectID, "pinned", "beta", "alpha", "gamma"]
         )
     }
 
@@ -285,23 +355,48 @@ final class ProjectWorkbenchTests: XCTestCase {
         XCTAssertEqual(usage["beta"]?.cumulativeTokens, 80)
     }
 
-    func testActionManifestRejectsTraversalAndUnsafePermissions() throws {
+    func testProjectStartScriptResolverRequiresSafeExecutableProjectScript() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let mapping = KSFEngineeringMapping(id: "git", role: "主工程", rootPath: root.path)
-        let manifest = root.appendingPathComponent(ProjectActionManifestLoader.fileName)
-        let valid = #"{"protocol":"codex-usage-bar-actions-v1","actions":[{"id":"dev","title":"启动","executable":"/usr/bin/env","arguments":["swift","run"],"workingDirectory":"."}]}"#
-        try Data(valid.utf8).write(to: manifest)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: manifest.path)
-        XCTAssertEqual(try ProjectActionManifestLoader().load(mapping: mapping).count, 1)
+        let project = KSFProject(
+            id: "project",
+            name: "项目",
+            cardPath: root.appendingPathComponent("项目记忆卡.md").path,
+            projectDirectory: root.path
+        )
+        let resolver = ProjectStartScriptResolver()
+        XCTAssertNil(try resolver.load(project: project))
 
-        let traversal = #"{"protocol":"codex-usage-bar-actions-v1","actions":[{"id":"bad","title":"越界","executable":"/bin/echo","workingDirectory":"../"}]}"#
-        try Data(traversal.utf8).write(to: manifest)
-        XCTAssertThrowsError(try ProjectActionManifestLoader().load(mapping: mapping))
-        try Data(valid.utf8).write(to: manifest)
-        try FileManager.default.setAttributes([.posixPermissions: 0o666], ofItemAtPath: manifest.path)
-        XCTAssertThrowsError(try ProjectActionManifestLoader().load(mapping: mapping))
+        let script = root.appendingPathComponent(ProjectStartScriptResolver.fileName)
+        try Data("#!/bin/zsh\nexit 0\n".utf8).write(to: script)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+        let action = try XCTUnwrap(resolver.load(project: project))
+        XCTAssertEqual(action.scriptPath, script.path)
+        XCTAssertEqual(action.workingDirectory, root.path)
+        XCTAssertNoThrow(try resolver.validate(action))
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o722], ofItemAtPath: script.path)
+        XCTAssertThrowsError(try resolver.load(project: project)) { error in
+            XCTAssertEqual(error as? ProjectStartScriptError, .invalidPermissions)
+        }
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: script.path)
+        XCTAssertThrowsError(try resolver.load(project: project)) { error in
+            XCTAssertEqual(error as? ProjectStartScriptError, .notExecutable)
+        }
+
+        try FileManager.default.removeItem(at: script)
+        let target = root.appendingPathComponent("actual.sh")
+        try Data("#!/bin/zsh\nexit 0\n".utf8).write(to: target)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: target.path)
+        try FileManager.default.createSymbolicLink(at: script, withDestinationURL: target)
+        XCTAssertThrowsError(try resolver.load(project: project)) { error in
+            XCTAssertEqual(error as? ProjectStartScriptError, .invalidScript)
+        }
+        XCTAssertThrowsError(try resolver.validate(action)) { error in
+            XCTAssertEqual(error as? ProjectStartScriptError, .invalidScript)
+        }
     }
 
     func testNewTaskBootstrapPromptLoadsContextAndStopsBeforeWork() throws {
@@ -357,6 +452,42 @@ final class ProjectWorkbenchTests: XCTestCase {
             project: invalidName,
             ksfRootPath: "/Users/test/KSF"
         ))
+    }
+
+    func testArchiveTaskBootstrapNamesAndScopesTheArchiveWork() throws {
+        let project = KSFProject(
+            id: "project-card",
+            name: "家庭网络",
+            cardPath: "/Users/test/KSF/10项目/家庭网络/项目记忆卡.md",
+            projectDirectory: "/Users/test/KSF/10项目/家庭网络",
+            engineeringMappings: [
+                KSFEngineeringMapping(
+                    id: "server",
+                    role: "服务端",
+                    rootPath: "/Users/test/Git/home-network-server"
+                ),
+            ]
+        )
+
+        let bootstrap = try ProjectTaskBootstrap.prepare(
+            project: project,
+            ksfRootPath: "/Users/test/KSF",
+            purpose: .archiveProject
+        )
+        let prompt = bootstrap.prompt
+
+        XCTAssertEqual(bootstrap.cwd, "/Users/test/KSF")
+        XCTAssertEqual(bootstrap.name, "家庭网络 · 归档项目")
+        XCTAssertTrue(prompt.contains("KSF 项目「家庭网络」的归档任务"))
+        XCTAssertTrue(prompt.contains(project.cardPath))
+        XCTAssertTrue(prompt.contains("按 KSF 规范"))
+        XCTAssertTrue(prompt.contains("归档当前项目"))
+        XCTAssertTrue(prompt.contains("归档前置条件"))
+        XCTAssertTrue(prompt.contains("必须由用户确认"))
+        XCTAssertTrue(prompt.contains("不要绕过 KSF"))
+        XCTAssertFalse(prompt.contains("本轮只做上下文准备"))
+        XCTAssertFalse(prompt.contains("home-network-server"))
+        XCTAssertLessThan(prompt.count, 360)
     }
 
     private func project(_ id: String, root: String) -> KSFProject {

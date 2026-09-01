@@ -14,6 +14,7 @@ private enum KSFBridgeStandaloneTestRunner {
         )
         do {
             try fileManager.createDirectory(at: script.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("# KSF test root\n".utf8).write(to: root.appendingPathComponent("AGENTS.md"))
             let source = #"""
             #!/usr/bin/ruby
             require 'json'
@@ -36,6 +37,7 @@ private enum KSFBridgeStandaloneTestRunner {
             try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
 
             let client = KSFBridgeClient()
+            try client.validate(rootURL: root)
             let enabledAt = try client.enable(rootURL: root)
             guard enabledAt.timeIntervalSince1970 > 0 else {
                 throw TestFailure(description: "enable response was not decoded")
@@ -47,6 +49,18 @@ private enum KSFBridgeStandaloneTestRunner {
             let resolution = try client.resolve(rootURL: root, threadIDs: ["raw-thread-id"])
             guard resolution.projections.isEmpty else {
                 throw TestFailure(description: "projection response was not decoded")
+            }
+            let invalidRoot = fileManager.temporaryDirectory.appendingPathComponent("invalid-ksf-\(UUID().uuidString)")
+            try fileManager.createDirectory(at: invalidRoot, withIntermediateDirectories: true)
+            defer { try? fileManager.removeItem(at: invalidRoot) }
+            var rejectedInvalidRoot = false
+            do {
+                try client.validate(rootURL: invalidRoot)
+            } catch {
+                rejectedInvalidRoot = true
+            }
+            guard rejectedInvalidRoot else {
+                throw TestFailure(description: "validation accepted a directory without KSF entrypoints")
             }
             print("PASS KSF bridge permissions and large concurrent output drain")
         } catch {

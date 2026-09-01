@@ -9,21 +9,26 @@ struct UsagePopoverView: View {
     var refreshOnAppear = true
     @State private var page: Page = .home
     @State private var showAllProjects = false
-    @State private var detailReturnPage: Page = .home
+    @State private var expandedTaskID: String?
+    @State private var selectedLocalHistoryDate: String?
 
     var body: some View {
         Group {
-            switch page {
-            case .home:
-                homePage
-            case .projectLibrary:
-                projectLibraryPage
-            case .projectDetail:
-                projectDetailPage
-            case .settings:
-                settingsPage
-            case .wechat:
-                weChatPage
+            if !viewModel.isOnboardingComplete {
+                onboardingPage
+            } else {
+                switch page {
+                case .home:
+                    homePage
+                case .tokenHistory:
+                    tokenHistoryPage
+                case .projectLibrary:
+                    projectLibraryPage
+                case .settings:
+                    settingsPage
+                case .wechat:
+                    weChatPage
+                }
             }
         }
         .padding(12)
@@ -32,8 +37,95 @@ struct UsagePopoverView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
             page = .home
             showAllProjects = false
-            detailReturnPage = .home
+            expandedTaskID = nil
+            selectedLocalHistoryDate = nil
             if refreshOnAppear { viewModel.popoverDidOpen() }
+        }
+        .onChange(of: viewModel.homeProjectItems.flatMap { $0.tasks.map(\.id) }) { taskIDs in
+            if let expandedTaskID, !taskIDs.contains(expandedTaskID) {
+                self.expandedTaskID = nil
+            }
+        }
+        .onChange(of: viewModel.localTokenHistory.map(\.startDate)) { dates in
+            if selectedLocalHistoryDate == nil || !dates.contains(selectedLocalHistoryDate ?? "") {
+                selectedLocalHistoryDate = dates.last
+            }
+        }
+    }
+
+    private var onboardingPage: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "menubar.rectangle")
+                    .font(.title2)
+                    .foregroundStyle(.blue)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("设置 Codex Usage Bar")
+                        .font(.headline)
+                    Text("连接团队 KSF 后即可使用项目工作台和本机 Token 历史。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("KSF 根目录").font(.caption.weight(.medium))
+                        Text(viewModel.ksfRootPath.isEmpty ? "尚未选择" : viewModel.ksfRootPath)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                    }
+                    Spacer()
+                    Button("选择…") { viewModel.chooseKSFRoot() }
+                        .controlSize(.small)
+                }
+                .padding(.vertical, 8)
+                Divider()
+                settingRow(
+                    title: "登录时启动",
+                    status: viewModel.launchAtLoginEnabled ? "将开启" : "暂不开启",
+                    isOn: Binding(
+                        get: { viewModel.launchAtLoginEnabled },
+                        set: { viewModel.setLaunchAtLogin($0) }
+                    )
+                )
+                Divider()
+                settingRow(
+                    title: "通用额度重置通知",
+                    status: viewModel.resetNotificationsEnabled ? "将请求系统授权" : "暂不开启",
+                    isOn: Binding(
+                        get: { viewModel.resetNotificationsEnabled },
+                        set: { viewModel.setResetNotifications($0) }
+                    )
+                )
+            }
+            .padding(.horizontal, 10)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+
+            if let error = viewModel.onboardingError {
+                compactStatus(error, color: .orange, symbol: "exclamationmark.triangle.fill")
+            }
+
+            Button {
+                viewModel.completeOnboarding()
+            } label: {
+                HStack(spacing: 6) {
+                    if viewModel.onboardingInProgress {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text(viewModel.onboardingInProgress ? "正在验证 KSF…" : "验证并开始使用")
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(viewModel.onboardingInProgress || viewModel.ksfRootPath.isEmpty)
+
+            Text("额度和实时任务读取独立于 KSF；微信连接可在完成设置后扫码启用。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -54,7 +146,7 @@ struct UsagePopoverView: View {
             if let message = viewModel.projectDashboard.message {
                 compactStatus(message, color: .orange, symbol: "exclamationmark.triangle.fill")
             }
-            projectDetailList
+            projectWorksetList
             if let actionError = viewModel.projectActionError {
                 compactStatus(actionError, color: .red, symbol: "exclamationmark.circle.fill")
             }
@@ -97,7 +189,7 @@ struct UsagePopoverView: View {
     }
 
     @ViewBuilder
-    private var projectDetailList: some View {
+    private var projectWorksetList: some View {
         let items = viewModel.homeProjectItems
         if viewModel.projectDashboard.availability == .loading {
             HStack(spacing: 6) {
@@ -112,24 +204,8 @@ struct UsagePopoverView: View {
         } else {
             let visibleItems = showAllProjects ? items : Array(items.prefix(4))
             VStack(spacing: 6) {
-                if projectRegionNeedsScroll(visibleItems) {
-                    ScrollView(.vertical, showsIndicators: true) {
-                        LazyVStack(spacing: 6) {
-                            ForEach(visibleItems) { item in
-                                projectDetailRow(item)
-                            }
-                        }
-                        .padding(.trailing, 5)
-                        .background(OverlayScrollerConfigurator())
-                    }
-                    .frame(height: 360)
-                } else {
-                    VStack(spacing: 6) {
-                        ForEach(visibleItems) { item in
-                            projectDetailRow(item)
-                        }
-                    }
-                    .padding(.trailing, 5)
+                ForEach(visibleItems) { item in
+                    projectContainer(item)
                 }
                 if items.count > 4 {
                     if showAllProjects {
@@ -162,8 +238,42 @@ struct UsagePopoverView: View {
     }
 
     @ViewBuilder
-    private func projectDetailRow(_ item: ProjectDashboardItem) -> some View {
-        if let project = item.project {
+    private func projectContainer(_ item: ProjectDashboardItem) -> some View {
+        if item.isUnassigned {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 7) {
+                    Image(systemName: "folder.badge.questionmark")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text("无项目")
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    projectTaskStatus(item)
+                }
+
+                VStack(spacing: 0) {
+                    ForEach(Array(item.tasks.enumerated()), id: \.element.id) { index, task in
+                        projectTaskRow(task)
+                        if index < item.tasks.count - 1 {
+                            Divider().padding(.leading, 16)
+                        }
+                    }
+                }
+                .padding(.vertical, 1)
+
+                if let failure = viewModel.taskOpenFailure, failure.projectID == item.id {
+                    Label(failure.message, systemImage: "exclamationmark.circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .lineLimit(1)
+                }
+            }
+            .padding(8)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(projectAccessibilityLabel(item))
+        } else if let project = item.project {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 7) {
                     Text(project.name)
@@ -205,22 +315,7 @@ struct UsagePopoverView: View {
                         .lineLimit(2)
                 }
 
-                HStack(spacing: 7) {
-                    projectInlineMetric("累计", value: projectTokenValue(item.usage, keyPath: \.cumulativeTokens))
-                    projectInlineMetric("今日", value: projectTokenValue(item.usage, keyPath: \.todayTokens))
-                    Spacer(minLength: 2)
-                    projectNewTaskIconControl(project: project)
-                    projectRowIconButton(systemName: "folder", label: "打开 KSF 文件夹") {
-                        viewModel.openProjectDirectory(project)
-                    }
-                    projectEngineeringIconControl(project: project, item: item)
-                    projectLaunchIconControl(item)
-                    projectRowIconButton(systemName: "info.circle", label: "项目详情") {
-                        viewModel.selectProject(item.id)
-                        detailReturnPage = .home
-                        page = .projectDetail
-                    }
-                }
+                projectActionFooter(project: project, item: item)
             }
             .padding(8)
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
@@ -251,40 +346,147 @@ struct UsagePopoverView: View {
     }
 
     private func projectTaskRow(_ task: ProjectTaskItem) -> some View {
-        Button {
-            viewModel.openTask(task)
-        } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 5) {
-                    Image(systemName: taskStatusSymbol(task))
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(task.classification == .waiting ? Color.orange : .secondary)
-                        .frame(width: 11)
-                    Text(taskDisplayName(task))
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Spacer(minLength: 5)
-                    Text(taskStatusText(task))
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(task.classification == .waiting ? Color.orange : .secondary)
-                        .lineLimit(1)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 8, weight: .semibold))
-                        .foregroundStyle(.tertiary)
+        let isExpanded = expandedTaskID == task.id
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 3) {
+                Button { toggleTaskExpansion(task.id) } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: taskStatusSymbol(task))
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(task.classification == .waiting ? Color.orange : .secondary)
+                            .frame(width: 11)
+                        Text(taskDisplayName(task))
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Spacer(minLength: 5)
+                        Text(taskStatusText(task))
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(task.classification == .waiting ? Color.orange : .secondary)
+                            .lineLimit(1)
+                    }
+                    .contentShape(Rectangle())
                 }
-                Text(taskRouteText(task.route))
-                    .font(.caption2)
-                    .foregroundStyle(task.route == nil ? .tertiary : .secondary)
-                    .lineLimit(1)
-                    .padding(.leading, 16)
+                .buttonStyle(.plain)
+
+                projectRowIconButton(systemName: "arrow.up.forward.app", label: "在 Codex 中打开任务") {
+                    viewModel.openTask(task)
+                }
+                projectRowIconButton(
+                    systemName: isExpanded ? "chevron.up" : "chevron.down",
+                    label: isExpanded ? "收起任务路由" : "展开任务路由"
+                ) {
+                    toggleTaskExpansion(task.id)
+                }
             }
-            .padding(.vertical, 3)
-            .contentShape(Rectangle())
+
+            Button { toggleTaskExpansion(task.id) } label: {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(taskCategoryAndJobText(task.route))
+                        .font(.caption2)
+                        .foregroundStyle(task.route == nil ? .tertiary : .secondary)
+                        .lineLimit(1)
+                    if let route = task.route {
+                        HStack(spacing: 4) {
+                            Text(taskAbilityText(route))
+                                .lineLimit(1)
+                            Spacer(minLength: 4)
+                            Text("\(route.dispatchableSkills.count) 可调度 Skill")
+                                .lineLimit(1)
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.leading, 16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded, let route = task.route {
+                expandedTaskRoute(route)
+                    .padding(.leading, 16)
+                    .padding(.top, 2)
+            }
         }
-        .buttonStyle(.plain)
+        .padding(.vertical, 3)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(taskAccessibilityLabel(task))
-        .help("在 Codex 中打开任务")
+    }
+
+    private func toggleTaskExpansion(_ taskID: String) {
+        expandedTaskID = expandedTaskID == taskID ? nil : taskID
+    }
+
+    private func expandedTaskRoute(_ route: KSFRouteSummary) -> some View {
+        let presentation = KSFRoutePresentation(route: route)
+        return VStack(alignment: .leading, spacing: 5) {
+            routeDetailLine(
+                label: "工作类别",
+                value: presentation.category?.name ?? "未分类",
+                status: presentation.category?.validationStatus
+            )
+            ForEach(Array(presentation.jobGroups.enumerated()), id: \.offset) { _, group in
+                VStack(alignment: .leading, spacing: 3) {
+                    routeDetailLine(
+                        label: group.job?.role == "main" ? "主岗位" : group.job == nil ? "其他基本功" : "协同岗位",
+                        value: group.job?.name ?? "未关联岗位",
+                        status: group.job?.validationStatus
+                    )
+                    ForEach(Array(group.abilities.enumerated()), id: \.offset) { _, abilityGroup in
+                        VStack(alignment: .leading, spacing: 2) {
+                            routeDetailLine(
+                                label: "基本功",
+                                value: abilityGroup.ability.name ?? "未命名基本功",
+                                status: abilityGroup.ability.validationStatus
+                            )
+                            ForEach(Array(abilityGroup.skills.enumerated()), id: \.offset) { _, skill in
+                                skillDetailLine(skill)
+                            }
+                        }
+                        .padding(.leading, 8)
+                    }
+                }
+            }
+            if !presentation.unassignedSkills.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("其他可调度 Skill")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    ForEach(Array(presentation.unassignedSkills.enumerated()), id: \.offset) { _, skill in
+                        skillDetailLine(skill)
+                    }
+                }
+            }
+        }
+        .padding(6)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.65), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func routeDetailLine(label: String, value: String, status: String?) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text(label).foregroundStyle(.tertiary)
+            Text(value).foregroundStyle(.primary)
+            if let status, !status.isEmpty {
+                Text("[\(status)]").foregroundStyle(.secondary)
+            }
+        }
+        .font(.caption2)
+        .lineLimit(1)
+    }
+
+    private func skillDetailLine(_ skill: KSFDispatchableSkill) -> some View {
+        HStack(spacing: 4) {
+            Text("可调度 Skill").foregroundStyle(.tertiary)
+            Text(skill.skillID ?? "未命名 Skill").foregroundStyle(.primary)
+            if let stage = skill.skillStage, !stage.isEmpty {
+                Text("[\(stage)]").foregroundStyle(.secondary)
+            }
+        }
+        .font(.caption2)
+        .lineLimit(1)
+        .padding(.leading, 8)
     }
 
     private func projectInlineMetric(_ label: String, value: String) -> some View {
@@ -298,6 +500,23 @@ struct UsagePopoverView: View {
         .font(.caption2)
         .lineLimit(1)
         .accessibilityLabel("项目\(label) Token，\(value)")
+    }
+
+    private func projectActionFooter(project: KSFProject, item: ProjectDashboardItem) -> some View {
+        HStack(spacing: 7) {
+            projectInlineMetric("累计", value: projectTokenValue(item.usage, keyPath: \.cumulativeTokens))
+            projectInlineMetric("今日", value: projectTokenValue(item.usage, keyPath: \.todayTokens))
+            Spacer(minLength: 2)
+            projectNewTaskIconControl(project: project)
+            projectRowIconButton(systemName: "folder", label: "打开 KSF 文件夹") {
+                viewModel.openProjectDirectory(project)
+            }
+            projectEngineeringIconControl(project: project, item: item)
+            projectLaunchIconControl(item)
+            projectRowIconButton(systemName: "doc.text", label: "打开项目记忆") {
+                viewModel.openProjectCard(project)
+            }
+        }
     }
 
     private func projectRowIconButton(
@@ -320,7 +539,9 @@ struct UsagePopoverView: View {
 
     @ViewBuilder
     private func projectNewTaskIconControl(project: KSFProject) -> some View {
-        if viewModel.creatingProjectTaskIDs.contains(project.id) {
+        let isCreating = viewModel.creatingProjectTaskIDs.contains(project.id)
+        let isArchiving = viewModel.archivingProjectTaskIDs.contains(project.id)
+        if isCreating && !isArchiving {
             ProgressView()
                 .controlSize(.small)
                 .scaleEffect(0.7)
@@ -328,8 +549,32 @@ struct UsagePopoverView: View {
                 .help("正在新建 Codex 任务")
                 .accessibilityLabel("正在新建 Codex 任务")
         } else {
-            projectRowIconButton(systemName: "plus.bubble", label: "在 KSF 项目中新建 Codex 任务") {
+            projectRowIconButton(
+                systemName: "plus.bubble",
+                label: "在 KSF 项目中新建 Codex 任务",
+                disabled: isCreating
+            ) {
                 viewModel.createTask(for: project)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func projectArchiveTaskIconControl(project: KSFProject) -> some View {
+        if viewModel.archivingProjectTaskIDs.contains(project.id) {
+            ProgressView()
+                .controlSize(.small)
+                .scaleEffect(0.7)
+                .frame(width: 22, height: 22)
+                .help("正在发起项目归档任务")
+                .accessibilityLabel("正在发起项目归档任务")
+        } else {
+            headerIconButton(
+                systemName: "archivebox",
+                label: "发起项目归档任务",
+                disabled: viewModel.creatingProjectTaskIDs.contains(project.id)
+            ) {
+                viewModel.createArchiveTask(for: project)
             }
         }
     }
@@ -368,32 +613,16 @@ struct UsagePopoverView: View {
 
     @ViewBuilder
     private func projectLaunchIconControl(_ item: ProjectDashboardItem) -> some View {
-        if item.actions.isEmpty {
-            projectRowIconButton(systemName: "play.slash", label: "没有启动动作", disabled: true) {}
-        } else if let action = item.actions.first, item.actions.count == 1 {
+        if let action = item.launchAction {
             projectRowIconButton(systemName: action.symbol, label: action.title) {
                 viewModel.launchAction(action)
             }
-        } else if item.actions.count > 1 {
-            Menu {
-                ForEach(item.actions) { action in
-                    Button {
-                        viewModel.launchAction(action)
-                    } label: {
-                        Label(action.title, systemImage: action.symbol)
-                    }
-                }
-            } label: {
-                Image(systemName: "play.fill")
-                    .font(.system(size: 11, weight: .medium))
-                    .frame(width: 20, height: 20)
-                    .contentShape(Rectangle())
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("启动项目动作")
-            .accessibilityLabel("启动项目动作")
+        } else {
+            projectRowIconButton(
+                systemName: "play.slash",
+                label: "项目目录中没有可执行的 start.sh",
+                disabled: true
+            ) {}
         }
     }
 
@@ -415,74 +644,6 @@ struct UsagePopoverView: View {
         .font(.system(size: 10, weight: .medium, design: .rounded))
         .monospacedDigit()
         .foregroundStyle(item.waitingCount > 0 ? Color.orange : .secondary)
-    }
-
-    private func projectTokenRow(_ usage: ProjectUsageSummary?) -> some View {
-        HStack(spacing: 0) {
-            projectMetric("项目累计 Token", value: projectTokenValue(usage, keyPath: \.cumulativeTokens))
-            Divider().frame(height: 25)
-            projectMetric("项目今日 Token", value: projectTokenValue(usage, keyPath: \.todayTokens))
-        }
-    }
-
-    private func projectMetric(_ label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.system(.callout, design: .rounded, weight: .semibold))
-                .monospacedDigit()
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    @ViewBuilder
-    private func engineeringControl(project: KSFProject, item: ProjectDashboardItem) -> some View {
-        let mappings = preferredMappings(project.engineeringMappings, preferredID: item.preferredEngineeringID)
-        if mappings.isEmpty {
-            compactAction(title: "无工程", symbol: "folder.badge.questionmark", disabled: true) {}
-        } else if let mapping = mappings.first, mappings.count == 1 {
-            compactAction(title: "Git 工程", symbol: "folder.badge.gearshape") {
-                viewModel.openEngineering(mapping)
-            }
-        } else {
-            Menu {
-                ForEach(mappings) { mapping in
-                    Button {
-                        viewModel.openEngineering(mapping)
-                    } label: {
-                        Label(mapping.role, systemImage: mapping.id == item.preferredEngineeringID ? "checkmark" : "folder")
-                    }
-                }
-            } label: {
-                Label("Git 工程", systemImage: "folder.badge.gearshape")
-                    .font(.caption)
-                    .frame(maxWidth: .infinity)
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity)
-            .help("选择 Git 工程")
-        }
-    }
-
-    private func compactAction(
-        title: String,
-        symbol: String,
-        disabled: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: symbol)
-                .font(.caption)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .disabled(disabled)
     }
 
     private func mainQuotaCard(_ bucket: RateLimitBucket) -> some View {
@@ -515,8 +676,19 @@ struct UsagePopoverView: View {
 
     private var tokenActivity: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text("Token 活动")
-                .font(.caption.weight(.semibold))
+            HStack(spacing: 6) {
+                Text("Token 活动")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                headerIconButton(
+                    systemName: "chart.bar.xaxis",
+                    label: "查看本机每日 Token 历史"
+                ) {
+                    selectedLocalHistoryDate = viewModel.localTokenHistory.last?.startDate
+                    page = .tokenHistory
+                    viewModel.refreshLocalTokenHistory()
+                }
+            }
             if viewModel.snapshot?.tokenSummary != nil || viewModel.localTodayUsage != nil {
                 let breakdown = viewModel.localTodayUsage?.breakdown
                 VStack(spacing: 4) {
@@ -556,122 +728,310 @@ struct UsagePopoverView: View {
         }
     }
 
+    private var tokenHistoryPage: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            secondaryHeader(title: "本机每日 Token", backLabel: "返回主页") { page = .home }
+
+            HStack(spacing: 5) {
+                Text("最近 30 个自然日 · 仅此 Mac")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                if viewModel.isRefreshingLocalTokenHistory {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .scaleEffect(0.68)
+                        .frame(width: 10, height: 10)
+                        .accessibilityLabel("正在刷新本机 Token 历史")
+                }
+                Spacer()
+            }
+
+            if viewModel.localTokenHistory.isEmpty {
+                if viewModel.isRefreshingLocalTokenHistory {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("正在读取本机 Token 历史…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                } else {
+                    emptyState(
+                        "没有本机 Token 历史",
+                        detail: viewModel.localTokenHistoryError ?? "本机 Codex 会话中尚未发现可统计的 Token 记录。"
+                    )
+                }
+            } else {
+                localTokenHistoryDashboard(
+                    LocalTokenHistorySeries(days: viewModel.localTokenHistory)
+                )
+            }
+
+            if let error = viewModel.localTokenHistoryError,
+               !viewModel.localTokenHistory.isEmpty {
+                compactStatus(error, color: .orange, symbol: "exclamationmark.triangle.fill")
+            }
+        }
+    }
+
+    private func localTokenHistoryDashboard(_ series: LocalTokenHistorySeries) -> some View {
+        let selectedUsage = selectedLocalHistoryUsage(in: series)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 0) {
+                localTokenHistoryMetric("30 日总量", value: formatTokens(series.totalTokens))
+                Divider().frame(height: 28)
+                localTokenHistoryMetric("日均", value: formatTokens(series.averageTokens))
+                Divider().frame(height: 28)
+                localTokenHistoryMetric("活跃天", value: "\(series.activeDayCount) 天")
+            }
+
+            Divider()
+
+            HStack(alignment: .lastTextBaseline, spacing: 8) {
+                Text(selectedUsage.map { localTokenHistoryDateLabel($0.startDate) } ?? "未选择日期")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Text(selectedUsage.map { formatTokens($0.tokens) } ?? "—")
+                    .font(.system(.title3, design: .rounded, weight: .semibold))
+                    .monospacedDigit()
+                    .lineLimit(1)
+            }
+
+            localTokenHistoryChart(series)
+
+            HStack {
+                Text(series.days.first.map { localTokenHistoryShortDateLabel($0.startDate) } ?? "")
+                Spacer()
+                if series.days.count > 2 {
+                    Text(localTokenHistoryShortDateLabel(series.days[series.days.count / 2].startDate))
+                    Spacer()
+                }
+                Text(series.latestDay.map { localTokenHistoryAxisEndLabel($0.startDate) } ?? "")
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+
+            Divider()
+
+            if let breakdown = selectedUsage?.breakdown {
+                HStack(spacing: 0) {
+                    localTokenHistoryMetric("普通输入", value: formatTokens(breakdown.regularInputTokens))
+                    Divider().frame(height: 28)
+                    localTokenHistoryMetric("缓存输入", value: formatTokens(breakdown.cachedInputTokens))
+                    Divider().frame(height: 28)
+                    localTokenHistoryMetric("输出", value: formatTokens(breakdown.outputTokens))
+                }
+            } else {
+                Text("该日 Token 构成不可用")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func localTokenHistoryMetric(_ label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Text(value)
+                .font(.system(.callout, design: .rounded, weight: .semibold))
+                .monospacedDigit()
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func localTokenHistoryChart(_ series: LocalTokenHistorySeries) -> some View {
+        GeometryReader { geometry in
+            let maximum = max(1, series.maximumTokens)
+            let plotHeight = max(1, geometry.size.height - 7)
+            let averageFraction = CGFloat(Double(series.averageTokens) / Double(maximum))
+            let averageY = geometry.size.height - max(2, plotHeight * averageFraction)
+
+            ZStack(alignment: .bottom) {
+                Path { path in
+                    path.move(to: CGPoint(x: 0, y: averageY))
+                    path.addLine(to: CGPoint(x: geometry.size.width, y: averageY))
+                }
+                .stroke(
+                    Color.secondary.opacity(0.24),
+                    style: StrokeStyle(lineWidth: 1, dash: [2, 3])
+                )
+
+                HStack(alignment: .bottom, spacing: 3) {
+                    ForEach(series.days) { usage in
+                        let fraction = CGFloat(Double(max(0, usage.tokens)) / Double(maximum))
+                        let isSelected = selectedLocalHistoryUsage(in: series)?.startDate == usage.startDate
+                        VStack(spacing: 3) {
+                            Circle()
+                                .fill(Color.accentColor)
+                                .frame(width: 4, height: 4)
+                                .opacity(isSelected ? 1 : 0)
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(
+                                    isSelected
+                                        ? Color.accentColor
+                                        : Color.accentColor.opacity(usage.tokens > 0 ? 0.28 : 0.10)
+                                )
+                                .frame(height: max(2, plotHeight * fraction))
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    }
+                }
+
+                Rectangle()
+                    .fill(Color.clear)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                selectLocalHistoryDay(
+                                    at: value.location.x,
+                                    width: geometry.size.width,
+                                    days: series.days
+                                )
+                            }
+                    )
+            }
+        }
+        .frame(height: 108)
+        .animation(.easeOut(duration: 0.16), value: selectedLocalHistoryDate)
+        .help("点击或拖动查看每天的本机 Token 用量")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("最近 30 日本机 Token 趋势")
+        .accessibilityValue(localTokenHistoryChartAccessibilityValue(series))
+        .accessibilityAdjustableAction { direction in
+            adjustLocalHistorySelection(direction, in: series)
+        }
+    }
+
+    private func selectedLocalHistoryUsage(in series: LocalTokenHistorySeries) -> DailyUsageBucket? {
+        if let selectedLocalHistoryDate,
+           let selected = series.usage(on: selectedLocalHistoryDate) {
+            return selected
+        }
+        return series.latestDay
+    }
+
+    private func selectLocalHistoryDay(
+        at xPosition: CGFloat,
+        width: CGFloat,
+        days: [DailyUsageBucket]
+    ) {
+        guard width > 0, !days.isEmpty else { return }
+        let boundedX = min(max(0, xPosition), max(0, width - 0.001))
+        let index = min(Int((boundedX / width) * CGFloat(days.count)), days.count - 1)
+        selectedLocalHistoryDate = days[index].startDate
+    }
+
+    private func adjustLocalHistorySelection(
+        _ direction: AccessibilityAdjustmentDirection,
+        in series: LocalTokenHistorySeries
+    ) {
+        guard !series.days.isEmpty else { return }
+        let currentDate = selectedLocalHistoryUsage(in: series)?.startDate
+        let currentIndex = series.days.firstIndex { $0.startDate == currentDate }
+            ?? (series.days.count - 1)
+        let nextIndex: Int
+        switch direction {
+        case .increment:
+            nextIndex = min(currentIndex + 1, series.days.count - 1)
+        case .decrement:
+            nextIndex = max(currentIndex - 1, 0)
+        @unknown default:
+            return
+        }
+        selectedLocalHistoryDate = series.days[nextIndex].startDate
+    }
+
+    private func localTokenHistoryChartAccessibilityValue(_ series: LocalTokenHistorySeries) -> String {
+        guard let usage = selectedLocalHistoryUsage(in: series) else { return "没有数据" }
+        return "\(localTokenHistoryDateLabel(usage.startDate))，\(formatTokens(usage.tokens)) Token"
+    }
+
     private var projectLibraryPage: some View {
         VStack(alignment: .leading, spacing: 9) {
             secondaryHeader(title: "项目列表", backLabel: "返回主页") { page = .home }
             if viewModel.projectLibraryItems.isEmpty {
                 emptyState("没有可用项目", detail: viewModel.projectDashboard.message ?? "KSF 尚未导出项目目录。")
             } else {
-                ScrollView(.vertical, showsIndicators: true) {
-                    LazyVStack(spacing: 0) {
-                        ForEach(viewModel.projectLibraryItems) { item in
-                            HStack(spacing: 7) {
-                                Button {
-                                    viewModel.selectProject(item.id)
-                                    detailReturnPage = .projectLibrary
-                                    page = .projectDetail
-                                } label: {
-                                    HStack(spacing: 7) {
-                                        Image(systemName: item.isAvailable ? "folder" : "exclamationmark.triangle")
-                                            .foregroundStyle(item.isAvailable ? Color.secondary : .orange)
-                                            .frame(width: 14)
-                                        VStack(alignment: .leading, spacing: 1) {
-                                            Text(item.project?.name ?? unavailableProjectName(item.id))
-                                                .font(.caption.weight(item.id == viewModel.selectedProjectID ? .semibold : .regular))
-                                                .lineLimit(1)
-                                            Text(projectLibraryStatus(item))
-                                                .font(.caption2)
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(1)
-                                        }
-                                        Spacer()
-                                        Image(systemName: "chevron.right")
-                                            .font(.system(size: 9, weight: .semibold))
-                                            .foregroundStyle(.tertiary)
-                                    }
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-
-                                headerIconButton(
-                                    systemName: item.isPinned ? "pin.fill" : "pin",
-                                    label: item.isPinned ? "取消固定" : "固定项目"
-                                ) {
-                                    viewModel.togglePinned(item.id)
-                                }
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 6)
-                            if item.id != viewModel.projectLibraryItems.last?.id { Divider() }
-                        }
+                VStack(spacing: 0) {
+                    ForEach(viewModel.projectLibraryItems) { item in
+                        projectLibraryRow(item)
+                        if item.id != viewModel.projectLibraryItems.last?.id { Divider() }
                     }
-                    .frame(maxWidth: .infinity)
-                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-                    .padding(.trailing, 8)
-                    .background(OverlayScrollerConfigurator())
                 }
-                .frame(height: projectLibraryViewportHeight)
+                .frame(maxWidth: .infinity)
+                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+            }
+
+            if let actionError = viewModel.projectActionError {
+                compactStatus(actionError, color: .red, symbol: "exclamationmark.circle.fill")
             }
         }
     }
 
-    private var projectDetailPage: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            secondaryHeader(title: "项目详情", backLabel: "返回") { page = detailReturnPage }
-            if let item = viewModel.selectedProject, let project = item.project {
-                VStack(alignment: .leading, spacing: 7) {
-                    HStack {
-                        Text(project.name)
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(1)
-                        Spacer()
-                        projectTaskStatus(item)
-                    }
-                    detailLine("阶段", value: project.phase ?? "未登记", lines: 2)
-                    if let focus = project.focus { detailLine("重点", value: focus, lines: 2) }
-                    Divider()
-                    VStack(alignment: .leading, spacing: 5) {
-                        detailLine("工作类别", value: item.primaryRoute?.category?.name ?? "尚无已验真路由")
-                        detailLine("岗位", value: joined(item.primaryRoute?.jobs.compactMap(\.name)))
-                        detailLine("基本功", value: joined(item.primaryRoute?.abilities.compactMap(\.name)), lines: 2)
-                        detailLine("可调度 Skill", value: joined(item.primaryRoute?.dispatchableSkills.compactMap(\.skillID)), lines: 2)
-                    }
-                    Divider()
-                    projectTokenRow(item.usage)
-                    Text(projectUsageScope(item.usage))
-                        .font(.caption2)
+    @ViewBuilder
+    private func projectLibraryRow(_ item: ProjectDashboardItem) -> some View {
+        if let project = item.project {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 7) {
+                    Image(systemName: "folder")
                         .foregroundStyle(.secondary)
+                        .frame(width: 14)
+                    Text(project.name)
+                        .font(.caption.weight(.medium))
+                        .lineLimit(1)
+                    Spacer()
+                    projectArchiveTaskIconControl(project: project)
+                    headerIconButton(
+                        systemName: item.isPinned ? "pin.fill" : "pin",
+                        label: item.isPinned ? "取消固定" : "固定项目"
+                    ) {
+                        viewModel.togglePinned(item.id)
+                    }
+                }
+
+                projectActionFooter(project: project, item: item)
+
+                if let message = viewModel.projectTaskCreationErrors[item.id] {
+                    Label(message, systemImage: "exclamationmark.circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.red)
                         .lineLimit(2)
                 }
-                .padding(10)
-                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-
-                HStack(spacing: 5) {
-                    compactAction(title: "项目记忆", symbol: "doc.text") { viewModel.openProjectCard(project) }
-                    engineeringControl(project: project, item: item)
-                    if item.actions.isEmpty {
-                        compactAction(title: "无启动动作", symbol: "play.slash", disabled: true) {}
-                    } else {
-                        Menu {
-                            ForEach(item.actions) { action in
-                                Button {
-                                    viewModel.launchAction(action)
-                                } label: {
-                                    Label(action.title, systemImage: action.symbol)
-                                }
-                            }
-                        } label: {
-                            Label("启动动作", systemImage: "play.fill")
-                                .font(.caption)
-                                .frame(maxWidth: .infinity)
-                        }
-                        .menuStyle(.borderlessButton)
-                        .frame(maxWidth: .infinity)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+        } else {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 7) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                        .frame(width: 14)
+                    Text(unavailableProjectName(item.id))
+                        .font(.caption.weight(.medium))
+                        .lineLimit(1)
+                    Spacer()
+                    headerIconButton(systemName: "pin.slash", label: "取消固定") {
+                        viewModel.togglePinned(item.id)
                     }
                 }
-            } else {
-                emptyState("项目不可用", detail: "项目卡已失效或归档，只能取消固定或重新选择。")
+                Text("项目不可用")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 21)
             }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
         }
     }
 
@@ -893,6 +1253,7 @@ struct UsagePopoverView: View {
     private func headerIconButton(
         systemName: String,
         label: String,
+        disabled: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -902,6 +1263,7 @@ struct UsagePopoverView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(disabled)
         .help(label)
         .accessibilityLabel(label)
     }
@@ -970,19 +1332,6 @@ struct UsagePopoverView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func detailLine(_ label: String, value: String, lines: Int = 1) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .frame(width: 58, alignment: .leading)
-            Text(value)
-                .font(.caption)
-                .lineLimit(lines)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
     private func emptyState(_ title: String, detail: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.caption.weight(.semibold))
@@ -993,8 +1342,30 @@ struct UsagePopoverView: View {
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
     }
 
-    private var projectLibraryViewportHeight: CGFloat {
-        min(max(CGFloat(viewModel.projectLibraryItems.count) * 42, 42), 420)
+    private func localTokenHistoryDateLabel(_ value: String) -> String {
+        let calendar = Calendar.current
+        let today = LocalTokenUsageReader.dateString(for: Date(), calendar: calendar)
+        if value == today,
+           let date = Self.localHistoryInputDateFormatter.date(from: value) {
+            return "今天 · \(Self.localHistoryDisplayDateFormatter.string(from: date))"
+        }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: Date()),
+           value == LocalTokenUsageReader.dateString(for: yesterday, calendar: calendar),
+           let date = Self.localHistoryInputDateFormatter.date(from: value) {
+            return "昨天 · \(Self.localHistoryDisplayDateFormatter.string(from: date))"
+        }
+        guard let date = Self.localHistoryInputDateFormatter.date(from: value) else { return value }
+        return "\(Self.localHistoryDisplayDateFormatter.string(from: date)) · \(Self.localHistoryWeekdayFormatter.string(from: date))"
+    }
+
+    private func localTokenHistoryShortDateLabel(_ value: String) -> String {
+        guard let date = Self.localHistoryInputDateFormatter.date(from: value) else { return value }
+        return Self.localHistoryDisplayDateFormatter.string(from: date)
+    }
+
+    private func localTokenHistoryAxisEndLabel(_ value: String) -> String {
+        let today = LocalTokenUsageReader.dateString(for: Date(), calendar: .current)
+        return value == today ? "今天" : localTokenHistoryShortDateLabel(value)
     }
 
     private var ksfDirectoryStatus: String {
@@ -1010,22 +1381,8 @@ struct UsagePopoverView: View {
         }
     }
 
-    private func projectLibraryStatus(_ item: ProjectDashboardItem) -> String {
-        guard item.isAvailable else { return "不可用 · 仅可取消固定" }
-        if viewModel.taskActivity.availability == .unsupportedProtocol
-            || viewModel.taskActivity.availability == .offline
-        {
-            return "任务状态不可用"
-        }
-        var parts: [String] = []
-        if item.waitingCount > 0 { parts.append("等待 \(item.waitingCount)") }
-        if item.runningCount > 0 { parts.append("运行 \(item.runningCount)") }
-        if parts.isEmpty { parts.append(item.isPinned ? "已固定" : "项目库") }
-        return parts.joined(separator: " · ")
-    }
-
     private func projectAccessibilityLabel(_ item: ProjectDashboardItem) -> String {
-        let name = item.project?.name ?? unavailableProjectName(item.id)
+        let name = item.isUnassigned ? "无项目" : item.project?.name ?? unavailableProjectName(item.id)
         return "\(name)，\(item.runningCount) 个任务运行中，\(item.waitingCount) 个任务等待处理"
     }
 
@@ -1050,29 +1407,24 @@ struct UsagePopoverView: View {
         }
     }
 
-    private func taskRouteText(_ route: KSFRouteSummary?) -> String {
+    private func taskCategoryAndJobText(_ route: KSFRouteSummary?) -> String {
         guard let route else { return "未绑定 KSF 路由" }
         return [
             route.category?.name ?? "未分类",
             route.mainJob?.name ?? "无主岗位",
-            "\(route.abilities.count) 基本功",
-            "\(route.dispatchableSkills.count) Skill",
         ].joined(separator: " · ")
     }
 
-    private func taskAccessibilityLabel(_ task: ProjectTaskItem) -> String {
-        "\(taskDisplayName(task))，\(taskStatusText(task))，\(taskRouteText(task.route))，打开 Codex 任务"
+    private func taskAbilityText(_ route: KSFRouteSummary) -> String {
+        let names = route.abilities.compactMap(\.name).filter { !$0.isEmpty }
+        return names.isEmpty ? "无基本功" : names.joined(separator: "、")
     }
 
-    private func projectRegionNeedsScroll(_ items: [ProjectDashboardItem]) -> Bool {
-        let estimatedHeight = items.reduce(CGFloat.zero) { result, item in
-            let base: CGFloat = item.isAvailable ? 58 : 74
-            let tasks = CGFloat(item.tasks.count) * 34
-            let openError: CGFloat = viewModel.taskOpenFailure?.projectID == item.id ? 18 : 0
-            let creationError: CGFloat = viewModel.projectTaskCreationErrors[item.id] == nil ? 0 : 32
-            return result + base + tasks + openError + creationError
-        } + CGFloat(max(items.count - 1, 0)) * 6
-        return estimatedHeight > 360
+    private func taskAccessibilityLabel(_ task: ProjectTaskItem) -> String {
+        guard let route = task.route else {
+            return "\(taskDisplayName(task))，\(taskStatusText(task))，未绑定 KSF 路由"
+        }
+        return "\(taskDisplayName(task))，\(taskStatusText(task))，\(taskCategoryAndJobText(route))，基本功：\(taskAbilityText(route))，\(route.dispatchableSkills.count) 个可调度 Skill"
     }
 
     private func projectTokenValue(
@@ -1083,18 +1435,6 @@ struct UsagePopoverView: View {
         let value = usage[keyPath: keyPath]
         if !usage.isComplete && value == 0 { return "不完整" }
         return formatTokens(value) + (usage.isComplete ? "" : "＋")
-    }
-
-    private func projectUsageScope(_ usage: ProjectUsageSummary?) -> String {
-        guard let usage else { return "尚未建立本机项目 Token 统计。" }
-        let since = Self.shortDateFormatter.string(from: usage.trackingStartedAt)
-        if usage.isComplete { return "本机 JSONL 统计，自 \(since) 起。" }
-        return "本机 JSONL 统计，自 \(since) 起；\(usage.uncountedThreadCount) 个远程或缺日志任务未计入。"
-    }
-
-    private func joined(_ values: [String]?) -> String {
-        guard let values, !values.isEmpty else { return "—" }
-        return values.joined(separator: "、")
     }
 
     private func preferredMappings(
@@ -1172,13 +1512,6 @@ struct UsagePopoverView: View {
         return formatter
     }()
 
-    private static let shortDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_Hans_CN")
-        formatter.dateFormat = "M月d日"
-        return formatter
-    }()
-
     private static let accountUsageDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -1197,31 +1530,38 @@ struct UsagePopoverView: View {
         return formatter
     }()
 
+    private static let localHistoryInputDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
+    private static let localHistoryDisplayDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_Hans_CN")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = .current
+        formatter.dateFormat = "M月d日"
+        return formatter
+    }()
+
+    private static let localHistoryWeekdayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_Hans_CN")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = .current
+        formatter.dateFormat = "EEE"
+        return formatter
+    }()
+
     private enum Page {
         case home
+        case tokenHistory
         case projectLibrary
-        case projectDetail
         case settings
         case wechat
-    }
-}
-
-private struct OverlayScrollerConfigurator: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
-        configure(view)
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        configure(nsView)
-    }
-
-    private func configure(_ view: NSView) {
-        DispatchQueue.main.async {
-            guard let scrollView = view.enclosingScrollView else { return }
-            scrollView.scrollerStyle = .overlay
-            scrollView.autohidesScrollers = true
-        }
     }
 }

@@ -22,6 +22,7 @@ mkdir -p "$build_dir"
     -I "$build_dir" \
     -L "$build_dir" \
     -lCodexUsageCore \
+    "$repo_root/Sources/CodexUsageBar/AppConfiguration.swift" \
     "$repo_root/Sources/CodexUsageBar/CodexLocator.swift" \
     "$repo_root/Sources/CodexUsageBar/ProcessAppServerTransport.swift" \
     "$repo_root/Tests/LiveStandalone/main.swift" \
@@ -35,6 +36,7 @@ mkdir -p "$build_dir"
     -I "$build_dir" \
     -L "$build_dir" \
     -lCodexUsageCore \
+    "$repo_root/Sources/CodexUsageBar/AppConfiguration.swift" \
     "$repo_root/Sources/CodexUsageBar/UnixSocketDesktopIPCTransport.swift" \
     "$repo_root/Tests/TaskActivityLiveStandalone/main.swift" \
     -framework AppKit \

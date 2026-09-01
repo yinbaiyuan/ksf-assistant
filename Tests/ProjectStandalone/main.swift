@@ -57,9 +57,15 @@ private func testProjectAggregation() throws {
     let route = KSFRouteSummary(
         category: KSFRouteCategory(categoryID: "cat", name: "产品开发"),
         jobs: [KSFRouteJob(jobID: "job", name: "产品工程师", role: "main")],
-        abilities: [KSFRouteAbility(abilityID: "ability", name: "界面设计")],
-        dispatchableSkills: [KSFDispatchableSkill(skillID: "design-md", skillStage: "active")]
+        abilities: [KSFRouteAbility(abilityID: "ability", name: "界面设计", jobID: "job")],
+        dispatchableSkills: [
+            KSFDispatchableSkill(skillID: "design-md", skillStage: "active", abilityID: "ability"),
+            KSFDispatchableSkill(skillID: "orphan", skillStage: "trial", abilityID: "missing"),
+        ]
     )
+    let routePresentation = KSFRoutePresentation(route: route)
+    try expect(routePresentation.jobGroups.first?.abilities.first?.skills.first?.skillID, "design-md", "skill groups under its ability")
+    try expect(routePresentation.unassignedSkills.first?.skillID, "orphan", "orphan skill stays visible")
     let projection = KSFTaskProjection(
         threadKey: "opaque",
         bindings: [KSFTaskBinding(projectCard: "beta", boundAt: "2026-08-30T00:00:00Z", route: route)],
@@ -69,39 +75,53 @@ private func testProjectAggregation() throws {
         observation("running"),
         observation("running"),
         observation("waiting", flags: [.waitingOnUserInput]),
+        observation("loose"),
+        observation("orphaned-route", flags: [.waitingOnUserInput]),
         observation("child", nickname: "helper"),
+        observation("metadata-child"),
     ]
     let threads = [
         CodexThreadMetadata(id: "running", name: "实现功能", cwd: "/git/alpha", createdAt: 1, updatedAt: 10),
         CodexThreadMetadata(id: "waiting", name: "确认选择", cwd: "/unrelated", createdAt: 2, updatedAt: 20),
+        CodexThreadMetadata(id: "loose", name: "临时任务", cwd: "/unrelated", createdAt: 3, updatedAt: 30),
+        CodexThreadMetadata(id: "orphaned-route", name: "项目已移除", cwd: "/unrelated", createdAt: 4, updatedAt: 40),
         CodexThreadMetadata(id: "child", cwd: "/git/alpha", createdAt: 1, updatedAt: 30),
+        CodexThreadMetadata(id: "metadata-child", cwd: "/git/alpha", parentThreadId: "running", createdAt: 5, updatedAt: 50),
     ]
+    let orphanedProjection = KSFTaskProjection(
+        threadKey: "opaque-orphan",
+        bindings: [KSFTaskBinding(projectCard: "removed", boundAt: "2026-08-30T00:00:00Z", route: route)],
+        updatedAt: "2026-08-30T00:00:00Z"
+    )
     let items = KSFProjectDashboardBuilder.build(
         catalog: [alpha, beta],
         activeTasks: tasks,
         threads: threads,
-        projections: ["waiting": projection],
+        projections: ["waiting": projection, "orphaned-route": orphanedProjection],
         pinnedProjectIDs: ["missing"],
-        selectedProjectID: "alpha",
         usage: [:],
-        actions: [:]
+        launchActions: [:]
     )
 
-    try expect(items.map(\.id), ["missing", "alpha", "beta"], "pinned projects stay above current-task projects")
-    try expect(items[0].isAvailable, false, "missing pinned project remains unavailable")
-    try expect(items[1].runningCount, 1, "exact cwd maps a top-level task")
-    try expect(items[1].tasks.first?.name, "实现功能", "task keeps its original App Server name")
-    try expect(items[1].preferredEngineeringID, "git", "exact cwd prioritizes the matching engineering root")
-    try expect(items[2].waitingCount, 1, "waiting task is counted once")
-    try expect(items[2].runningCount, 0, "waiting and running are mutually exclusive")
-    try expect(items[2].tasks.first?.waitingReason, .userInput, "waiting task keeps its own reason")
-    try expect(items[2].tasks.first?.route?.mainJob?.name, "产品工程师", "task keeps its own route")
-    try expect(items[2].primaryRoute?.mainJob?.name, "产品工程师", "projected route is retained")
+    try expect(items.map(\.id), [KSFProjectDashboardBuilder.unassignedProjectID, "missing", "alpha", "beta"], "unassigned tasks stay visible before project rows")
+    try expect(items[0].kind, .unassigned, "synthetic workset row has explicit unassigned identity")
+    try expect(items[0].runningCount, 1, "unassigned running task is retained")
+    try expect(items[0].waitingCount, 1, "unassigned waiting task is retained")
+    try expect(items[0].tasks.map(\.name), ["临时任务", "项目已移除"], "unassigned row keeps task names")
+    try expect(items[0].tasks.last?.route?.mainJob?.name, "产品工程师", "orphaned projection keeps its task route")
+    try expect(items[1].isAvailable, false, "missing pinned project remains unavailable")
+    try expect(items[2].runningCount, 1, "exact cwd maps a top-level task")
+    try expect(items[2].tasks.first?.name, "实现功能", "task keeps its original App Server name")
+    try expect(items[2].preferredEngineeringID, "git", "exact cwd prioritizes the matching engineering root")
+    try expect(items[3].waitingCount, 1, "waiting task is counted once")
+    try expect(items[3].runningCount, 0, "waiting and running are mutually exclusive")
+    try expect(items[3].tasks.first?.waitingReason, .userInput, "waiting task keeps its own reason")
+    try expect(items[3].tasks.first?.route?.mainJob?.name, "产品工程师", "task keeps its own route")
 
     let idle = ProjectDashboardItem(id: "idle", project: project("idle", root: "/git/idle"), isPinned: false)
     try expect(
         KSFProjectWorkset.select(from: items + [idle]).map(\.id),
-        ["missing", "alpha", "beta"],
+        [KSFProjectDashboardBuilder.unassignedProjectID, "missing", "alpha", "beta"],
         "home workset includes only pinned or current-task projects"
     )
 
@@ -111,6 +131,7 @@ private func testProjectAggregation() throws {
     )
     try expect(stableOrder, ["alpha", "missing", "beta", "gamma"], "new projects append without moving prior projects")
     let activityChanged = [
+        ProjectDashboardItem(id: KSFProjectDashboardBuilder.unassignedProjectID, project: nil, kind: .unassigned, isPinned: false, tasks: [dashboardTask("loose", .running)]),
         ProjectDashboardItem(id: "gamma", project: nil, isPinned: false, tasks: [dashboardTask("gamma", .running)], latestActivity: Date(timeIntervalSince1970: 40)),
         ProjectDashboardItem(id: "beta", project: nil, isPinned: false, tasks: [dashboardTask("beta", .waiting)], latestActivity: Date(timeIntervalSince1970: 50)),
         ProjectDashboardItem(id: "missing", project: nil, isPinned: true),
@@ -118,7 +139,7 @@ private func testProjectAggregation() throws {
     ]
     try expect(
         KSFProjectListOrdering.sort(activityChanged, stableOrder: stableOrder).map(\.id),
-        ["missing", "alpha", "beta", "gamma"],
+        [KSFProjectDashboardBuilder.unassignedProjectID, "missing", "alpha", "beta", "gamma"],
         "activity and recency changes never reorder existing project rows"
     )
     let pinnedOrder = KSFProjectListOrdering.moving(
@@ -131,6 +152,7 @@ private func testProjectAggregation() throws {
         ProjectDashboardItem(
             id: item.id,
             project: item.project,
+            kind: item.kind,
             isPinned: item.id == "missing" || item.id == "beta",
             tasks: item.tasks,
             latestActivity: item.latestActivity
@@ -138,7 +160,7 @@ private func testProjectAggregation() throws {
     }
     try expect(
         KSFProjectListOrdering.sort(afterPin, stableOrder: pinnedOrder).map(\.id),
-        ["missing", "beta", "alpha", "gamma"],
+        [KSFProjectDashboardBuilder.unassignedProjectID, "missing", "beta", "alpha", "gamma"],
         "newly pinned project appends after existing pinned projects"
     )
 
@@ -149,9 +171,21 @@ private func testProjectAggregation() throws {
         projections: [:],
         pinnedProjectIDs: [],
         usage: [:],
-        actions: [:]
+        launchActions: [:]
     )
-    try expect(nested.count, 0, "cwd matching is exact and never guesses a nested directory")
+    try expect(nested.map(\.kind), [.unassigned], "unmatched nested cwd remains visible without guessing a project")
+    try expect(nested.first?.tasks.map(\.threadID), ["nested"], "unmatched nested task is retained")
+
+    let catalogOnly = KSFProjectDashboardBuilder.build(
+        catalog: [alpha],
+        activeTasks: [],
+        threads: [],
+        projections: [:],
+        pinnedProjectIDs: [],
+        usage: [:],
+        launchActions: [:]
+    )
+    try expect(catalogOnly.count, 0, "catalog-only projects do not enter the home workset")
 
     let mixedWait = CodexTaskObservation(
         id: "mixed",
@@ -294,35 +328,61 @@ private func testProjectTokenAccounting() throws {
     try expect(usage["alpha"]?.todayTokens, 150, "today total follows local calendar")
 }
 
-private func testActionManifestSecurity() throws {
+private func testProjectStartScriptSecurity() throws {
     let fileManager = FileManager.default
-    let root = fileManager.temporaryDirectory.appendingPathComponent("project-actions-\(UUID().uuidString)")
+    let root = fileManager.temporaryDirectory.appendingPathComponent("project-start-\(UUID().uuidString)")
     try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? fileManager.removeItem(at: root) }
-    let mapping = KSFEngineeringMapping(id: "git", role: "主工程", rootPath: root.path)
-    let manifest = root.appendingPathComponent(ProjectActionManifestLoader.fileName)
-    let valid = #"{"protocol":"codex-usage-bar-actions-v1","actions":[{"id":"dev","title":"启动","symbol":"play.fill","primary":true,"executable":"/usr/bin/env","arguments":["swift","run"],"workingDirectory":"."}]}"#
-    try Data(valid.utf8).write(to: manifest)
-    try fileManager.setAttributes([.posixPermissions: NSNumber(value: Int16(0o600))], ofItemAtPath: manifest.path)
-    let actions = try ProjectActionManifestLoader().load(mapping: mapping)
-    try expect(actions.count, 1, "valid structured action loads")
-    try expect(actions[0].workingDirectory, root.resolvingSymlinksInPath().path, "working directory is resolved inside root")
+    let project = KSFProject(
+        id: "project",
+        name: "项目",
+        cardPath: root.appendingPathComponent("项目记忆卡.md").path,
+        projectDirectory: root.path
+    )
+    let resolver = ProjectStartScriptResolver()
+    try expect(try resolver.load(project: project), nil, "missing start.sh disables launch without an error")
 
-    let traversal = #"{"protocol":"codex-usage-bar-actions-v1","actions":[{"id":"bad","title":"越界","executable":"/bin/echo","arguments":[],"workingDirectory":"../"}]}"#
-    try Data(traversal.utf8).write(to: manifest)
+    let script = root.appendingPathComponent(ProjectStartScriptResolver.fileName)
+    try Data("#!/bin/zsh\nexit 0\n".utf8).write(to: script)
+    try fileManager.setAttributes([.posixPermissions: NSNumber(value: Int16(0o700))], ofItemAtPath: script.path)
+    guard let action = try resolver.load(project: project) else {
+        throw TestFailure(description: "valid start.sh did not create a launch action")
+    }
+    try expect(action.scriptPath, script.path, "launch action targets project start.sh")
+    try expect(action.workingDirectory, root.path, "Terminal opens in the project directory")
+    try resolver.validate(action)
+
+    try fileManager.setAttributes([.posixPermissions: NSNumber(value: Int16(0o722))], ofItemAtPath: script.path)
     do {
-        _ = try ProjectActionManifestLoader().load(mapping: mapping)
-        throw TestFailure(description: "path traversal was accepted")
-    } catch ProjectActionManifestError.workingDirectoryOutsideRoot {
+        _ = try resolver.load(project: project)
+        throw TestFailure(description: "group-writable start.sh was accepted")
+    } catch ProjectStartScriptError.invalidPermissions {
         // Expected.
     }
 
-    try Data(valid.utf8).write(to: manifest)
-    try fileManager.setAttributes([.posixPermissions: NSNumber(value: Int16(0o666))], ofItemAtPath: manifest.path)
+    try fileManager.setAttributes([.posixPermissions: NSNumber(value: Int16(0o600))], ofItemAtPath: script.path)
     do {
-        _ = try ProjectActionManifestLoader().load(mapping: mapping)
-        throw TestFailure(description: "group/world-writable manifest was accepted")
-    } catch ProjectActionManifestError.invalidPermissions {
+        _ = try resolver.load(project: project)
+        throw TestFailure(description: "non-executable start.sh was accepted")
+    } catch ProjectStartScriptError.notExecutable {
+        // Expected.
+    }
+
+    try fileManager.removeItem(at: script)
+    let target = root.appendingPathComponent("actual.sh")
+    try Data("#!/bin/zsh\nexit 0\n".utf8).write(to: target)
+    try fileManager.setAttributes([.posixPermissions: NSNumber(value: Int16(0o700))], ofItemAtPath: target.path)
+    try fileManager.createSymbolicLink(at: script, withDestinationURL: target)
+    do {
+        _ = try resolver.load(project: project)
+        throw TestFailure(description: "symlinked start.sh was accepted")
+    } catch ProjectStartScriptError.invalidScript {
+        // Expected.
+    }
+    do {
+        try resolver.validate(action)
+        throw TestFailure(description: "replaced start.sh passed click-time validation")
+    } catch ProjectStartScriptError.invalidScript {
         // Expected.
     }
 }
@@ -393,6 +453,42 @@ private func testProjectTaskBootstrapPrompt() throws {
     }
 }
 
+private func testProjectArchiveTaskBootstrapPrompt() throws {
+    let project = KSFProject(
+        id: "project-card",
+        name: "家庭网络",
+        cardPath: "/Users/test/KSF/10项目/家庭网络/项目记忆卡.md",
+        projectDirectory: "/Users/test/KSF/10项目/家庭网络",
+        engineeringMappings: [
+            KSFEngineeringMapping(
+                id: "server",
+                role: "服务端",
+                rootPath: "/Users/test/Git/home-network-server"
+            ),
+        ]
+    )
+    let bootstrap = try ProjectTaskBootstrap.prepare(
+        project: project,
+        ksfRootPath: "/Users/test/KSF",
+        purpose: .archiveProject
+    )
+    let prompt = bootstrap.prompt
+    guard bootstrap.cwd == "/Users/test/KSF",
+          bootstrap.name == "家庭网络 · 归档项目",
+          prompt.contains("KSF 项目「家庭网络」的归档任务"),
+          prompt.contains(project.cardPath),
+          prompt.contains("按 KSF 规范"),
+          prompt.contains("归档当前项目"),
+          prompt.contains("归档前置条件"),
+          prompt.contains("必须由用户确认"),
+          prompt.contains("不要绕过 KSF"),
+          !prompt.contains("本轮只做上下文准备"),
+          !prompt.contains("home-network-server"),
+          prompt.count < 360 else {
+        throw TestFailure(description: "archive bootstrap lost its project scope or authority boundary")
+    }
+}
+
 @main
 private enum ProjectStandaloneTestRunner {
     static func main() {
@@ -400,8 +496,9 @@ private enum ProjectStandaloneTestRunner {
             ("project aggregation", testProjectAggregation),
             ("local task candidate selection", testLocalTaskCandidateSelection),
             ("project token accounting", testProjectTokenAccounting),
-            ("action manifest security", testActionManifestSecurity),
+            ("project start script security", testProjectStartScriptSecurity),
             ("project task bootstrap prompt", testProjectTaskBootstrapPrompt),
+            ("project archive task bootstrap prompt", testProjectArchiveTaskBootstrapPrompt),
         ]
         do {
             for (name, test) in tests {

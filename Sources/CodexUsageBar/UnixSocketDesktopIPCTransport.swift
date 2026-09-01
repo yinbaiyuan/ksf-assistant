@@ -36,7 +36,7 @@ final class UnixSocketDesktopIPCTransport: DesktopIPCTransport, @unchecked Senda
 
     private let continuation: AsyncStream<Data>.Continuation
     private let socketURL: URL
-    private let readQueue = DispatchQueue(label: "com.lawis.codexusagebar.desktop-ipc.read")
+    private let readQueue = DispatchQueue(label: AppConfiguration.desktopIPCQueueLabel)
     private let stateLock = NSLock()
     private let writeLock = NSLock()
     private var descriptor: Int32 = -1

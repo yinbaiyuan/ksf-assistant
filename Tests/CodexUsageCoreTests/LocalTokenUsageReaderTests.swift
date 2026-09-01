@@ -2,6 +2,22 @@ import XCTest
 @testable import CodexUsageCore
 
 final class LocalTokenUsageReaderTests: XCTestCase {
+    func testHistorySeriesSortsDaysAndDerivesComparableSummary() {
+        let series = LocalTokenHistorySeries(days: [
+            DailyUsageBucket(startDate: "2026-08-30", tokens: 20),
+            DailyUsageBucket(startDate: "2026-08-28", tokens: 0),
+            DailyUsageBucket(startDate: "2026-08-29", tokens: 80),
+        ])
+
+        XCTAssertEqual(series.days.map(\.startDate), ["2026-08-28", "2026-08-29", "2026-08-30"])
+        XCTAssertEqual(series.totalTokens, 100)
+        XCTAssertEqual(series.averageTokens, 33)
+        XCTAssertEqual(series.activeDayCount, 2)
+        XCTAssertEqual(series.maximumTokens, 80)
+        XCTAssertEqual(series.latestDay?.startDate, "2026-08-30")
+        XCTAssertEqual(series.usage(on: "2026-08-29")?.tokens, 80)
+    }
+
     func testTodayUsageSumsPositiveDeltasAcrossLocalSessions() throws {
         let fileManager = FileManager.default
         let root = fileManager.temporaryDirectory
@@ -143,6 +159,61 @@ final class LocalTokenUsageReaderTests: XCTestCase {
         XCTAssertEqual(usage?.breakdown?.regularInputTokens, 20)
         XCTAssertEqual(usage?.breakdown?.cachedInputTokens, 50)
         XCTAssertEqual(usage?.breakdown?.outputTokens, 10)
+    }
+
+    func testHistoryReturnsRecentNaturalDaysIncludingZeroUsage() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("codex-usage-bar-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let calendar = shanghaiCalendar()
+        let now = calendar.date(from: DateComponents(year: 2026, month: 8, day: 30, hour: 12))!
+        try writeSession(
+            at: root.appendingPathComponent("history.jsonl"),
+            lines: [
+                tokenLine(
+                    timestamp: "2026-08-27T15:59:59Z",
+                    total: 100,
+                    input: 90,
+                    cachedInput: 60,
+                    output: 10
+                ),
+                tokenLine(
+                    timestamp: "2026-08-27T16:00:10Z",
+                    total: 140,
+                    input: 125,
+                    cachedInput: 85,
+                    output: 15
+                ),
+                tokenLine(
+                    timestamp: "2026-08-28T15:00:00Z",
+                    total: 180,
+                    input: 160,
+                    cachedInput: 110,
+                    output: 20
+                ),
+                tokenLine(
+                    timestamp: "2026-08-29T16:00:10Z",
+                    total: 220,
+                    input: 195,
+                    cachedInput: 135,
+                    output: 25
+                ),
+            ],
+            modifiedAt: now
+        )
+
+        let history = LocalTokenUsageReader(sessionRoot: root, fileManager: fileManager)
+            .readHistory(through: now, dayCount: 3, calendar: calendar)
+
+        XCTAssertEqual(history?.map(\.startDate), ["2026-08-28", "2026-08-29", "2026-08-30"])
+        XCTAssertEqual(history?.map(\.tokens), [80, 0, 40])
+        XCTAssertEqual(history?.first?.breakdown?.regularInputTokens, 20)
+        XCTAssertEqual(history?.first?.breakdown?.cachedInputTokens, 50)
+        XCTAssertEqual(history?.first?.breakdown?.outputTokens, 10)
+        XCTAssertEqual(history?.last?.breakdown?.totalTokens, 40)
     }
 
     func testMissingSessionRootReturnsUnavailable() {

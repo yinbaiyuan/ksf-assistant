@@ -5,14 +5,7 @@ struct ProjectUsageStore {
     private let fileURL: URL
 
     init(fileManager: FileManager = .default) {
-        let base = try? fileManager.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let directory = (base ?? fileManager.homeDirectoryForCurrentUser)
-            .appendingPathComponent("CodexUsageBar", isDirectory: true)
+        let directory = AppConfiguration.applicationSupportDirectory(fileManager: fileManager)
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         try? fileManager.setAttributes(
             [.posixPermissions: NSNumber(value: Int16(0o700))],

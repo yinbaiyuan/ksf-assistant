@@ -10,7 +10,7 @@ private enum WeChatSecret: String {
 }
 
 private struct WeChatKeychain {
-    private let service = "com.lawis.codexusagebar.wechat"
+    private let service = AppConfiguration.weChatKeychainService
 
     func read(_ secret: WeChatSecret) throws -> Data? {
         let query: [String: Any] = [
@@ -119,13 +119,7 @@ private final class EncryptedWeChatStateStore {
     private var cachedSecrets: WeChatSecretBundle?
 
     init(fileManager: FileManager = .default) {
-        let support = (try? fileManager.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )) ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
-        let directory = support.appendingPathComponent("Codex Usage Bar", isDirectory: true)
+        let directory = AppConfiguration.applicationSupportDirectory(fileManager: fileManager)
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         fileURL = directory.appendingPathComponent("wechat-state-v1.enc")
     }
