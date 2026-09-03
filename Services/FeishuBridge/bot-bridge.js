@@ -112,6 +112,7 @@ const { CodexDesktopTurnJournal } = require('./lib/codex-desktop-turn-journal');
 const {
   assertPrivatePathBoundary,
   defaultCodexBin,
+  defaultCodexWorkspaceRoot,
   chmodPrivate,
   defaultDataRoot,
   defaultDesktopIPCPath,
@@ -123,8 +124,7 @@ const {
 const homeDir = process.env.HOME || os.homedir();
 const dataRoot = defaultDataRoot({ env: process.env, homeDir });
 const logDir = process.env.FEISHU_BRIDGE_LOG_DIR || defaultLogDir(__dirname, { env: process.env, homeDir });
-const kmsRoot = process.env.KMS_ROOT
-  || (homeDir ? path.join(homeDir, 'Documents', 'KMS') : path.join(__dirname, 'KMS'));
+const codexWorkspaceRoot = defaultCodexWorkspaceRoot({ env: process.env, homeDir, dataRoot });
 const auditDir = process.env.FEISHU_AUDIT_DIR
   || path.join(logDir, 'audit');
 const codexBin = defaultCodexBin({ env: process.env });
@@ -1006,7 +1006,7 @@ function codexSandboxMode() {
 function codexSandboxPolicy() {
   return codexBypassApprovals
     ? { type: 'dangerFullAccess' }
-    : { type: 'workspaceWrite', writableRoots: [kmsRoot], networkAccess: true };
+    : { type: 'workspaceWrite', writableRoots: [codexWorkspaceRoot], networkAccess: true };
 }
 
 function bridgeDeveloperInstructions() {
@@ -1022,7 +1022,7 @@ function bridgeDeveloperInstructions() {
 
 function startCodexDaemon() {
   const result = spawnSync(codexBin, ['app-server', 'daemon', 'start'], {
-    cwd: kmsRoot,
+    cwd: codexWorkspaceRoot,
     encoding: 'utf8',
     timeout: 30 * 1000,
     env: process.env,
@@ -1124,7 +1124,7 @@ class CodexAppServer {
   async startProcessWithMode(mode) {
     const args = mode === 'proxy' ? ['app-server', 'proxy'] : ['app-server'];
     const proc = spawn(codexBin, args, {
-      cwd: kmsRoot,
+      cwd: codexWorkspaceRoot,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: process.env,
     });
@@ -1417,7 +1417,7 @@ class CodexAppServer {
     }
   }
 
-  async startOrResumeThread(sessionId, cwd = kmsRoot, { taskLink = false } = {}) {
+  async startOrResumeThread(sessionId, cwd = codexWorkspaceRoot, { taskLink = false } = {}) {
     if (sessionId) {
       const result = await this.request('thread/resume', { threadId: sessionId });
       const thread = result?.thread;
@@ -1612,7 +1612,7 @@ class CodexAppServer {
   }
 
   async runTurn({
-    prompt, input, sessionId, logPath, timeoutMs, cwd = kmsRoot, collaborationMode = null,
+    prompt, input, sessionId, logPath, timeoutMs, cwd = codexWorkspaceRoot, collaborationMode = null,
     onProgress, onInputRequest, onTurnStarted, taskLink = false,
   }) {
     if (taskLink && sessionId) {
@@ -3075,7 +3075,7 @@ async function statusText() {
     `codex_client: ${codexClientName}`,
     `codex_account: ${accountStatus}`,
     `codex_sandbox: ${codexSandboxMode()}`,
-    `kms_root: ${kmsRoot}`,
+    `codex_workspace_root: ${codexWorkspaceRoot}`,
     'default_conversation_mode: one_thread_per_root_message',
     `default_conversation_count: ${activeDefaultConversations.length}`,
     `legacy_default_session_key: ${defaultSessionName}`,
@@ -3247,7 +3247,7 @@ function bindDefaultConversation(context, {
     || '';
   const conversation = upsertDefaultConversation({
     threadId,
-    cwd: current?.cwd || cwd || kmsRoot,
+    cwd: current?.cwd || cwd || codexWorkspaceRoot,
     title: current?.title || title,
     chatId: current?.chatId || context.message?.chat_id,
     operatorId: current?.operatorId || senderOpenId(context.sender),
@@ -3297,13 +3297,13 @@ async function answerWithDefaultCodexUnlocked(prompt, context, {
   const result = await runCodex({
     prompt: codexPrompt,
     sessionId: conversation?.threadId,
-    cwd: conversation?.cwd || kmsRoot,
+    cwd: conversation?.cwd || codexWorkspaceRoot,
     timeoutMs: codexTimeoutMs,
     onTurnStarted: ({ threadId, turnId }) => {
       bindDefaultConversation(context, {
         threadId,
         turnId,
-        cwd: conversation?.cwd || kmsRoot,
+        cwd: conversation?.cwd || codexWorkspaceRoot,
       });
     },
   });
@@ -3315,7 +3315,7 @@ async function answerWithDefaultCodexUnlocked(prompt, context, {
     bindDefaultConversation(context, {
       threadId: result.threadId,
       turnId: result.turnId,
-      cwd: conversation?.cwd || kmsRoot,
+      cwd: conversation?.cwd || codexWorkspaceRoot,
     });
   }
 

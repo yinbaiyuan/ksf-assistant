@@ -34,6 +34,36 @@ function defaultCodexBin({ platform = process.platform, env = process.env } = {}
   return env.CODEX_BIN || (platform === 'win32' ? 'codex.exe' : 'codex');
 }
 
+function defaultCodexWorkspaceRoot({
+  platform = process.platform,
+  env = process.env,
+  homeDir = os.homedir(),
+  dataRoot = defaultDataRoot({ platform, env, homeDir }),
+} = {}) {
+  const configured = String(env.CODEX_FEISHU_WORKSPACE_ROOT || env.KMS_ROOT || '').trim();
+  const root = path.resolve(configured || path.join(dataRoot, 'codex-workspace'));
+  if (configured) {
+    let stat;
+    try {
+      stat = fs.lstatSync(root);
+    } catch (error) {
+      if (error.code === 'ENOENT') throw new Error('configured Codex workspace root does not exist');
+      throw error;
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error('configured Codex workspace root is not a safe directory');
+    }
+    return root;
+  }
+  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+  const stat = fs.lstatSync(root);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error('managed Codex workspace root is not a safe directory');
+  }
+  if (platform !== 'win32') fs.chmodSync(root, 0o700);
+  return root;
+}
+
 function defaultDesktopIPCPath({ platform = process.platform, env = process.env, homeDir = os.homedir() } = {}) {
   if (env.CODEX_DESKTOP_IPC_PATH) return env.CODEX_DESKTOP_IPC_PATH;
   if (platform === 'darwin') {
@@ -241,6 +271,7 @@ module.exports = {
   commandForNodeScript,
   controlBridgeService,
   defaultCodexBin,
+  defaultCodexWorkspaceRoot,
   defaultDataRoot,
   defaultDesktopIPCPath,
   defaultLarkCliBin,

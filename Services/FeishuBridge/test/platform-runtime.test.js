@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
@@ -8,6 +9,7 @@ const {
   commandForNodeScript,
   controlBridgeService,
   defaultCodexBin,
+  defaultCodexWorkspaceRoot,
   defaultDataRoot,
   defaultDesktopIPCPath,
   defaultLarkCliBin,
@@ -45,6 +47,29 @@ test('managed macOS runtime keeps mutable logs outside the signed application bu
     FEISHU_BRIDGE_DATA_DIR: dataRoot,
   };
   assert.equal(defaultLogDir(projectRoot, { platform: 'darwin', env, homeDir: '/Users/test' }), path.join(dataRoot, 'logs'));
+});
+
+test('managed runtime creates a private Codex workspace without requiring KSF or KMS', (t) => {
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'feishu-workspace-'));
+  t.after(() => fs.rmSync(dataRoot, { recursive: true, force: true }));
+  const workspace = defaultCodexWorkspaceRoot({
+    platform: 'darwin', env: {}, homeDir: '/Users/test', dataRoot,
+  });
+  assert.equal(workspace, path.join(dataRoot, 'codex-workspace'));
+  assert.equal(fs.statSync(workspace).mode & 0o777, 0o700);
+});
+
+test('an explicit Codex workspace must already be a safe directory', (t) => {
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'feishu-workspace-'));
+  const explicit = path.join(dataRoot, 'explicit');
+  fs.mkdirSync(explicit, { mode: 0o700 });
+  t.after(() => fs.rmSync(dataRoot, { recursive: true, force: true }));
+  assert.equal(defaultCodexWorkspaceRoot({
+    platform: 'darwin', env: { KMS_ROOT: explicit }, dataRoot,
+  }), explicit);
+  assert.throws(() => defaultCodexWorkspaceRoot({
+    platform: 'darwin', env: { KMS_ROOT: path.join(dataRoot, 'missing') }, dataRoot,
+  }), /does not exist/);
 });
 
 test('managed compatibility launcher uses the host-provided pinned lark-cli', () => {

@@ -4,6 +4,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const {
   defaultDataRoot,
+  defaultCodexWorkspaceRoot,
   defaultLarkCliBin,
   defaultLogDir,
   spawnSleepInhibitor,
@@ -16,6 +17,11 @@ const projectRoot = path.resolve(process.env.FEISHU_BRIDGE_PROJECT_ROOT || path.
 const runtimeEnv = loadRuntimeEnvironment(projectRoot, { env: process.env, homeDir });
 const dataRoot = defaultDataRoot({ env: runtimeEnv, homeDir });
 const logDir = defaultLogDir(projectRoot, { env: runtimeEnv, homeDir });
+const codexWorkspaceRoot = defaultCodexWorkspaceRoot({
+  env: runtimeEnv,
+  homeDir,
+  dataRoot,
+});
 
 const env = {
   ...runtimeEnv,
@@ -28,7 +34,7 @@ const env = {
   LARK_CLI_AS: runtimeEnv.LARK_CLI_AS || 'bot',
   FEISHU_EVENT_CONSUMER_ENABLED: runtimeEnv.FEISHU_EVENT_CONSUMER_ENABLED || 'true',
   FEISHU_EVENT_TRANSPORT: runtimeEnv.FEISHU_EVENT_TRANSPORT || 'official-sdk',
-  KMS_ROOT: runtimeEnv.KMS_ROOT || path.join(homeDir, 'Documents', 'KMS'),
+  CODEX_FEISHU_WORKSPACE_ROOT: codexWorkspaceRoot,
   FEISHU_AUDIT_DIR: runtimeEnv.FEISHU_AUDIT_DIR
     || path.join(logDir, 'audit'),
   CODEX_BYPASS_APPROVALS: runtimeEnv.CODEX_BYPASS_APPROVALS || 'true',
