@@ -2,6 +2,7 @@ const crypto = require('node:crypto');
 const path = require('node:path');
 
 const PLAN_IMPLEMENTATION_PREFIX = 'PLEASE IMPLEMENT THIS PLAN:';
+const PLAN_COMPLETION_SNAPSHOT_DELAYS_MS = Object.freeze([0, 250, 750]);
 
 function threadFromResult(result) {
   return result?.thread || result;
@@ -291,6 +292,42 @@ function planImplementationRevision(pendingPlan) {
     .slice(0, 20);
 }
 
+async function reconcilePlanTurnCompletion({
+  resultTurnId,
+  readSnapshot,
+  wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+  delaysMs = PLAN_COMPLETION_SNAPSHOT_DELAYS_MS,
+}) {
+  if (typeof readSnapshot !== 'function') {
+    throw new TypeError('readSnapshot must be a function');
+  }
+  const completedTurnId = String(resultTurnId || '').trim();
+  let lastSnapshot = null;
+  let attempts = 0;
+  let readFailures = 0;
+  for (const delayMs of delaysMs) {
+    if (delayMs > 0) await wait(delayMs);
+    attempts += 1;
+    let snapshot;
+    try {
+      snapshot = await readSnapshot();
+    } catch {
+      readFailures += 1;
+      continue;
+    }
+    lastSnapshot = snapshot;
+    if (snapshot?.pendingPlanImplementation
+      && planImplementationRevision(snapshot.pendingPlanImplementation)) {
+      return { kind: 'plan_ready', snapshot, attempts, readFailures };
+    }
+    const observedTurnId = String(snapshot?.turnId || '').trim();
+    if (completedTurnId && observedTurnId && observedTurnId !== completedTurnId) {
+      return { kind: 'superseded', snapshot, attempts, readFailures };
+    }
+  }
+  return { kind: 'completed', snapshot: lastSnapshot, attempts, readFailures };
+}
+
 function planImplementationPrompt(planContent) {
   const plan = String(planContent || '').trim();
   if (!plan) throw new Error('Codex Desktop 当前没有可执行计划');
@@ -548,6 +585,7 @@ function safeQuestionSummary(questions) {
 }
 
 module.exports = {
+  PLAN_COMPLETION_SNAPSHOT_DELAYS_MS,
   PLAN_IMPLEMENTATION_PREFIX,
   changedFilePathsFromEvent,
   changedFilePathsFromTurn,
@@ -564,6 +602,7 @@ module.exports = {
   publicUserMessageText,
   publicTurnTiming,
   publicTurnState,
+  reconcilePlanTurnCompletion,
   recoveredRunningTurnOwner,
   safeQuestionSummary,
   terminalTaskLinkDetail,

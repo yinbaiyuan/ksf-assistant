@@ -98,6 +98,7 @@ const {
   publicProgressFromEvent,
   publicProgressText,
   publicTurnState,
+  reconcilePlanTurnCompletion,
   recoveredRunningTurnOwner,
   safeQuestionSummary,
   terminalTaskLinkDetail,
@@ -4550,7 +4551,7 @@ async function executeTaskLink(link, command, context) {
         blocked, 'desktop_action_required', blocked.progress.detail, blocked.progress, latestInput,
       );
       if (!cardUpdated) {
-        await replyText(context.message.message_id, context.message.chat_id, '当前轮正在等待 Codex Desktop 操作。你仍可在飞书停止本轮或解除连接。', { phase: `task-link-desktop-action:${fresh.taskKey}` });
+        await replyText(context.message.message_id, context.message.chat_id, '当前轮正在等待 Codex Desktop 操作。你仍可在飞书点击“停止”或断开连接。', { phase: `task-link-desktop-action:${fresh.taskKey}` });
       }
       cleanupContextInbound(context);
       return;
@@ -4637,6 +4638,7 @@ async function executeTaskLink(link, command, context) {
   await patchTaskLinkCard(current, 'processing', '请求已进入原 Codex 任务。', current.progress, latestInput);
   let lastActivityAt = 0;
   let hasNarrativeProgress = false;
+  let refreshAfterExecution = false;
   const changedFilePaths = new Set();
   try {
     const result = await codexAppServer.runTurn({
@@ -4729,6 +4731,32 @@ async function executeTaskLink(link, command, context) {
       }
       return;
     }
+    if (current.activeTurnMode === 'plan') {
+      const reconciliation = await reconcilePlanTurnCompletion({
+        resultTurnId: result.turnId || current.activeTurnId,
+        readSnapshot: () => readTaskLinkSnapshot(current.threadId, { openIfNeeded: false }),
+      });
+      if (reconciliation.kind === 'plan_ready') {
+        const ready = projectPlanReadyLink(current, reconciliation.snapshot);
+        cancelTaskLinkCardPush(ready.id);
+        if (taskLinkEffectiveState(ready) === 'active') {
+          await patchTaskLinkCard(
+            ready,
+            'plan_ready',
+            ready.progress.detail,
+            ready.progress,
+            latestInput,
+          );
+        }
+        current = ready;
+        return;
+      }
+      if (reconciliation.kind === 'superseded') {
+        refreshAfterExecution = true;
+        return;
+      }
+      refreshAfterExecution = true;
+    }
     cancelTaskLinkCardPush(current.id);
     current = updateTaskLink(current.id, {
       turnState: 'completed', turnOwner: 'none', actionRequired: 'none',
@@ -4796,6 +4824,7 @@ async function executeTaskLink(link, command, context) {
     cleanupContextInbound(context);
     cleanupTaskLinkAssetDirectories(current);
     refreshTaskLinkWakeAssertion();
+    if (refreshAfterExecution) setTimeout(() => refreshTaskLinks(link.id), 0);
   }
 }
 

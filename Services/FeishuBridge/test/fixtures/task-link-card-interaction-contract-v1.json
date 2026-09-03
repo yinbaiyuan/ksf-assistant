@@ -1,15 +1,17 @@
 {
   "schemaVersion": 1,
-  "cardRevision": 30,
+  "cardRevision": 31,
   "states": {
     "running": {
-      "topActions": ["task_link_interrupt", "task_link_release"],
+      "topActions": ["task_link_release"],
+      "inputRow": ["task_link_interrupt", "followup", "task_link_followup"],
       "formIntent": "补充当前轮",
       "formFields": ["followup"],
       "submitLabel": "发送"
     },
     "waiting_input": {
-      "topActions": ["task_link_interrupt", "task_link_release"],
+      "topActions": ["task_link_release"],
+      "inputRow": ["task_link_interrupt", "followup", "task_link_followup"],
       "formIntent": "回答 Codex",
       "formFields": ["followup"],
       "submitLabel": "发送"
@@ -29,12 +31,14 @@
       "submitLabel": "提交修改"
     },
     "queued": {
-      "topActions": ["task_link_interrupt", "task_link_release"],
+      "topActions": ["task_link_release"],
+      "bodyActions": ["task_link_interrupt"],
       "formIntent": null,
       "formFields": []
     },
     "desktop_action_required": {
-      "topActions": ["task_link_interrupt", "task_link_release"],
+      "topActions": ["task_link_release"],
+      "bodyActions": ["task_link_interrupt"],
       "formIntent": null,
       "formFields": []
     },
@@ -56,7 +60,7 @@
       "required": ["taskKey", "planRevision"]
     },
     "task_link_release": {
-      "transport": "overflow"
+      "transport": "button"
     },
     "dismiss": {
       "transport": "overflow"

@@ -1,5 +1,5 @@
 const CARD_ACTION_NAMESPACE = 'feishu_bridge';
-const TASK_LINK_CARD_REVISION = 30;
+const TASK_LINK_CARD_REVISION = 31;
 const FEISHU_CARD_REQUEST_MAX_BYTES = 30 * 1024;
 const CARD_REQUEST_RESERVE_BYTES = 512;
 const CARD_REQUEST_SAFE_BYTES = FEISHU_CARD_REQUEST_MAX_BYTES - CARD_REQUEST_RESERVE_BYTES;
@@ -153,6 +153,7 @@ function cardV2QuickReplyForm({
   submitAction,
   submitType = 'primary_filled',
   turnMode = '',
+  leadingButtons = [],
 }) {
   const input = {
     tag: 'input',
@@ -212,7 +213,12 @@ function cardV2QuickReplyForm({
       tag: 'column_set',
       flex_mode: 'none',
       horizontal_spacing: '8px',
-      columns: [{
+      columns: [...leadingButtons.map((button) => ({
+        tag: 'column',
+        width: 'auto',
+        vertical_align: 'bottom',
+        elements: [button],
+      })), {
         tag: 'column',
         width: 'weighted',
         weight: 1,
@@ -461,21 +467,24 @@ function taskLinkCanQuickReply(taskLink) {
 
 function taskLinkTopControls(taskLink) {
   const controls = [];
-  if (taskLink.controls?.canInterrupt) {
+  if (taskLink.controls?.canRelease) {
     controls.push(cardV2Button({
-      name: 'interrupt_task_link',
-      text: '停止本轮',
-      type: 'danger_text',
-      action: bridgeAction('task_link_interrupt', { taskKey: taskLink.taskKey }),
+      name: 'release_task_link',
+      text: '断连',
+      action: bridgeAction('task_link_release', { taskKey: taskLink.taskKey }),
     }));
   }
-  if (taskLink.controls?.canRelease) {
-    controls.push(cardV2Overflow([{
-      text: '断开连接',
-      action: bridgeAction('task_link_release', { taskKey: taskLink.taskKey }),
-    }]));
-  }
   return controls;
+}
+
+function taskLinkInterruptButton(taskLink) {
+  if (!taskLink.controls?.canInterrupt) return null;
+  return cardV2Button({
+    name: 'interrupt_task_link',
+    text: '停止',
+    type: 'danger_text',
+    action: bridgeAction('task_link_interrupt', { taskKey: taskLink.taskKey }),
+  });
 }
 
 function taskLinkContextElement(taskLink, status, progress) {
@@ -518,6 +527,8 @@ function taskLinkQuickReplyForm(taskLink) {
     ? '输入对当前问题的回答'
     : controls.canSteer ? '输入一句补充或修正' : '输入下一步问题或要求';
   const newTurnState = ['idle', 'completed', 'failed', 'interrupted'].includes(taskLink.turnState);
+  const interrupt = ['running', 'waiting_input'].includes(taskLink.turnState)
+    ? taskLinkInterruptButton(taskLink) : null;
   return cardV2QuickReplyForm({
     name: 'codex_task_link_followup_form',
     label,
@@ -532,6 +543,7 @@ function taskLinkQuickReplyForm(taskLink) {
     turnMode: newTurnState && controls.canSetMode
       ? (taskLink.nextTurnMode === 'plan' ? 'plan' : 'default')
       : '',
+    leadingButtons: interrupt ? [interrupt] : [],
   });
 }
 
@@ -628,6 +640,12 @@ function taskLinkCardV2({
   if (quickReplyForm) {
     contentElements.push({ tag: 'hr' });
     contentElements.push(quickReplyForm);
+  } else {
+    const interrupt = taskLinkInterruptButton(taskLink);
+    if (interrupt) {
+      contentElements.push({ tag: 'hr' });
+      contentElements.push(interrupt);
+    }
   }
   return {
     schema: '2.0',

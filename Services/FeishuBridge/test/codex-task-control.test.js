@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  PLAN_COMPLETION_SNAPSHOT_DELAYS_MS,
   changedFilePathsFromEvent,
   changedFilePathsFromTurn,
   finalAnswerTextFromTurn,
@@ -16,6 +17,7 @@ const {
   publicUserMessageText,
   publicTurnTiming,
   publicTurnState,
+  reconcilePlanTurnCompletion,
   recoveredRunningTurnOwner,
   terminalTaskLinkDetail,
   taskLinkFollowupProjection,
@@ -27,6 +29,89 @@ const {
   taskInput,
   validateAuthoritativeThread,
 } = require('../lib/codex-task-control');
+
+test('Plan completion reconciliation recognizes an immediately available pending plan', async () => {
+  const snapshot = {
+    turnId: 'turn-plan',
+    pendingPlanImplementation: { turnId: 'turn-plan', planContent: '# 实施计划' },
+  };
+  const waits = [];
+  const result = await reconcilePlanTurnCompletion({
+    resultTurnId: 'turn-plan',
+    readSnapshot: async () => snapshot,
+    wait: async (delayMs) => waits.push(delayMs),
+  });
+  assert.deepEqual(PLAN_COMPLETION_SNAPSHOT_DELAYS_MS, [0, 250, 750]);
+  assert.equal(result.kind, 'plan_ready');
+  assert.equal(result.snapshot, snapshot);
+  assert.equal(result.attempts, 1);
+  assert.equal(result.readFailures, 0);
+  assert.deepEqual(waits, []);
+});
+
+test('Plan completion reconciliation waits for delayed Desktop plan projection', async () => {
+  const snapshots = [
+    { turnId: 'turn-plan', pendingPlanImplementation: null },
+    { turnId: 'turn-plan', pendingPlanImplementation: null },
+    {
+      turnId: 'turn-plan',
+      pendingPlanImplementation: { turnId: 'turn-plan', planContent: '延迟出现的计划' },
+    },
+  ];
+  const waits = [];
+  const result = await reconcilePlanTurnCompletion({
+    resultTurnId: 'turn-plan',
+    readSnapshot: async () => snapshots.shift(),
+    wait: async (delayMs) => waits.push(delayMs),
+  });
+  assert.equal(result.kind, 'plan_ready');
+  assert.equal(result.attempts, 3);
+  assert.deepEqual(waits, [250, 750]);
+});
+
+test('Plan completion reconciliation preserves a newer authoritative turn', async () => {
+  const snapshot = {
+    turnId: 'turn-new',
+    publicState: { turnState: 'running', turnOwner: 'desktop', actionRequired: 'none' },
+    pendingPlanImplementation: null,
+  };
+  const result = await reconcilePlanTurnCompletion({
+    resultTurnId: 'turn-plan',
+    readSnapshot: async () => snapshot,
+    wait: async () => {},
+  });
+  assert.equal(result.kind, 'superseded');
+  assert.equal(result.snapshot, snapshot);
+  assert.equal(result.attempts, 1);
+});
+
+test('Plan completion reconciliation safely completes when no pending plan appears', async () => {
+  let reads = 0;
+  const result = await reconcilePlanTurnCompletion({
+    resultTurnId: 'turn-plan',
+    readSnapshot: async () => {
+      reads += 1;
+      return { turnId: 'turn-plan', pendingPlanImplementation: null };
+    },
+    wait: async () => {},
+  });
+  assert.equal(result.kind, 'completed');
+  assert.equal(result.attempts, 3);
+  assert.equal(result.readFailures, 0);
+  assert.equal(reads, 3);
+});
+
+test('Plan completion reconciliation fails closed when Desktop stays unavailable', async () => {
+  const result = await reconcilePlanTurnCompletion({
+    resultTurnId: 'turn-plan',
+    readSnapshot: async () => { throw new Error('Desktop unavailable'); },
+    wait: async () => {},
+  });
+  assert.equal(result.kind, 'completed');
+  assert.equal(result.snapshot, null);
+  assert.equal(result.attempts, 3);
+  assert.equal(result.readFailures, 3);
+});
 
 test('changed file metadata counts unique paths instead of file-change events', () => {
   assert.deepEqual(changedFilePathsFromEvent({
