@@ -1,5 +1,5 @@
 const CARD_ACTION_NAMESPACE = 'feishu_bridge';
-const TASK_LINK_CARD_REVISION = 28;
+const TASK_LINK_CARD_REVISION = 29;
 const FEISHU_CARD_REQUEST_MAX_BYTES = 30 * 1024;
 const CARD_REQUEST_RESERVE_BYTES = 512;
 const CARD_REQUEST_SAFE_BYTES = FEISHU_CARD_REQUEST_MAX_BYTES - CARD_REQUEST_RESERVE_BYTES;
@@ -59,12 +59,12 @@ function cardV2Button({ name, text, action, type = 'default', submit = false }) 
   };
 }
 
-function cardV2ButtonRow(buttons) {
+function cardV2ButtonRow(buttons, { horizontalAlign = 'left' } = {}) {
   return {
     tag: 'column_set',
     flex_mode: 'flow',
     horizontal_spacing: '8px',
-    horizontal_align: 'left',
+    horizontal_align: horizontalAlign,
     columns: buttons.map((button) => ({
       tag: 'column',
       width: 'auto',
@@ -123,6 +123,7 @@ function cardV2QuickReplyForm({
   submitName,
   submitLabel,
   submitAction,
+  submitType = 'primary_filled',
   secondaryButtons = [],
 }) {
   const input = {
@@ -140,14 +141,14 @@ function cardV2QuickReplyForm({
     name: submitName,
     text: submitLabel,
     action: submitAction,
-    type: 'primary_filled',
+    type: submitType,
     submit: true,
   });
   return {
     tag: 'form',
     name,
     direction: 'vertical',
-    vertical_spacing: '12px',
+    vertical_spacing: '8px',
     elements: [{
       tag: 'column_set',
       flex_mode: 'none',
@@ -163,7 +164,10 @@ function cardV2QuickReplyForm({
         vertical_align: 'bottom',
         elements: [submit],
       }],
-    }, ...(secondaryButtons.length ? [cardV2ButtonRow(secondaryButtons)] : [])],
+    }, ...(secondaryButtons.length ? [cardV2ButtonRow(
+      secondaryButtons,
+      { horizontalAlign: 'right' },
+    )] : [])],
   };
 }
 
@@ -479,7 +483,8 @@ function taskLinkQuickReplyForm(taskLink) {
     label,
     placeholder,
     submitName: 'submit_task_link_followup',
-    submitLabel: '发送',
+    submitLabel: taskLink.turnState === 'plan_ready' ? '提交修改' : '发送',
+    submitType: taskLink.turnState === 'plan_ready' ? 'default' : 'primary_filled',
     submitAction: bridgeAction('task_link_followup', { taskKey: taskLink.taskKey }),
     secondaryButtons: taskLinkControlButtons(taskLink),
   });
@@ -576,7 +581,7 @@ function taskLinkCardV2({
     const taskActions = taskLinkControlButtons(taskLink);
     if (taskActions.length) {
       contentElements.push({ tag: 'hr' });
-      contentElements.push(cardV2ButtonRow(taskActions));
+      contentElements.push(cardV2ButtonRow(taskActions, { horizontalAlign: 'right' }));
     }
   }
   return {

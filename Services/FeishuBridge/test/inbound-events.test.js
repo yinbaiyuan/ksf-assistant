@@ -174,6 +174,9 @@ test('completed chat cards mirror task-card hierarchy and accept a bounded follo
   assert.equal(quickReplyLayout.flex_mode, 'none');
   assert.deepEqual(quickReplyLayout.columns.map((column) => column.width), ['weighted', 'auto']);
   assert.equal(actionLayout.flex_mode, 'flow');
+  assert.equal(actionLayout.horizontal_align, 'right');
+  assert.equal(actionLayout.horizontal_spacing, '8px');
+  assert.equal(form.vertical_spacing, '8px');
   assert.equal(actionLayout.columns.length, 1);
   assert.equal(submit.text.content, '发送');
   assert.equal(submit.form_action_type, 'submit');
@@ -427,6 +430,9 @@ test('completed task-link cards keep one reply and offer quick text plus native 
   );
   assert.equal(quickReplyLayout.columns[0].elements[0], input);
   assert.equal(controlLayout.flex_mode, 'flow');
+  assert.equal(controlLayout.horizontal_align, 'right');
+  assert.equal(controlLayout.horizontal_spacing, '8px');
+  assert.equal(form.vertical_spacing, '8px');
   assert.equal(submit.text.content, '发送');
   assert.equal(submit.type, 'primary_filled');
   assert.equal(submit.form_action_type, 'submit');
@@ -501,6 +507,8 @@ test('task-link reply controls and compact metadata follow authoritative turn co
     runningButtons.map((button) => button.name),
     ['set_task_link_mode', 'interrupt_task_link'],
   );
+  assert.equal(runningLayouts[1].horizontal_align, 'right');
+  assert.equal(runningLayouts[1].horizontal_spacing, '8px');
   assert.equal(running.body.elements[0].columns[1].elements[0].text.content, '断连');
   assert.equal(running.body.padding, '0px 0px 16px 0px');
 
@@ -601,9 +609,22 @@ test('plan_ready cards offer one safe start action and hide the mode toggle', ()
   assert.equal(cardElements(card, 'input')[0].label.content, '修改计划');
   assert.equal(cardElements(card, 'input')[0].placeholder.content, '输入需要调整的内容');
   const buttons = cardElements(card, 'button');
+  const form = cardElements(card, 'form')[0];
+  const actionLayout = form.elements.find((element) => (
+    element.tag === 'column_set' && element.horizontal_align === 'right'
+  ));
+  const submit = buttons.find((button) => button.name === 'submit_task_link_followup');
   const implement = buttons.find((button) => button.name === 'implement_task_link_plan');
+  assert.equal(form.vertical_spacing, '8px');
+  assert.equal(actionLayout.horizontal_spacing, '8px');
+  assert.equal(submit.text.content, '提交修改');
+  assert.equal(submit.type, 'default');
   assert.equal(implement.text.content, '开始执行');
   assert.equal(implement.type, 'primary_filled');
+  assert.deepEqual(
+    buttons.filter((button) => button.type === 'primary_filled').map((button) => button.name),
+    ['implement_task_link_plan'],
+  );
   assert.equal(buttons.some((button) => button.name === 'set_task_link_mode'), false);
   assert.equal(buttons.some((button) => button.name === 'release_task_link'), true);
   assert.deepEqual(implement.behaviors[0].value, {
@@ -616,6 +637,28 @@ test('plan_ready cards offer one safe start action and hide the mode toggle', ()
   });
   assert.equal(JSON.stringify(implement.behaviors[0].value).includes(plan), false);
   assert.equal(JSON.stringify(implement.behaviors[0].value).includes('thread'), false);
+});
+
+test('task controls without an input form use the same right-aligned action row', () => {
+  const card = progressCard({
+    status: 'desktop_action_required',
+    title: '需要桌面操作',
+    taskLink: {
+      taskKey: '0123456789abcdef0123', linkState: 'active',
+      turnState: 'desktop_action_required', turnOwner: 'desktop', actionRequired: 'desktop',
+      controls: { canSetMode: true, canInterrupt: true, canRelease: true },
+    },
+  });
+  assert.equal(cardElements(card, 'form').length, 0);
+  const actionRow = card.body.elements.find((element) => (
+    element.tag === 'column_set' && element.horizontal_align === 'right'
+  ));
+  assert.equal(actionRow.flex_mode, 'flow');
+  assert.equal(actionRow.horizontal_spacing, '8px');
+  assert.deepEqual(
+    actionRow.columns.flatMap((column) => column.elements).map((button) => button.name),
+    ['set_task_link_mode', 'interrupt_task_link'],
+  );
 });
 
 test('legacy input capture state no longer changes task-card controls', () => {
