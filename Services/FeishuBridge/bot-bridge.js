@@ -105,6 +105,7 @@ const {
   taskLinkFollowupProjection,
   taskLinkPlanImplementationRequest,
   taskLinkProgressForTurn,
+  taskLinkSubmittedTurnMode,
   taskLinkSnapshotRequiresSync,
   taskInput,
   validateAuthoritativeThread,
@@ -4441,13 +4442,37 @@ async function answerTaskLinkFromText(threadId, text) {
 async function executeTaskLink(link, command, context) {
   const fresh = readTaskLinkStore().links.find((item) => item.id === link.id) || link;
   const latestInput = String(context.taskLinkLatestInput || command || '').trim();
-  if (latestInput) taskLinkLatestInputs.set(fresh.id, latestInput);
+  const requestedTurnMode = String(context.taskLinkTurnMode || '').trim();
+  const requestedNewTurn = context.taskLinkIntent === 'new_turn' || Boolean(requestedTurnMode);
+  if (latestInput && !requestedNewTurn) taskLinkLatestInputs.set(fresh.id, latestInput);
   if (taskLinkEffectiveState(fresh) !== 'active') {
     cleanupContextInbound(context);
     await replyText(context.message.message_id, context.message.chat_id, '该任务连接已失效，请回到 CodexAssistant 重新连接。', { phase: `task-link-inactive:${fresh.taskKey}` });
     return;
   }
-  if (await answerTaskLinkFromText(link.threadId, command)) {
+  let snapshot;
+  let submittedTurnMode = '';
+  if (requestedNewTurn) {
+    try {
+      snapshot = await readTaskLinkSnapshot(fresh.threadId);
+      submittedTurnMode = taskLinkSubmittedTurnMode(fresh, snapshot, requestedTurnMode);
+      const supportedModes = await codexAppServer.collaborationModes();
+      if (!supportedModes.includes(submittedTurnMode)) {
+        throw new Error('当前 Codex Desktop 不支持所选协作模式，请升级后重试');
+      }
+    } catch (error) {
+      cleanupContextInbound(context);
+      await replyText(
+        context.message.message_id,
+        context.message.chat_id,
+        `新轮次未发送：${safeOneLine(error.message || String(error), 240)}`,
+        { phase: `task-link-new-turn-rejected:${fresh.taskKey}` },
+      );
+      setTimeout(() => refreshTaskLinks(fresh.id), 0);
+      return;
+    }
+  }
+  if (!requestedNewTurn && await answerTaskLinkFromText(link.threadId, command)) {
     const resumed = updateTaskLink(link.id, {
       turnState: 'running',
       turnOwner: ['bridge', 'desktop'].includes(fresh.turnOwner) ? fresh.turnOwner : 'bridge',
@@ -4459,15 +4484,16 @@ async function executeTaskLink(link, command, context) {
     return;
   }
 
-  let snapshot;
-  try {
-    snapshot = await readTaskLinkSnapshot(fresh.threadId);
-  } catch (error) {
-    cleanupContextInbound(context);
-    throw error;
+  if (!snapshot) {
+    try {
+      snapshot = await readTaskLinkSnapshot(fresh.threadId);
+    } catch (error) {
+      cleanupContextInbound(context);
+      throw error;
+    }
   }
   trackDesktopTaskLinkInput(fresh.threadId, snapshot.journalTurn);
-  if (await answerTaskLinkFromText(fresh.threadId, command)) {
+  if (!requestedNewTurn && await answerTaskLinkFromText(fresh.threadId, command)) {
     const resumed = updateTaskLink(link.id, {
       turnState: 'running',
       turnOwner: ['bridge', 'desktop'].includes(fresh.turnOwner) ? fresh.turnOwner : 'bridge',
@@ -4501,6 +4527,18 @@ async function executeTaskLink(link, command, context) {
   const activeTurn = snapshot.publicState.turnState === 'running'
     || snapshot.publicState.turnState === 'waiting_input'
     || snapshot.publicState.turnState === 'desktop_action_required';
+  if (requestedNewTurn && (activeTurn || taskLinkExecutions.has(fresh.threadId))) {
+    cleanupContextInbound(context);
+    await replyText(
+      context.message.message_id,
+      context.message.chat_id,
+      '新轮次未发送：任务状态已变化，请在最新卡片重新提交。',
+      { phase: `task-link-new-turn-stale:${fresh.taskKey}` },
+    );
+    setTimeout(() => refreshTaskLinks(fresh.id), 0);
+    return;
+  }
+  if (latestInput && requestedNewTurn) taskLinkLatestInputs.set(fresh.id, latestInput);
   if (activeTurn || taskLinkExecutions.has(fresh.threadId)) {
     if (snapshot.publicState.actionRequired === 'desktop') {
       const blocked = updateTaskLink(fresh.id, {
@@ -4577,15 +4615,18 @@ async function executeTaskLink(link, command, context) {
     }
   }
 
-  const requiresModeOverride = fresh.nextTurnMode === 'plan' || fresh.activeTurnMode === 'plan';
+  const nextTurnMode = submittedTurnMode || fresh.nextTurnMode || 'default';
+  const modeLink = { ...fresh, nextTurnMode };
+  const requiresModeOverride = nextTurnMode === 'plan' || fresh.activeTurnMode === 'plan';
   const collaborationMode = requiresModeOverride
-    ? taskLinkCollaborationMode(fresh, snapshot) : null;
+    ? taskLinkCollaborationMode(modeLink, snapshot) : null;
   taskLinkExecutions.add(link.threadId);
   taskLinkQueuedContexts.delete(link.threadId);
   const turnStartedAt = new Date().toISOString();
   let current = updateTaskLink(link.id, {
     turnState: 'running', turnOwner: 'bridge', actionRequired: 'none',
-    activeTurnMode: fresh.nextTurnMode || 'default',
+    nextTurnMode,
+    activeTurnMode: nextTurnMode,
     pendingMessageId: '', pendingCleanupDir: '',
     progress: {
       phase: '分析', detail: 'Codex 已开始处理。', changedFiles: 0, testStatus: '未运行',
@@ -5433,13 +5474,18 @@ async function handleTaskLinkFollowup(event, action, authz, link) {
     authz,
     progressMessageId: event.messageId,
     taskLinkLatestInput: action.followup,
+    taskLinkTurnMode: action.turnMode || '',
+    taskLinkIntent: action.intent || '',
   };
-  taskLinkLatestInputs.set(link.id, action.followup);
   taskLinkFollowupTransitions.set(
     link.threadId,
     Number(taskLinkFollowupTransitions.get(link.threadId) || 0) + 1,
   );
   try {
+    if (action.intent === 'new_turn' || action.turnMode) {
+      await executeTaskLink(link, action.followup, context);
+      return;
+    }
     const projected = updateTaskLink(
       link.id,
       { ...taskLinkFollowupProjection(link), inputCapture: null },
@@ -5536,6 +5582,7 @@ async function handleTaskLinkImplementPlan(event, action, link) {
       { openIds: [event.operatorId] },
     );
   } catch (error) {
+    const failureDetail = `开始执行失败：${safeOneLine(error.message || String(error), 240)}`;
     let refreshed = readTaskLinkStore().links.find((item) => item.id === link.id) || link;
     if (authoritativeSnapshot?.publicState?.turnState === 'plan_ready'
       && authoritativeSnapshot.pendingPlanImplementation) {
@@ -5544,13 +5591,13 @@ async function handleTaskLinkImplementPlan(event, action, link) {
     await replyText(
       event.messageId,
       event.chatId,
-      `开始执行失败：${safeOneLine(error.message || String(error), 240)}`,
+      failureDetail,
       { phase: `task-link-implement-plan-error:${event.eventId}` },
     );
     return fittedTaskLinkCard(
       refreshed,
       refreshed.turnState,
-      refreshed.detailSummary || refreshed.progress?.detail || '请重试开始执行。',
+      failureDetail,
       { openIds: [event.operatorId] },
     );
   } finally {

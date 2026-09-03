@@ -23,6 +23,11 @@ function normalizeCardAction(raw) {
   const context = value.context || {};
   const operator = value.operator || {};
   const action = value.action || {};
+  const actionTag = String(value.action_tag || value.actionTag || action.tag || '');
+  const directActionValue = parseJsonObject(value.action_value || value.actionValue || action.value);
+  const overflowActionValue = actionTag === 'overflow'
+    ? parseJsonObject(value.option || action.option)
+    : {};
   return {
     type: 'card.action.trigger',
     eventId: String(value.event_id || value.eventId || value.header?.event_id || ''),
@@ -48,8 +53,8 @@ function normalizeCardAction(raw) {
       || context.open_message_id
       || '',
     ),
-    actionTag: String(value.action_tag || value.actionTag || action.tag || ''),
-    actionValue: parseJsonObject(value.action_value || value.actionValue || action.value),
+    actionTag,
+    actionValue: Object.keys(directActionValue).length ? directActionValue : overflowActionValue,
     formValue: parseJsonObject(value.form_value || value.formValue || action.form_value),
     token: String(value.token || ''),
     cardContent: String(value.card_content || value.cardContent || context.card_content || ''),
@@ -87,6 +92,14 @@ function bridgeCardAction(event) {
     const maximum = 1000;
     if (!followup || followup.length > maximum) return null;
     result.followup = followup;
+  }
+  if (value.action === 'task_link_followup') {
+    const intent = String(value.intent || '').trim();
+    if (intent && intent !== 'new_turn') return null;
+    const turnMode = String(event?.formValue?.turnMode || '').trim();
+    if (turnMode && !['default', 'plan'].includes(turnMode)) return null;
+    if (intent) result.intent = intent;
+    if (turnMode) result.turnMode = turnMode;
   }
   if (value.action === 'task_link_answer') {
     if (!/^[A-Za-z0-9_-]{1,80}$/.test(String(value.questionId || '')) || !String(value.answer || '').trim()) return null;

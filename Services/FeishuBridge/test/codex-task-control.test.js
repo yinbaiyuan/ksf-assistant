@@ -22,6 +22,7 @@ const {
   taskLinkPlanImplementationRequest,
   taskLinkProgressForTurn,
   taskLinkCollaborationMode,
+  taskLinkSubmittedTurnMode,
   taskLinkSnapshotRequiresSync,
   taskInput,
   validateAuthoritativeThread,
@@ -119,6 +120,38 @@ test('task-link follow-ups leave a terminal card immediately and preserve active
   assert.equal(steering.activeTurnId, 'turn-live');
   assert.equal(steering.progress.phase, '正在提交补充');
   assert.equal(steering.progress.startedAt, '2026-09-02T12:59:00.000Z');
+});
+
+test('new-turn mode submissions fail closed when the authoritative task state changes', () => {
+  const link = { turnState: 'completed', nextTurnMode: 'default' };
+  assert.equal(taskLinkSubmittedTurnMode(
+    link,
+    { publicState: { turnState: 'completed' } },
+    'plan',
+  ), 'plan');
+  assert.equal(taskLinkSubmittedTurnMode(
+    link,
+    { publicState: { turnState: 'completed' } },
+  ), 'default');
+  assert.throws(() => taskLinkSubmittedTurnMode(
+    link,
+    { publicState: { turnState: 'running' } },
+    'plan',
+  ), /任务状态已变化/);
+  assert.throws(() => taskLinkSubmittedTurnMode(
+    link,
+    { publicState: { turnState: 'running' } },
+  ), /任务状态已变化/);
+  assert.throws(() => taskLinkSubmittedTurnMode(
+    { ...link, turnState: 'plan_ready' },
+    { publicState: { turnState: 'plan_ready' } },
+    'default',
+  ), /任务状态已变化/);
+  assert.throws(() => taskLinkSubmittedTurnMode(
+    link,
+    { publicState: { turnState: 'completed' } },
+    'unsafe',
+  ), /unsupported task collaboration mode/);
 });
 
 test('thread projection distinguishes running, desktop-required, and terminal states', () => {

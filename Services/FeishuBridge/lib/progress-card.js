@@ -1,5 +1,5 @@
 const CARD_ACTION_NAMESPACE = 'feishu_bridge';
-const TASK_LINK_CARD_REVISION = 29;
+const TASK_LINK_CARD_REVISION = 30;
 const FEISHU_CARD_REQUEST_MAX_BYTES = 30 * 1024;
 const CARD_REQUEST_RESERVE_BYTES = 512;
 const CARD_REQUEST_SAFE_BYTES = FEISHU_CARD_REQUEST_MAX_BYTES - CARD_REQUEST_RESERVE_BYTES;
@@ -46,7 +46,9 @@ function cardV2MarkdownElements(value, fallback, title = '') {
   return elements;
 }
 
-function cardV2Button({ name, text, action, type = 'default', submit = false }) {
+function cardV2Button({
+  name, text, action, type = 'default', submit = false, width = 'default',
+}) {
   return {
     tag: 'button',
     name,
@@ -54,22 +56,48 @@ function cardV2Button({ name, text, action, type = 'default', submit = false }) 
     text: { tag: 'plain_text', content: text },
     type,
     size: 'medium',
-    width: 'default',
+    width,
     behaviors: [{ type: 'callback', value: action }],
   };
 }
 
-function cardV2ButtonRow(buttons, { horizontalAlign = 'left' } = {}) {
+function cardV2Overflow(options) {
   return {
-    tag: 'column_set',
-    flex_mode: 'flow',
-    horizontal_spacing: '8px',
-    horizontal_align: horizontalAlign,
-    columns: buttons.map((button) => ({
+    tag: 'overflow',
+    width: 'default',
+    options: options.map(({ text, action }) => ({
+      text: { tag: 'plain_text', content: text },
+      value: JSON.stringify(action),
+    })),
+  };
+}
+
+function cardV2ControlRow(content, controls) {
+  const columns = [];
+  if (content) {
+    columns.push({
+      tag: 'column',
+      width: 'weighted',
+      weight: 1,
+      vertical_align: 'center',
+      elements: [content],
+    });
+  }
+  if (controls.length) {
+    columns.push({
       tag: 'column',
       width: 'auto',
-      elements: [button],
-    })),
+      direction: 'horizontal',
+      horizontal_spacing: '8px',
+      vertical_align: 'center',
+      elements: controls,
+    });
+  }
+  return {
+    tag: 'column_set',
+    flex_mode: 'none',
+    horizontal_spacing: '8px',
+    columns,
   };
 }
 
@@ -124,7 +152,7 @@ function cardV2QuickReplyForm({
   submitLabel,
   submitAction,
   submitType = 'primary_filled',
-  secondaryButtons = [],
+  turnMode = '',
 }) {
   const input = {
     tag: 'input',
@@ -134,8 +162,10 @@ function cardV2QuickReplyForm({
     width: 'fill',
     max_length: 1000,
     input_type: 'text',
-    label: { tag: 'plain_text', content: label },
-    label_position: 'top',
+    ...(label ? {
+      label: { tag: 'plain_text', content: label },
+      label_position: 'top',
+    } : {}),
   };
   const submit = cardV2Button({
     name: submitName,
@@ -149,7 +179,36 @@ function cardV2QuickReplyForm({
     name,
     direction: 'vertical',
     vertical_spacing: '8px',
-    elements: [{
+    elements: [...(turnMode ? [{
+      tag: 'column_set',
+      flex_mode: 'none',
+      horizontal_spacing: '8px',
+      columns: [{
+        tag: 'column',
+        width: 'weighted',
+        weight: 1,
+        vertical_align: 'center',
+        elements: [{ tag: 'markdown', content: '**开始新一轮**' }],
+      }, {
+        tag: 'column',
+        width: 'auto',
+        vertical_align: 'center',
+        elements: [{
+          tag: 'select_static',
+          name: 'turnMode',
+          required: true,
+          type: 'text',
+          width: 'default',
+          placeholder: { tag: 'plain_text', content: '选择模式' },
+          initial_option: turnMode,
+          options: [{
+            text: { tag: 'plain_text', content: '默认模式' }, value: 'default',
+          }, {
+            text: { tag: 'plain_text', content: 'Plan 模式' }, value: 'plan',
+          }],
+        }],
+      }],
+    }] : []), {
       tag: 'column_set',
       flex_mode: 'none',
       horizontal_spacing: '8px',
@@ -164,10 +223,7 @@ function cardV2QuickReplyForm({
         vertical_align: 'bottom',
         elements: [submit],
       }],
-    }, ...(secondaryButtons.length ? [cardV2ButtonRow(
-      secondaryButtons,
-      { horizontalAlign: 'right' },
-    )] : [])],
+    }],
   };
 }
 
@@ -230,8 +286,15 @@ function chatCardV2({
 }) {
   const contentElements = [];
   const contextLine = chatCardContextLine(status, taskDurationSeconds);
-  if (contextLine) {
-    contentElements.push({ tag: 'markdown', content: `**${contextLine}**` });
+  if (contextLine || followupEnabled) {
+    const context = contextLine
+      ? { tag: 'markdown', content: `**${contextLine}**` }
+      : null;
+    const controls = followupEnabled ? [cardV2Overflow([{
+      text: '关闭卡片',
+      action: bridgeAction('dismiss'),
+    }])] : [];
+    contentElements.push(cardV2ControlRow(context, controls));
     contentElements.push({ tag: 'hr' });
   }
   if (latestInput) {
@@ -248,11 +311,6 @@ function chatCardV2({
       submitName: 'submit_followup',
       submitLabel: '发送',
       submitAction: bridgeAction('chat_followup'),
-      secondaryButtons: [cardV2Button({
-        name: 'dismiss_card',
-        text: '关闭卡片',
-        action: bridgeAction('dismiss'),
-      })],
     }));
   }
   return {
@@ -367,7 +425,11 @@ function taskLinkContent(taskLink, status, detail, progress, hasQuestion) {
     return { title: '', body: preferredDetail || taskLink.detailSummary || progressDetail || '本轮已完成。' };
   }
   if (turnState === 'plan_ready') {
-    return { title: '', body: '计划已生成。可直接开始执行，或在下方提出修改意见。' };
+    const planReadyDefaults = new Set(['', '计划已生成。', '计划已经生成，可以按此执行。']);
+    const planReadyDetail = preferredDetail || progressDetail;
+    return planReadyDefaults.has(planReadyDetail)
+      ? null
+      : { title: '', body: planReadyDetail };
   }
   if (turnState === 'running') {
     return { title: '', body: progressDetail || preferredDetail || 'Codex 正在处理。' };
@@ -397,72 +459,49 @@ function taskLinkCanQuickReply(taskLink) {
   return Boolean(controls.canAnswer || controls.canSteer || controls.canSend);
 }
 
-function taskLinkReleaseButton(taskLink) {
-  if (!taskLink.controls?.canRelease) return null;
-  return cardV2Button({
-    name: 'release_task_link',
-    text: '断连',
-    action: bridgeAction('task_link_release', { taskKey: taskLink.taskKey }),
-  });
+function taskLinkTopControls(taskLink) {
+  const controls = [];
+  if (taskLink.controls?.canInterrupt) {
+    controls.push(cardV2Button({
+      name: 'interrupt_task_link',
+      text: '停止本轮',
+      type: 'danger_text',
+      action: bridgeAction('task_link_interrupt', { taskKey: taskLink.taskKey }),
+    }));
+  }
+  if (taskLink.controls?.canRelease) {
+    controls.push(cardV2Overflow([{
+      text: '断开连接',
+      action: bridgeAction('task_link_release', { taskKey: taskLink.taskKey }),
+    }]));
+  }
+  return controls;
 }
 
 function taskLinkContextElement(taskLink, status, progress) {
   const contextLine = taskLinkContextLine(taskLink, status, progress);
   const leaseLine = taskLinkLeaseLine(taskLink, status);
-  if (!contextLine && !leaseLine) return null;
-  const statusElement = {
+  const controls = taskLinkTopControls(taskLink);
+  if (!contextLine && !leaseLine && !controls.length) return null;
+  const statusElement = contextLine || leaseLine ? {
     tag: 'markdown',
     content: [`**${contextLine}**`, leaseLine ? `**${leaseLine}**` : ''].filter(Boolean).join('\n'),
-  };
-  const release = taskLinkReleaseButton(taskLink);
-  if (!release) return statusElement;
-  return {
-    tag: 'column_set',
-    flex_mode: 'none',
-    horizontal_spacing: '8px',
-    columns: [{
-      tag: 'column',
-      width: 'weighted',
-      weight: 1,
-      vertical_align: 'top',
-      elements: [statusElement],
-    }, {
-      tag: 'column',
-      width: 'auto',
-      vertical_align: 'top',
-      elements: [release],
-    }],
-  };
+  } : null;
+  return cardV2ControlRow(statusElement, controls);
 }
 
-function taskLinkControlButtons(taskLink) {
-  const buttons = [];
-  if (taskLink.controls?.canImplementPlan) {
-    buttons.push(cardV2Button({
-      name: 'implement_task_link_plan',
-      text: '开始执行',
-      type: 'primary_filled',
-      action: bridgeAction('task_link_implement_plan', {
-        taskKey: taskLink.taskKey,
-        planRevision: taskLink.planImplementationRevision,
-      }),
-    }));
-  }
-  if (taskLink.controls?.canSetMode) {
-    const nextMode = taskLink.nextTurnMode === 'plan' ? 'default' : 'plan';
-    buttons.push(cardV2Button({
-      name: 'set_task_link_mode',
-      text: nextMode === 'plan' ? '下轮用 Plan' : '下轮用默认',
-      action: bridgeAction('task_link_mode', { taskKey: taskLink.taskKey, mode: nextMode }),
-    }));
-  }
-  if (taskLink.controls?.canInterrupt) buttons.push(cardV2Button({
-    name: 'interrupt_task_link',
-    text: '停止本轮',
-    type: 'danger',
-    action: bridgeAction('task_link_interrupt', { taskKey: taskLink.taskKey }),
-  }));
-  return buttons;
+function taskLinkImplementButton(taskLink) {
+  if (!taskLink.controls?.canImplementPlan) return null;
+  return cardV2Button({
+    name: 'implement_task_link_plan',
+    text: '开始执行',
+    type: 'primary_filled',
+    width: 'fill',
+    action: bridgeAction('task_link_implement_plan', {
+      taskKey: taskLink.taskKey,
+      planRevision: taskLink.planImplementationRevision,
+    }),
+  });
 }
 
 function taskLinkQuickReplyForm(taskLink) {
@@ -471,13 +510,14 @@ function taskLinkQuickReplyForm(taskLink) {
   const label = taskLink.turnState === 'plan_ready'
     ? '修改计划'
     : controls.canAnswer
-    ? '快速回答'
-    : controls.canSteer ? '快速补充' : '快速回复';
+    ? '回答 Codex'
+    : controls.canSteer ? '补充当前轮' : '';
   const placeholder = taskLink.turnState === 'plan_ready'
     ? '输入需要调整的内容'
     : controls.canAnswer
     ? '输入对当前问题的回答'
     : controls.canSteer ? '输入一句补充或修正' : '输入下一步问题或要求';
+  const newTurnState = ['idle', 'completed', 'failed', 'interrupted'].includes(taskLink.turnState);
   return cardV2QuickReplyForm({
     name: 'codex_task_link_followup_form',
     label,
@@ -485,8 +525,13 @@ function taskLinkQuickReplyForm(taskLink) {
     submitName: 'submit_task_link_followup',
     submitLabel: taskLink.turnState === 'plan_ready' ? '提交修改' : '发送',
     submitType: taskLink.turnState === 'plan_ready' ? 'default' : 'primary_filled',
-    submitAction: bridgeAction('task_link_followup', { taskKey: taskLink.taskKey }),
-    secondaryButtons: taskLinkControlButtons(taskLink),
+    submitAction: bridgeAction('task_link_followup', {
+      taskKey: taskLink.taskKey,
+      ...(newTurnState ? { intent: 'new_turn' } : {}),
+    }),
+    turnMode: newTurnState && controls.canSetMode
+      ? (taskLink.nextTurnMode === 'plan' ? 'plan' : 'default')
+      : '',
   });
 }
 
@@ -549,7 +594,13 @@ function taskLinkCardV2({
   if (latestInput && (planText || content || question)) contentElements.push({ tag: 'hr' });
   if (planText) {
     contentElements.push(...cardV2MarkdownElements(boundedText(planText, 3000), '', '计划'));
-    if (content || question) contentElements.push({ tag: 'hr' });
+    if ((content || question) && taskLink.turnState !== 'plan_ready') {
+      contentElements.push({ tag: 'hr' });
+    }
+  }
+  const implementPlan = taskLinkImplementButton(taskLink);
+  if (implementPlan) {
+    contentElements.push(implementPlan);
   }
   if (content) {
     const contentTitle = latestInput
@@ -577,12 +628,6 @@ function taskLinkCardV2({
   if (quickReplyForm) {
     contentElements.push({ tag: 'hr' });
     contentElements.push(quickReplyForm);
-  } else {
-    const taskActions = taskLinkControlButtons(taskLink);
-    if (taskActions.length) {
-      contentElements.push({ tag: 'hr' });
-      contentElements.push(cardV2ButtonRow(taskActions, { horizontalAlign: 'right' }));
-    }
   }
   return {
     schema: '2.0',

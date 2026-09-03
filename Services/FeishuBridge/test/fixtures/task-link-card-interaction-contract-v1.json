@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "cardRevision": 30,
+  "states": {
+    "running": {
+      "topActions": ["task_link_interrupt", "task_link_release"],
+      "formIntent": "补充当前轮",
+      "formFields": ["followup"],
+      "submitLabel": "发送"
+    },
+    "waiting_input": {
+      "topActions": ["task_link_interrupt", "task_link_release"],
+      "formIntent": "回答 Codex",
+      "formFields": ["followup"],
+      "submitLabel": "发送"
+    },
+    "completed": {
+      "topActions": ["task_link_release"],
+      "formIntent": "开始新一轮",
+      "formFields": ["turnMode", "followup"],
+      "turnModes": ["default", "plan"],
+      "submitLabel": "发送"
+    },
+    "plan_ready": {
+      "topActions": ["task_link_release"],
+      "primaryAction": "task_link_implement_plan",
+      "formIntent": "修改计划",
+      "formFields": ["followup"],
+      "submitLabel": "提交修改"
+    },
+    "queued": {
+      "topActions": ["task_link_interrupt", "task_link_release"],
+      "formIntent": null,
+      "formFields": []
+    },
+    "desktop_action_required": {
+      "topActions": ["task_link_interrupt", "task_link_release"],
+      "formIntent": null,
+      "formFields": []
+    },
+    "ordinary_completed": {
+      "topActions": ["dismiss"],
+      "formIntent": null,
+      "formFields": ["followup"],
+      "submitLabel": "发送"
+    }
+  },
+  "callbacks": {
+    "task_link_followup": {
+      "required": ["taskKey", "followup"],
+      "optional": ["intent", "turnMode"],
+      "intents": ["new_turn"],
+      "turnModes": ["default", "plan"]
+    },
+    "task_link_implement_plan": {
+      "required": ["taskKey", "planRevision"]
+    },
+    "task_link_release": {
+      "transport": "overflow"
+    },
+    "dismiss": {
+      "transport": "overflow"
+    }
+  }
+}

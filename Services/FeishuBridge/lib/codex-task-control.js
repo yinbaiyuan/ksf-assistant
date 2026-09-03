@@ -466,6 +466,18 @@ function taskLinkFollowupProjection(link, now = new Date()) {
   };
 }
 
+function taskLinkSubmittedTurnMode(link, snapshot, requestedMode = '') {
+  const mode = String(requestedMode || link?.nextTurnMode || 'default');
+  if (!['default', 'plan'].includes(mode)) throw new Error('unsupported task collaboration mode');
+  const startableStates = new Set(['idle', 'completed', 'failed', 'interrupted']);
+  const storedState = String(link?.turnState || '');
+  const observedState = String(snapshot?.publicState?.turnState || '');
+  if (!startableStates.has(storedState) || !startableStates.has(observedState)) {
+    throw new Error('任务状态已变化，请在最新卡片重新提交');
+  }
+  return mode;
+}
+
 function taskLinkCollaborationMode(link, snapshot, modeOverride = '') {
   const mode = String(modeOverride || link?.nextTurnMode || 'default');
   if (!['default', 'plan'].includes(mode)) throw new Error('unsupported task collaboration mode');
@@ -556,6 +568,7 @@ module.exports = {
   safeQuestionSummary,
   terminalTaskLinkDetail,
   taskLinkCollaborationMode,
+  taskLinkSubmittedTurnMode,
   taskLinkPlanImplementationRequest,
   taskLinkFollowupProjection,
   taskLinkProgressForTurn,

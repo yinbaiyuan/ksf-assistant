@@ -7,11 +7,13 @@ const {
 } = require('../lib/inbound-events');
 const {
   CARD_REQUEST_SAFE_BYTES,
+  TASK_LINK_CARD_REVISION,
   cardRequestBytes,
   fitProgressCardToRequestBudget,
   formatElapsedDuration,
   progressCard,
 } = require('../lib/progress-card');
+const taskLinkCardContract = require('./fixtures/task-link-card-interaction-contract-v1.json');
 
 function cardElements(card, tag) {
   const matches = [];
@@ -27,6 +29,22 @@ function cardElements(card, tag) {
   visit(card);
   return matches;
 }
+
+test('language-neutral task-link card contract freezes revision 30 interactions', () => {
+  assert.equal(taskLinkCardContract.schemaVersion, 1);
+  assert.equal(taskLinkCardContract.cardRevision, TASK_LINK_CARD_REVISION);
+  assert.deepEqual(taskLinkCardContract.states.running.topActions, [
+    'task_link_interrupt', 'task_link_release',
+  ]);
+  assert.deepEqual(taskLinkCardContract.states.completed.formFields, ['turnMode', 'followup']);
+  assert.deepEqual(taskLinkCardContract.states.completed.turnModes, ['default', 'plan']);
+  assert.equal(taskLinkCardContract.states.plan_ready.primaryAction, 'task_link_implement_plan');
+  assert.equal(taskLinkCardContract.states.plan_ready.submitLabel, '提交修改');
+  assert.deepEqual(taskLinkCardContract.states.queued.formFields, []);
+  assert.deepEqual(taskLinkCardContract.callbacks.task_link_followup.intents, ['new_turn']);
+  assert.equal(taskLinkCardContract.callbacks.task_link_release.transport, 'overflow');
+  assert.equal(taskLinkCardContract.callbacks.dismiss.transport, 'overflow');
+});
 
 test('event routing accepts only the reviewed message and card event keys', () => {
   assert.equal(normalizeEventKey('im.message.receive_v1'), 'im.message.receive_v1');
@@ -69,6 +87,29 @@ test('official SDK card callback shape normalizes into the existing bridge contr
   assert.equal(normalized.token, 'callback_token');
   assert.deepEqual(normalized.formValue, { choice: 'one' });
   assert.deepEqual(bridgeCardAction(normalized), { action: 'dismiss', taskId: '' });
+});
+
+test('overflow options reuse existing namespaced actions and reject malformed values', () => {
+  const normalized = normalizeCardAction({
+    event_id: 'evt_overflow',
+    action: {
+      tag: 'overflow',
+      option: JSON.stringify({
+        namespace: 'feishu_bridge', version: 1, action: 'task_link_release',
+        taskKey: '0123456789abcdef0123',
+      }),
+    },
+  });
+  assert.equal(normalized.actionTag, 'overflow');
+  assert.deepEqual(bridgeCardAction(normalized), {
+    action: 'task_link_release', taskId: '', taskKey: '0123456789abcdef0123',
+  });
+  assert.equal(bridgeCardAction(normalizeCardAction({
+    action: { tag: 'overflow', option: 'not-json' },
+  })), null);
+  assert.equal(bridgeCardAction(normalizeCardAction({
+    action: { tag: 'overflow', option: JSON.stringify({ action: 'task_link_release' }) },
+  })), null);
 });
 
 test('progress cards expose refresh and dismiss actions without user prompt content', () => {
@@ -142,12 +183,10 @@ test('completed chat cards mirror task-card hierarchy and accept a bounded follo
   });
   const form = card.body.elements.find((element) => element.tag === 'form');
   const input = cardElements(form, 'input').find((element) => element.name === 'followup');
-  const [quickReplyLayout, actionLayout] = form.elements
-    .filter((element) => element.tag === 'column_set');
+  const [quickReplyLayout] = form.elements.filter((element) => element.tag === 'column_set');
   const quickReplyElements = quickReplyLayout.columns.flatMap((column) => column.elements || []);
-  const actionElements = actionLayout.columns.flatMap((column) => column.elements || []);
   const submit = quickReplyElements.find((element) => element.name === 'submit_followup');
-  const dismiss = actionElements.find((element) => element.name === 'dismiss_card');
+  const dismiss = cardElements(card, 'overflow')[0];
   assert.equal(card.schema, '2.0');
   assert.equal(card.config.width_mode, 'fill');
   assert.equal(card.header.title.content, 'Codex 对话');
@@ -160,7 +199,7 @@ test('completed chat cards mirror task-card hierarchy and accept a bounded follo
     '**Codex**\ndone',
   ]);
   assert.deepEqual(card.body.elements.slice(0, 6).map((element) => element.tag), [
-    'markdown', 'hr', 'markdown', 'hr', 'markdown', 'hr',
+    'column_set', 'hr', 'markdown', 'hr', 'markdown', 'hr',
   ]);
   assert.deepEqual({
     width: input.width,
@@ -173,15 +212,12 @@ test('completed chat cards mirror task-card hierarchy and accept a bounded follo
   });
   assert.equal(quickReplyLayout.flex_mode, 'none');
   assert.deepEqual(quickReplyLayout.columns.map((column) => column.width), ['weighted', 'auto']);
-  assert.equal(actionLayout.flex_mode, 'flow');
-  assert.equal(actionLayout.horizontal_align, 'right');
-  assert.equal(actionLayout.horizontal_spacing, '8px');
   assert.equal(form.vertical_spacing, '8px');
-  assert.equal(actionLayout.columns.length, 1);
+  assert.equal(form.elements.length, 1);
   assert.equal(submit.text.content, '发送');
   assert.equal(submit.form_action_type, 'submit');
   assert.equal(submit.type, 'primary_filled');
-  assert.equal(dismiss.type, 'default');
+  assert.equal(dismiss.options[0].text.content, '关闭卡片');
   assert.equal(JSON.stringify(card).includes('刷新状态'), false);
   assert.deepEqual(bridgeCardAction({
     actionValue: submit.behaviors[0].value,
@@ -189,7 +225,9 @@ test('completed chat cards mirror task-card hierarchy and accept a bounded follo
   }), {
     action: 'chat_followup', taskId: '', followup: '请继续解释第二点',
   });
-  assert.deepEqual(bridgeCardAction({ actionValue: dismiss.behaviors[0].value }), {
+  assert.deepEqual(bridgeCardAction(normalizeCardAction({ action: {
+    tag: 'overflow', option: dismiss.options[0].value,
+  } })), {
     action: 'dismiss', taskId: '',
   });
   assert.equal(bridgeCardAction({ actionValue: submit.behaviors[0].value, formValue: { followup: '  ' } }), null);
@@ -402,19 +440,25 @@ test('completed task-link cards keep one reply and offer quick text plus native 
     maxLength: input.max_length,
     rows: input.rows,
     autoResize: input.auto_resize,
-    label: input.label.content,
+    label: input.label?.content,
   }, {
     inputType: 'text', width: 'fill', maxLength: 1000,
-    rows: undefined, autoResize: undefined, label: '快速回复',
+    rows: undefined, autoResize: undefined, label: undefined,
   });
-  const [quickReplyLayout, controlLayout] = form.elements
+  const [newTurnLayout, quickReplyLayout] = form.elements
     .filter((element) => element.tag === 'column_set');
   const quickReplyElements = quickReplyLayout.columns.flatMap((column) => column.elements || []);
-  const controls = controlLayout.columns.flatMap((column) => column.elements || []);
   const submit = quickReplyElements.find((element) => element.name === 'submit_task_link_followup');
-  const mode = controls.find((element) => element.name === 'set_task_link_mode');
+  const mode = cardElements(newTurnLayout, 'select_static')[0];
   const statusLayout = card.body.elements[0];
-  const release = statusLayout.columns[1].elements[0];
+  const release = cardElements(statusLayout, 'overflow')[0];
+  assert.equal(newTurnLayout.columns[0].elements[0].content, '**开始新一轮**');
+  assert.equal(mode.name, 'turnMode');
+  assert.equal(mode.type, 'text');
+  assert.equal(mode.initial_option, 'default');
+  assert.deepEqual(mode.options.map((option) => [option.text.content, option.value]), [
+    ['默认模式', 'default'], ['Plan 模式', 'plan'],
+  ]);
   assert.equal(quickReplyLayout.flex_mode, 'none');
   assert.equal(quickReplyLayout.horizontal_spacing, '8px');
   assert.deepEqual(
@@ -429,39 +473,33 @@ test('completed task-link cards keep one reply and offer quick text plus native 
     ],
   );
   assert.equal(quickReplyLayout.columns[0].elements[0], input);
-  assert.equal(controlLayout.flex_mode, 'flow');
-  assert.equal(controlLayout.horizontal_align, 'right');
-  assert.equal(controlLayout.horizontal_spacing, '8px');
   assert.equal(form.vertical_spacing, '8px');
   assert.equal(submit.text.content, '发送');
   assert.equal(submit.type, 'primary_filled');
   assert.equal(submit.form_action_type, 'submit');
-  assert.equal(controls.some((element) => element.name === 'capture_task_link_input'), false);
-  assert.equal(mode.text.content, '下轮用 Plan');
-  assert.deepEqual(bridgeCardAction({ actionValue: mode.behaviors[0].value }), {
-    action: 'task_link_mode', taskId: '', taskKey: '0123456789abcdef0123', mode: 'plan',
-  });
+  assert.equal(cardElements(form, 'button')
+    .some((element) => element.name === 'capture_task_link_input'), false);
   assert.deepEqual(statusLayout.columns.map((column) => ({
     width: column.width,
     weight: column.weight,
     verticalAlign: column.vertical_align,
   })), [
-    { width: 'weighted', weight: 1, verticalAlign: 'top' },
-    { width: 'auto', weight: undefined, verticalAlign: 'top' },
+    { width: 'weighted', weight: 1, verticalAlign: 'center' },
+    { width: 'auto', weight: undefined, verticalAlign: 'center' },
   ]);
-  assert.equal(release.name, 'release_task_link');
-  assert.equal(release.text.content, '断连');
-  assert.equal(release.type, 'default');
-  assert.equal(controls.some((element) => element.name === 'release_task_link'), false);
+  assert.equal(release.options[0].text.content, '断开连接');
+  assert.equal(cardElements(form, 'overflow').length, 0);
   assert.equal(cardElements(card, 'action').length, 0);
   assert.deepEqual(bridgeCardAction({
     actionValue: submit.behaviors[0].value,
-    formValue: { followup: '快速补充一句' },
+    formValue: { followup: '快速补充一句', turnMode: 'plan' },
   }), {
     action: 'task_link_followup', taskId: '', taskKey: '0123456789abcdef0123',
-    followup: '快速补充一句',
+    followup: '快速补充一句', intent: 'new_turn', turnMode: 'plan',
   });
-  assert.equal(bridgeCardAction({ actionValue: release.behaviors[0].value }).action, 'task_link_release');
+  assert.equal(bridgeCardAction(normalizeCardAction({ action: {
+    tag: 'overflow', option: release.options[0].value,
+  } })).action, 'task_link_release');
 });
 
 test('task-link reply controls and compact metadata follow authoritative turn controls', () => {
@@ -493,23 +531,23 @@ test('task-link reply controls and compact metadata follow authoritative turn co
   assert.match(runningText, /改动 2 个文件 · 验证：全部通过/);
   assert.doesNotMatch(runningText, /这段旧详情/);
   assert.equal(cardElements(running, 'form').length, 1);
-  const runningLayouts = cardElements(running, 'form')[0].elements
+  const [runningInputLayout] = cardElements(running, 'form')[0].elements
     .filter((element) => element.tag === 'column_set');
-  const quickReplyButtons = runningLayouts[0].columns
+  const quickReplyButtons = runningInputLayout.columns
     .flatMap((column) => column.elements || [])
     .filter((element) => element.tag === 'button');
-  const runningButtons = runningLayouts[1].columns.flatMap((column) => column.elements || []);
   assert.deepEqual(
     quickReplyButtons.map((button) => button.name),
     ['submit_task_link_followup'],
   );
-  assert.deepEqual(
-    runningButtons.map((button) => button.name),
-    ['set_task_link_mode', 'interrupt_task_link'],
-  );
-  assert.equal(runningLayouts[1].horizontal_align, 'right');
-  assert.equal(runningLayouts[1].horizontal_spacing, '8px');
-  assert.equal(running.body.elements[0].columns[1].elements[0].text.content, '断连');
+  assert.equal(cardElements(running, 'select_static').length, 0);
+  assert.equal(cardElements(running, 'input')[0].label.content, '补充当前轮');
+  const runningTopControls = running.body.elements[0].columns[1].elements;
+  assert.equal(runningTopControls[0].name, 'interrupt_task_link');
+  assert.equal(runningTopControls[0].text.content, '停止本轮');
+  assert.equal(runningTopControls[0].type, 'danger_text');
+  assert.equal(runningTopControls[1].tag, 'overflow');
+  assert.equal(runningTopControls[1].options[0].text.content, '断开连接');
   assert.equal(running.body.padding, '0px 0px 16px 0px');
 
   const waiting = progressCard({
@@ -521,7 +559,8 @@ test('task-link reply controls and compact metadata follow authoritative turn co
     questions: [{ id: 'choice', header: '选择方式', question: '下一步怎么做？', options: [{ label: '继续' }] }],
   });
   assert.equal(cardElements(waiting, 'form').length, 1);
-  assert.equal(cardElements(waiting, 'input')[0].label.content, '快速回答');
+  assert.equal(cardElements(waiting, 'input')[0].label.content, '回答 Codex');
+  assert.equal(cardElements(waiting, 'select_static').length, 0);
   assert.equal(cardElements(waiting, 'button')
     .some((button) => button.name === 'capture_task_link_input'), false);
 
@@ -567,8 +606,9 @@ test('Plan mode task cards show the full plan separately and preserve it after c
   assert.ok(markdown.indexOf(instruction) < markdown.indexOf(renderedPlan));
   assert.ok(markdown.indexOf(renderedPlan) < markdown.indexOf(reply));
   assert.equal(JSON.stringify(card).split('检查现有链路').length - 1, 1);
+  assert.equal(cardElements(card, 'select_static').length, 0);
   assert.equal(cardElements(card, 'button')
-    .find((button) => button.name === 'set_task_link_mode').text.content, '下轮用默认');
+    .some((button) => button.name === 'set_task_link_mode'), false);
 
   const completed = progressCard({
     status: 'completed',
@@ -584,6 +624,7 @@ test('Plan mode task cards show the full plan separately and preserve it after c
   assert.match(cardElements(completed, 'markdown')[0].content, /本轮 Plan/);
   assert.equal(JSON.stringify(completed).split('检查现有链路').length - 1, 1);
   assert.match(JSON.stringify(completed), /计划已经生成，可以按此执行/);
+  assert.equal(cardElements(completed, 'select_static')[0].initial_option, 'plan');
 });
 
 test('plan_ready cards offer one safe start action and hide the mode toggle', () => {
@@ -610,23 +651,30 @@ test('plan_ready cards offer one safe start action and hide the mode toggle', ()
   assert.equal(cardElements(card, 'input')[0].placeholder.content, '输入需要调整的内容');
   const buttons = cardElements(card, 'button');
   const form = cardElements(card, 'form')[0];
-  const actionLayout = form.elements.find((element) => (
-    element.tag === 'column_set' && element.horizontal_align === 'right'
-  ));
+  const inputLayout = form.elements[0];
   const submit = buttons.find((button) => button.name === 'submit_task_link_followup');
   const implement = buttons.find((button) => button.name === 'implement_task_link_plan');
   assert.equal(form.vertical_spacing, '8px');
-  assert.equal(actionLayout.horizontal_spacing, '8px');
+  assert.equal(form.elements.length, 1);
+  assert.equal(inputLayout.horizontal_spacing, '8px');
   assert.equal(submit.text.content, '提交修改');
   assert.equal(submit.type, 'default');
   assert.equal(implement.text.content, '开始执行');
   assert.equal(implement.type, 'primary_filled');
+  assert.equal(implement.width, 'fill');
   assert.deepEqual(
     buttons.filter((button) => button.type === 'primary_filled').map((button) => button.name),
     ['implement_task_link_plan'],
   );
   assert.equal(buttons.some((button) => button.name === 'set_task_link_mode'), false);
-  assert.equal(buttons.some((button) => button.name === 'release_task_link'), true);
+  assert.equal(cardElements(card, 'select_static').length, 0);
+  assert.equal(buttons.some((button) => button.name === 'release_task_link'), false);
+  const bodyTags = card.body.elements.map((element) => element.tag);
+  const planIndex = card.body.elements.findIndex((element) => (
+    element.tag === 'markdown' && element.content.startsWith('**计划**')
+  ));
+  assert.deepEqual(bodyTags.slice(planIndex, planIndex + 4), ['markdown', 'button', 'hr', 'form']);
+  assert.doesNotMatch(JSON.stringify(card), /计划已生成。可直接开始执行/);
   assert.deepEqual(implement.behaviors[0].value, {
     namespace: 'feishu_bridge', version: 1, action: 'task_link_implement_plan',
     taskKey: '0123456789abcdef0123', planRevision: 'abcdef0123456789abcd',
@@ -637,9 +685,13 @@ test('plan_ready cards offer one safe start action and hide the mode toggle', ()
   });
   assert.equal(JSON.stringify(implement.behaviors[0].value).includes(plan), false);
   assert.equal(JSON.stringify(implement.behaviors[0].value).includes('thread'), false);
+  const release = cardElements(card, 'overflow')[0];
+  assert.equal(bridgeCardAction(normalizeCardAction({ action: {
+    tag: 'overflow', option: release.options[0].value,
+  } })).action, 'task_link_release');
 });
 
-test('task controls without an input form use the same right-aligned action row', () => {
+test('task controls without an input form stay in the top status row', () => {
   const card = progressCard({
     status: 'desktop_action_required',
     title: '需要桌面操作',
@@ -650,15 +702,14 @@ test('task controls without an input form use the same right-aligned action row'
     },
   });
   assert.equal(cardElements(card, 'form').length, 0);
-  const actionRow = card.body.elements.find((element) => (
-    element.tag === 'column_set' && element.horizontal_align === 'right'
-  ));
-  assert.equal(actionRow.flex_mode, 'flow');
-  assert.equal(actionRow.horizontal_spacing, '8px');
+  assert.equal(card.body.elements.filter((element) => element.tag === 'column_set').length, 1);
+  const topControls = card.body.elements[0].columns[1].elements;
   assert.deepEqual(
-    actionRow.columns.flatMap((column) => column.elements).map((button) => button.name),
-    ['set_task_link_mode', 'interrupt_task_link'],
+    topControls.map((control) => control.name || control.tag),
+    ['interrupt_task_link', 'overflow'],
   );
+  assert.equal(topControls[0].type, 'danger_text');
+  assert.equal(topControls[1].options[0].text.content, '断开连接');
 });
 
 test('legacy input capture state no longer changes task-card controls', () => {
@@ -769,6 +820,18 @@ test('task-link follow-up actions reject empty, oversized, and forged submission
   }), null);
   assert.equal(bridgeCardAction({
     actionValue: { ...actionValue, action: 'task_link_shell' }, formValue: { followup: 'rm -rf' },
+  }), null);
+  assert.deepEqual(bridgeCardAction({
+    actionValue, formValue: { followup: '先重新规划', turnMode: 'plan' },
+  }), {
+    action: 'task_link_followup', taskId: '', taskKey: '0123456789abcdef0123',
+    followup: '先重新规划', turnMode: 'plan',
+  });
+  assert.equal(bridgeCardAction({
+    actionValue, formValue: { followup: '执行命令', turnMode: 'unsafe' },
+  }), null);
+  assert.equal(bridgeCardAction({
+    actionValue: { ...actionValue, intent: 'steer' }, formValue: { followup: '继续' },
   }), null);
   assert.equal(bridgeCardAction({
     actionValue: {
