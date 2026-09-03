@@ -74,8 +74,8 @@ function silentSdkLogger() {
 function immediateCardResponse() {
   return {
     toast: {
-      type: 'success',
-      content: '操作已收到，正在处理',
+      type: 'info',
+      content: '请求已接收，结果会更新到卡片',
     },
   };
 }

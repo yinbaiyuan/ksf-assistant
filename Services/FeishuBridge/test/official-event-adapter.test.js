@@ -20,6 +20,15 @@ function dataFrame(type = 'card') {
   };
 }
 
+test('immediate card acknowledgement does not claim the background action succeeded', () => {
+  assert.deepEqual(immediateCardResponse(), {
+    toast: {
+      type: 'info',
+      content: '请求已接收，结果会更新到卡片',
+    },
+  });
+});
+
 test('official transport compatibility layer dispatches card frames and sends an immediate response frame', async () => {
   const sent = [];
   const client = {

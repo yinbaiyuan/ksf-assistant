@@ -1,5 +1,5 @@
 const CARD_ACTION_NAMESPACE = 'feishu_bridge';
-const TASK_LINK_CARD_REVISION = 31;
+const TASK_LINK_CARD_REVISION = 32;
 const FEISHU_CARD_REQUEST_MAX_BYTES = 30 * 1024;
 const CARD_REQUEST_RESERVE_BYTES = 512;
 const CARD_REQUEST_SAFE_BYTES = FEISHU_CARD_REQUEST_MAX_BYTES - CARD_REQUEST_RESERVE_BYTES;
@@ -470,7 +470,8 @@ function taskLinkTopControls(taskLink) {
   if (taskLink.controls?.canRelease) {
     controls.push(cardV2Button({
       name: 'release_task_link',
-      text: '断连',
+      text: '断开连接',
+      type: 'text',
       action: bridgeAction('task_link_release', { taskKey: taskLink.taskKey }),
     }));
   }

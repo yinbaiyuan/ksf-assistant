@@ -30,7 +30,7 @@ function cardElements(card, tag) {
   return matches;
 }
 
-test('language-neutral task-link card contract freezes revision 31 interactions', () => {
+test('language-neutral task-link card contract freezes revision 32 interactions', () => {
   assert.equal(taskLinkCardContract.schemaVersion, 1);
   assert.equal(taskLinkCardContract.cardRevision, TASK_LINK_CARD_REVISION);
   assert.deepEqual(taskLinkCardContract.states.running.topActions, ['task_link_release']);
@@ -489,8 +489,8 @@ test('completed task-link cards keep one reply and offer quick text plus native 
     { width: 'auto', weight: undefined, verticalAlign: 'center' },
   ]);
   assert.equal(release.name, 'release_task_link');
-  assert.equal(release.text.content, '断连');
-  assert.equal(release.type, 'default');
+  assert.equal(release.text.content, '断开连接');
+  assert.equal(release.type, 'text');
   assert.equal(cardElements(form, 'overflow').length, 0);
   assert.equal(cardElements(card, 'action').length, 0);
   assert.deepEqual(bridgeCardAction({
@@ -564,8 +564,8 @@ test('task-link reply controls and compact metadata follow authoritative turn co
   const runningTopControls = running.body.elements[0].columns[1].elements;
   assert.equal(runningTopControls.length, 1);
   assert.equal(runningTopControls[0].name, 'release_task_link');
-  assert.equal(runningTopControls[0].text.content, '断连');
-  assert.equal(runningTopControls[0].type, 'default');
+  assert.equal(runningTopControls[0].text.content, '断开连接');
+  assert.equal(runningTopControls[0].type, 'text');
   assert.equal(running.body.padding, '0px 0px 16px 0px');
 
   const waiting = progressCard({
@@ -710,7 +710,8 @@ test('plan_ready cards offer one safe start action and hide the mode toggle', ()
   assert.equal(JSON.stringify(implement.behaviors[0].value).includes(plan), false);
   assert.equal(JSON.stringify(implement.behaviors[0].value).includes('thread'), false);
   const release = buttons.find((button) => button.name === 'release_task_link');
-  assert.equal(release.text.content, '断连');
+  assert.equal(release.text.content, '断开连接');
+  assert.equal(release.type, 'text');
   assert.equal(bridgeCardAction({ actionValue: release.behaviors[0].value }).action, 'task_link_release');
 });
 
@@ -728,7 +729,8 @@ test('task controls without an input form keep disconnect in status and stop bel
   assert.equal(card.body.elements.filter((element) => element.tag === 'column_set').length, 1);
   const topControls = card.body.elements[0].columns[1].elements;
   assert.deepEqual(topControls.map((control) => control.name), ['release_task_link']);
-  assert.equal(topControls[0].text.content, '断连');
+  assert.equal(topControls[0].text.content, '断开连接');
+  assert.equal(topControls[0].type, 'text');
   const stop = card.body.elements.find((element) => element.name === 'interrupt_task_link');
   assert.equal(stop.text.content, '停止');
   assert.equal(stop.type, 'danger_text');

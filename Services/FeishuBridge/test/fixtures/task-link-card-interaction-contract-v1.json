@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "cardRevision": 31,
+  "cardRevision": 32,
   "states": {
     "running": {
       "topActions": ["task_link_release"],
@@ -60,7 +60,9 @@
       "required": ["taskKey", "planRevision"]
     },
     "task_link_release": {
-      "transport": "button"
+      "transport": "button",
+      "label": "断开连接",
+      "style": "text"
     },
     "dismiss": {
       "transport": "overflow"

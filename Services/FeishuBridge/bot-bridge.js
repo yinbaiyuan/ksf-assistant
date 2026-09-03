@@ -4457,10 +4457,6 @@ async function executeTaskLink(link, command, context) {
     try {
       snapshot = await readTaskLinkSnapshot(fresh.threadId);
       submittedTurnMode = taskLinkSubmittedTurnMode(fresh, snapshot, requestedTurnMode);
-      const supportedModes = await codexAppServer.collaborationModes();
-      if (!supportedModes.includes(submittedTurnMode)) {
-        throw new Error('当前 Codex Desktop 不支持所选协作模式，请升级后重试');
-      }
     } catch (error) {
       cleanupContextInbound(context);
       await replyText(
@@ -5757,10 +5753,6 @@ async function handleCardAction(data) {
       );
     } else if (action.action === 'task_link_mode') {
       try {
-        const supportedModes = await codexAppServer.collaborationModes();
-        if (!supportedModes.includes(action.mode)) {
-          throw new Error('当前 Codex Desktop 不支持该协作模式，请升级后重试');
-        }
         const snapshot = await readTaskLinkSnapshot(link.threadId);
         const collaborationMode = taskLinkCollaborationMode(
           { ...link, nextTurnMode: action.mode },

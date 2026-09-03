@@ -29,3 +29,15 @@ test('transient app-server releases its thread subscription before closing trans
   assert.ok(unsubscribe >= 0);
   assert.ok(teardown > unsubscribe);
 });
+
+test('task-linked turns stay on Desktop IPC without initializing the shared app-server', () => {
+  assert.equal((source.match(/codexAppServer\.collaborationModes\(/g) || []).length, 0);
+  const start = source.indexOf('async function executeTaskLink');
+  const end = source.indexOf('\nfunction cleanupTaskLinkAssetDirectories', start);
+  assert.ok(start >= 0);
+  assert.ok(end > start);
+  const body = source.slice(start, end);
+  assert.match(body, /taskLinkSubmittedTurnMode/);
+  assert.match(body, /readTaskLinkSnapshot/);
+  assert.match(body, /taskLink:\s*true/);
+});
