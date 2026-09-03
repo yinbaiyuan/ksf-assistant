@@ -69,7 +69,13 @@ function sha256(filePath) {
 }
 
 function run(command, commandArgs, options = {}) {
-  const result = spawnSync(command, commandArgs, { cwd: repoRoot, stdio: 'inherit', ...options });
+  const { env = {}, ...rest } = options;
+  const result = spawnSync(command, commandArgs, {
+    cwd: repoRoot,
+    stdio: 'inherit',
+    ...rest,
+    env: { ...process.env, LC_ALL: 'C', LANG: 'C', ...env },
+  });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${command} failed with exit code ${result.status}`);
 }
