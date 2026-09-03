@@ -14,7 +14,7 @@ test('bundled Feishu runtime manifest is complete and pinned', () => {
     encoding: 'utf8',
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Node 24\.20\.0/);
+  assert.match(result.stdout, /Node 24\.20\.0, lark-cli 1\.0\.92/);
 });
 
 test('Windows package copies Feishu production dependencies as an explicit resource', () => {
@@ -22,4 +22,8 @@ test('Windows package copies Feishu production dependencies as an explicit resou
   const resources = packageConfig.build.extraResources;
   assert.ok(resources.some((item) => item.from === '../dist/services/feishu-bridge/node_modules'
     && item.to === 'services/feishu-bridge/node_modules'));
+  assert.ok(resources.some((item) => item.from === '../dist/runtime/feishu-bridge/windows-${arch}'
+    && item.to === 'runtime/feishu-bridge/windows-${arch}'));
+  assert.ok(resources.some((item) => item.from === '../dist/runtime/lark-cli/windows-${arch}'
+    && item.to === 'runtime/lark-cli/windows-${arch}'));
 });

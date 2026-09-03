@@ -14,6 +14,11 @@ build_core() {
         cd "$core_root"
         GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags="-s -w" \
             -o "$repo_root/dist/core/$output_dir/$filename" ./cmd/codex-usage-core
+        mkdir -p "$repo_root/dist/runtime/feishu-bridge/$output_dir"
+        local bridge_filename="codex-feishu-bridge"
+        [[ "$goos" == "windows" ]] && bridge_filename="codex-feishu-bridge.exe"
+        GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags="-s -w" \
+            -o "$repo_root/dist/runtime/feishu-bridge/$output_dir/$bridge_filename" ./cmd/codex-feishu-bridge
     )
 }
 

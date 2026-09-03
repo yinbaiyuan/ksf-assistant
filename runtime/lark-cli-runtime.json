@@ -1,0 +1,26 @@
+{
+  "version": "1.0.92",
+  "baseUrl": "https://github.com/larksuite/cli/releases/download/v1.0.92",
+  "artifacts": {
+    "darwin-x64": {
+      "archive": "lark-cli-1.0.92-darwin-amd64.tar.gz",
+      "sha256": "421b36f95966028fb047231cb6351c4224a0fdcb076d2bc434d4aed1bb6d1891",
+      "executable": "lark-cli"
+    },
+    "darwin-arm64": {
+      "archive": "lark-cli-1.0.92-darwin-arm64.tar.gz",
+      "sha256": "abb1b96eee5ad32da4e12f434e44d48a9e01ebb0e81772419ac0347f91c34265",
+      "executable": "lark-cli"
+    },
+    "windows-x64": {
+      "archive": "lark-cli-1.0.92-windows-amd64.zip",
+      "sha256": "dfcf920d8e31bcef99960c584fda8bac49a8dca0b6634b1f05bde0de382080b3",
+      "executable": "lark-cli.exe"
+    },
+    "windows-arm64": {
+      "archive": "lark-cli-1.0.92-windows-arm64.zip",
+      "sha256": "cef96c61c388f7e1100394edcfa1f5ca8322e9bed73a951e119a7e7b6e0f4c6a",
+      "executable": "lark-cli.exe"
+    }
+  }
+}

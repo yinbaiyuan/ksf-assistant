@@ -49,6 +49,16 @@
         "filter": ["node.exe"]
       },
       {
+        "from": "../dist/runtime/feishu-bridge/windows-${arch}",
+        "to": "runtime/feishu-bridge/windows-${arch}",
+        "filter": ["codex-feishu-bridge.exe"]
+      },
+      {
+        "from": "../dist/runtime/lark-cli/windows-${arch}",
+        "to": "runtime/lark-cli/windows-${arch}",
+        "filter": ["lark-cli.exe"]
+      },
+      {
         "from": "../LICENSE",
         "to": "LICENSE.txt"
       },

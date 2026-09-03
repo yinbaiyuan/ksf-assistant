@@ -92,9 +92,17 @@ function feishuRuntime() {
   const bundledNode = app.isPackaged
     ? path.join(process.resourcesPath, 'runtime', 'node', arch, 'node.exe')
     : path.join(repoRoot, 'dist', 'runtime', 'node', arch, 'node.exe');
+  const bundledBridge = app.isPackaged
+    ? path.join(process.resourcesPath, 'runtime', 'feishu-bridge', arch, 'codex-feishu-bridge.exe')
+    : path.join(repoRoot, 'dist', 'runtime', 'feishu-bridge', arch, 'codex-feishu-bridge.exe');
+  const bundledLarkCLI = app.isPackaged
+    ? path.join(process.resourcesPath, 'runtime', 'lark-cli', arch, 'lark-cli.exe')
+    : path.join(repoRoot, 'dist', 'runtime', 'lark-cli', arch, 'lark-cli.exe');
   const packaged = {
     serviceRoot,
     node: fs.existsSync(bundledNode) ? bundledNode : (process.env.CODEX_USAGE_BAR_NODE || 'node.exe'),
+    bridge: fs.existsSync(bundledBridge) ? bundledBridge : '',
+    larkCLI: fs.existsSync(bundledLarkCLI) ? bundledLarkCLI : '',
   };
   if (!app.isPackaged) return packaged;
   const deployed = deployFeishuService({
@@ -104,7 +112,7 @@ function feishuRuntime() {
     productVersion: app.getVersion(),
   });
   removeLegacyWindowsService(deployed);
-  return deployed;
+  return { ...deployed, bridge: bundledBridge, larkCLI: bundledLarkCLI };
 }
 
 function updateTrayStatus(snapshot) {
@@ -306,6 +314,8 @@ app.whenReady().then(async () => {
       CODEX_USAGE_BAR_MANAGED: '1',
       CODEX_USAGE_BAR_FEISHU_SERVICE_ROOT: runtime.serviceRoot,
       CODEX_USAGE_BAR_NODE: runtime.node,
+      CODEX_USAGE_BAR_FEISHU_BRIDGE: process.env.CODEX_USAGE_BAR_FEISHU_GO_PREVIEW === '1' ? runtime.bridge : '',
+      CODEX_USAGE_BAR_LARK_CLI: process.env.CODEX_USAGE_BAR_FEISHU_GO_PREVIEW === '1' ? runtime.larkCLI : '',
       FEISHU_BRIDGE_DATA_DIR: path.join(os.homedir(), '.config', 'feishu-bridge'),
     },
   });

@@ -20,7 +20,7 @@ function fixture(root, version, valid = true) {
   return service;
 }
 
-test('service deployment keeps current, one previous release, and rolls back failed staging', (t) => {
+test('service deployment keeps current, one previous release, and rolls back failed staging', { skip: process.platform !== 'win32' }, (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'usagebar-feishu-deploy-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const node = process.execPath;

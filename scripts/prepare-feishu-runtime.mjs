@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = JSON.parse(readFileSync(path.join(repoRoot, 'runtime', 'node-runtime.json'), 'utf8'));
+const larkCliManifest = JSON.parse(readFileSync(path.join(repoRoot, 'runtime', 'lark-cli-runtime.json'), 'utf8'));
 const args = process.argv.slice(2);
 const verifyOnly = args.includes('--verify');
 const platform = valueAfter('--platform');
@@ -32,6 +33,10 @@ function assertLayout() {
     if (!item?.archive || !/^[a-f0-9]{64}$/.test(item.sha256) || !item.executable) {
       throw new Error(`Invalid Node runtime manifest entry: ${key}`);
     }
+    const cli = larkCliManifest.artifacts?.[key];
+    if (!cli?.archive || !/^[a-f0-9]{64}$/.test(cli.sha256) || !cli.executable) {
+      throw new Error(`Invalid lark-cli runtime manifest entry: ${key}`);
+    }
   }
   for (const relative of ['package.json', 'package-lock.json', 'bot-bridge.js', 'scripts/bridge-client.js']) {
     if (!existsSync(path.join(repoRoot, 'Services', 'FeishuBridge', relative))) {
@@ -50,7 +55,7 @@ async function download(url, destination) {
       }
       if (response.statusCode !== 200) {
         response.resume();
-        reject(new Error(`Node runtime download failed with HTTP ${response.statusCode}`));
+        reject(new Error(`Runtime download failed with HTTP ${response.statusCode}`));
         return;
       }
       pipeline(response, createWriteStream(destination)).then(resolve, reject);
@@ -125,13 +130,51 @@ async function stageRuntime(target) {
   rmSync(unpack, { recursive: true, force: true });
 }
 
+async function stageLarkCLI(target) {
+  const item = larkCliManifest.artifacts[target];
+  if (!item) throw new Error(`Unsupported lark-cli target: ${target}`);
+  const cache = path.join(repoRoot, 'dist', 'cache', 'lark-cli');
+  const archive = path.join(cache, item.archive);
+  mkdirSync(cache, { recursive: true });
+  if (!existsSync(archive) || sha256(archive) !== item.sha256) {
+    rmSync(archive, { force: true });
+    await download(`${larkCliManifest.baseUrl}/${item.archive}`, archive);
+  }
+  if (sha256(archive) !== item.sha256) throw new Error(`lark-cli checksum mismatch: ${item.archive}`);
+
+  const unpack = path.join(cache, `unpack-${target}`);
+  rmSync(unpack, { recursive: true, force: true });
+  mkdirSync(unpack, { recursive: true });
+  if (item.archive.endsWith('.zip')) {
+    const quote = (value) => `'${String(value).replaceAll("'", "''")}'`;
+    run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+      `Expand-Archive -LiteralPath ${quote(archive)} -DestinationPath ${quote(unpack)} -Force`]);
+  } else {
+    run('tar', ['-xzf', archive, '-C', unpack]);
+  }
+  const candidates = [path.join(unpack, item.executable), path.join(unpack, 'bin', item.executable)];
+  const source = candidates.find((candidate) => existsSync(candidate));
+  if (!source) throw new Error(`lark-cli executable missing after extraction: ${target}`);
+  const outputDir = path.join(repoRoot, 'dist', 'runtime', 'lark-cli', target);
+  rmSync(outputDir, { recursive: true, force: true });
+  mkdirSync(outputDir, { recursive: true });
+  const output = path.join(outputDir, item.executable);
+  cpSync(source, output);
+  if (!target.startsWith('windows-')) chmodSync(output, 0o755);
+  rmSync(unpack, { recursive: true, force: true });
+}
+
 assertLayout();
 if (verifyOnly) {
-  console.log(`Feishu runtime manifest is valid: Node ${manifest.version}`);
+  console.log(`Feishu runtime manifests are valid: Node ${manifest.version}, lark-cli ${larkCliManifest.version}`);
   process.exit(0);
 }
 if (!['windows', 'darwin'].includes(platform) || arches.length === 0) {
   throw new Error('Usage: prepare-feishu-runtime.mjs --platform windows|darwin --arch x64 [--arch arm64]');
 }
 stageService();
-for (const arch of [...new Set(arches)]) await stageRuntime(`${platform}-${arch}`);
+for (const arch of [...new Set(arches)]) {
+  const target = `${platform}-${arch}`;
+  await stageRuntime(target);
+  await stageLarkCLI(target);
+}

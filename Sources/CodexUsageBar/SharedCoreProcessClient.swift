@@ -136,6 +136,13 @@ actor SharedCoreProcessClient {
         if let runtime = Self.locateFeishuRuntime() {
             environment["CODEX_USAGE_BAR_MANAGED"] = "1"
             environment["CODEX_USAGE_BAR_FEISHU_SERVICE_ROOT"] = runtime.service.path
+            if ProcessInfo.processInfo.environment["CODEX_USAGE_BAR_FEISHU_GO_PREVIEW"] == "1",
+               let bridge = runtime.bridge {
+                environment["CODEX_USAGE_BAR_FEISHU_BRIDGE"] = bridge.path
+                if let larkCLI = runtime.larkCLI {
+                    environment["CODEX_USAGE_BAR_LARK_CLI"] = larkCLI.path
+                }
+            }
             environment["FEISHU_BRIDGE_DATA_DIR"] = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".config/feishu-bridge", isDirectory: true).path
             if let node = runtime.node {
@@ -399,27 +406,38 @@ actor SharedCoreProcessClient {
         _ = try requestData(method: "feishu/supervisor/restart", params: [:])
     }
 
-    private static func locateFeishuRuntime() -> (service: URL, node: URL?)? {
+    private static func locateFeishuRuntime() -> (service: URL, node: URL?, bridge: URL?, larkCLI: URL?)? {
         let fileManager = FileManager.default
 #if arch(arm64)
         let platformDirectory = "darwin-arm64"
 #else
         let platformDirectory = "darwin-x64"
 #endif
-        var roots: [(URL, URL?)] = []
+        var roots: [(URL, URL?, URL, URL)] = []
         if let resources = Bundle.main.resourceURL {
             roots.append((
                 resources.appendingPathComponent("services/feishu-bridge", isDirectory: true),
-                resources.appendingPathComponent("runtime/node/\(platformDirectory)/node")
+                resources.appendingPathComponent("runtime/node/\(platformDirectory)/node"),
+                resources.appendingPathComponent("runtime/feishu-bridge/\(platformDirectory)/codex-feishu-bridge"),
+                resources.appendingPathComponent("runtime/lark-cli/\(platformDirectory)/lark-cli")
             ))
         }
         let current = URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
-        roots.append((current.appendingPathComponent("Services/FeishuBridge", isDirectory: true), nil))
-        return roots.compactMap { candidate -> (URL, URL?)? in
-            let (service, node) = candidate
+        roots.append((
+            current.appendingPathComponent("Services/FeishuBridge", isDirectory: true), nil,
+            current.appendingPathComponent("dist/runtime/feishu-bridge/\(platformDirectory)/codex-feishu-bridge"),
+            current.appendingPathComponent("dist/runtime/lark-cli/\(platformDirectory)/lark-cli")
+        ))
+        return roots.compactMap { candidate -> (URL, URL?, URL?, URL?)? in
+            let (service, node, bridge, larkCLI) = candidate
             let entry = service.appendingPathComponent("scripts/bridge-client.js")
             guard fileManager.fileExists(atPath: entry.path) else { return nil }
-            return (service, node.flatMap { fileManager.isExecutableFile(atPath: $0.path) ? $0 : nil })
+            return (
+                service,
+                node.flatMap { fileManager.isExecutableFile(atPath: $0.path) ? $0 : nil },
+                fileManager.isExecutableFile(atPath: bridge.path) ? bridge : nil,
+                fileManager.isExecutableFile(atPath: larkCLI.path) ? larkCLI : nil
+            )
         }.first
     }
 
