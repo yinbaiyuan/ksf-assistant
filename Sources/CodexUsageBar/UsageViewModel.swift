@@ -37,10 +37,14 @@ final class UsageViewModel: ObservableObject {
     @Published private(set) var onboardingError: String?
     @Published private(set) var notificationPermission: NotificationPermissionState = .unknown
     @Published private(set) var loginItemState: LoginItemState = .disabled
-    @Published private(set) var weChatState: WeChatConnectionState = .disconnected
-    @Published private(set) var weChatQRCodeContent: String?
-    @Published private(set) var weChatActionInProgress = false
-    @Published private(set) var weChatFeedback: String?
+    @Published private(set) var feishuBridge = FeishuBridgeSnapshot.notConfigured
+    @Published private(set) var feishuBridgeRootPath: String
+    @Published private(set) var feishuActionInProgress = false
+    @Published private(set) var feishuFeedback: String?
+    @Published private(set) var feishuTaskLinks: [String: FeishuTaskLinkSnapshot] = [:]
+    @Published private(set) var feishuTaskLinkActions: Set<String> = []
+    @Published private(set) var feishuTaskLinkErrors: [String: String] = [:]
+    @Published var selectedFeishuTargetAlias: String
     @Published var launchAtLoginEnabled: Bool
     @Published var resetNotificationsEnabled: Bool
 
@@ -55,7 +59,7 @@ final class UsageViewModel: ObservableObject {
     private let actionLauncher = TerminalActionLauncher()
     private let taskOpener: CodexTaskOpening = WorkspaceCodexTaskOpener()
     private let taskSubmissionClient: CodexDesktopTaskSubmissionClient
-    private let weChatConnector = WeChatConnector()
+    private let feishuClient = FeishuBridgeClient()
     private var client: CodexAppServerClient?
     private var started = false
     private var refreshingRateLimits = false
@@ -69,8 +73,9 @@ final class UsageViewModel: ObservableObject {
     private var retryTask: Task<Void, Never>?
     private var taskActivityUpdateTask: Task<Void, Never>?
     private var projectRefreshTask: Task<Void, Never>?
-    private var weChatStateTask: Task<Void, Never>?
-    private var weChatCommandTask: Task<Void, Never>?
+    private var feishuTaskLinkTimerTask: Task<Void, Never>?
+    private var refreshingFeishuBridge = false
+    private var popoverIsOpen = false
     private var refreshingProjects = false
     private var bridgeEnabledAt: Date?
     private var projectCatalog: [KSFProject] = []
@@ -84,7 +89,7 @@ final class UsageViewModel: ObservableObject {
     private var retryAttempt = 0
     private var wakeObserver: WorkspaceWakeObserver?
 
-    init(autoStart: Bool = true) {
+    init(autoStart: Bool = true, cleanupLegacyWeChatData: Bool = true) {
         let socketURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex/ipc/ipc.sock")
         taskActivityProvider = CodexDesktopTaskActivityClient(
@@ -111,6 +116,8 @@ final class UsageViewModel: ObservableObject {
         resetNotificationsEnabled = defaults.bool(forKey: "resetNotificationsEnabled")
         ksfRootPath = defaults.string(forKey: "ksfRootPath")
             ?? AppConfiguration.suggestedKSFRoot()
+        feishuBridgeRootPath = defaults.string(forKey: "feishuBridgeRootPath") ?? ""
+        selectedFeishuTargetAlias = defaults.string(forKey: "selectedFeishuTargetAlias") ?? ""
         isOnboardingComplete = defaults.bool(forKey: "onboardingComplete")
         pinnedProjectIDs = Set(defaults.stringArray(forKey: "pinnedProjectIDs") ?? [])
         projectUsage = projectUsageStore.load()
@@ -118,6 +125,14 @@ final class UsageViewModel: ObservableObject {
             previous: defaults.stringArray(forKey: "projectListOrder") ?? [],
             candidates: []
         )
+        if cleanupLegacyWeChatData && !defaults.bool(forKey: "didRemoveLegacyWeChatData") {
+            do {
+                try LegacyWeChatDataCleaner().clean()
+                defaults.set(true, forKey: "didRemoveLegacyWeChatData")
+            } catch {
+                feishuFeedback = error.localizedDescription
+            }
+        }
 
         if autoStart {
             Task { [weak self] in
@@ -135,8 +150,7 @@ final class UsageViewModel: ObservableObject {
         retryTask?.cancel()
         taskActivityUpdateTask?.cancel()
         projectRefreshTask?.cancel()
-        weChatStateTask?.cancel()
-        weChatCommandTask?.cancel()
+        feishuTaskLinkTimerTask?.cancel()
         if let wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
         }
@@ -161,8 +175,8 @@ final class UsageViewModel: ObservableObject {
             localTokens = "本机今日 Token 正在载入"
         }
 
-        let weChat = weChatState == .connected ? "，微信已连接" : ""
-        let summary = "\(quota)，\(localTokens)\(weChat)"
+        let feishu = feishuBridge.availability == .ready ? "，飞书桥已连接" : ""
+        let summary = "\(quota)，\(localTokens)\(feishu)"
 
         switch taskActivity.availability {
         case .loading:
@@ -174,15 +188,13 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    var weChatStatusText: String {
-        switch weChatState {
-        case .disconnected: return "未连接"
-        case .awaitingScan: return "等待扫码"
-        case .connecting: return "正在确认"
-        case .connected: return "已连接"
-        case .reconnecting: return "正在重连"
-        case .credentialsExpired: return "连接已失效"
-        case .failed: return "连接异常"
+    var feishuStatusText: String {
+        switch feishuBridge.availability {
+        case .notConfigured: return "未配置"
+        case .unavailable: return "不可用"
+        case .stopped: return "桥未运行"
+        case .dryRun: return "演练模式"
+        case .ready: return "已连接"
         }
     }
 
@@ -254,28 +266,6 @@ final class UsageViewModel: ObservableObject {
         )
         wakeObserver = observer
 
-        let stateUpdates = weChatConnector.stateUpdates
-        weChatStateTask = Task { [weak self] in
-            for await state in stateUpdates {
-                guard !Task.isCancelled, let self else { break }
-                self.weChatState = state
-                if case let .awaitingScan(qrContent) = state {
-                    self.weChatQRCodeContent = qrContent
-                } else if state == .connected || state == .disconnected {
-                    self.weChatQRCodeContent = nil
-                }
-                if case let .failed(message) = state { self.weChatFeedback = message }
-            }
-        }
-        let commandUpdates = weChatConnector.commandUpdates
-        weChatCommandTask = Task {
-            for await _ in commandUpdates {
-                guard !Task.isCancelled else { break }
-                // The command-processing module will consume this stream in a later release.
-            }
-        }
-        await weChatConnector.start()
-
         taskActivityUpdateTask = Task { [weak self, taskActivityProvider] in
             for await update in taskActivityProvider.updates {
                 guard !Task.isCancelled else { break }
@@ -287,6 +277,7 @@ final class UsageViewModel: ObservableObject {
         await refreshUsageData()
         if isOnboardingComplete {
             await refreshProjects()
+            await refreshFeishuBridge()
         }
         startTimers()
         if isOnboardingComplete {
@@ -319,6 +310,7 @@ final class UsageViewModel: ObservableObject {
         await refreshUsageData()
         if isOnboardingComplete {
             await refreshProjects()
+            await refreshFeishuBridge(showProgress: false)
         }
     }
 
@@ -330,7 +322,15 @@ final class UsageViewModel: ObservableObject {
     }
 
     func popoverDidOpen() {
+        popoverIsOpen = true
+        startFeishuTaskLinkPollingIfNeeded()
         Task { [weak self] in await self?.refreshAll() }
+    }
+
+    func popoverDidClose() {
+        popoverIsOpen = false
+        feishuTaskLinkTimerTask?.cancel()
+        feishuTaskLinkTimerTask = nil
     }
 
     func completeOnboarding() {
@@ -623,46 +623,162 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    func connectWeChat() {
-        guard !weChatActionInProgress else { return }
-        weChatActionInProgress = true
-        weChatFeedback = nil
+    func chooseFeishuBridgeRoot() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "选择"
+        panel.message = "选择 feishu-bot-bridge 工程目录"
+        if !feishuBridgeRootPath.isEmpty {
+            panel.directoryURL = URL(fileURLWithPath: feishuBridgeRootPath, isDirectory: true)
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let path = url.standardizedFileURL.path
+        do {
+            try feishuClient.validate(rootURL: URL(fileURLWithPath: path, isDirectory: true))
+            feishuBridgeRootPath = path
+            defaults.set(path, forKey: "feishuBridgeRootPath")
+            feishuFeedback = nil
+            Task { [weak self] in await self?.refreshFeishuBridge() }
+        } catch {
+            feishuFeedback = error.localizedDescription
+        }
+    }
+
+    func setFeishuTargetAlias(_ alias: String) {
+        selectedFeishuTargetAlias = alias
+        defaults.set(alias, forKey: "selectedFeishuTargetAlias")
+    }
+
+    func refreshFeishuBridge(showProgress: Bool = true) async {
+        guard !feishuBridgeRootPath.isEmpty else {
+            feishuBridge = .notConfigured
+            return
+        }
+        guard !refreshingFeishuBridge else { return }
+        refreshingFeishuBridge = true
+        if showProgress { feishuActionInProgress = true }
+        defer {
+            refreshingFeishuBridge = false
+            if showProgress { feishuActionInProgress = false }
+        }
+        do {
+            let client = feishuClient
+            let root = URL(fileURLWithPath: feishuBridgeRootPath, isDirectory: true)
+            let snapshot = try await Task.detached(priority: .utility) {
+                try client.inspect(rootURL: root)
+            }.value
+            feishuBridge = snapshot
+            if snapshot.availability == .ready, snapshot.taskLinkReady {
+                let links = try client.listTaskLinks(rootURL: root)
+                feishuTaskLinks = Dictionary(uniqueKeysWithValues: links.map { ($0.taskKey, $0) })
+            } else {
+                feishuTaskLinks = [:]
+            }
+            if !snapshot.targetAliases.contains(selectedFeishuTargetAlias) {
+                setFeishuTargetAlias(snapshot.targetAliases.count == 1 ? snapshot.targetAliases[0] : "")
+            }
+            feishuFeedback = nil
+            startFeishuTaskLinkPollingIfNeeded()
+        } catch {
+            feishuBridge = FeishuBridgeSnapshot(
+                availability: .unavailable(error.localizedDescription),
+                targetAliases: [],
+                taskLinkProtocolVersion: 0,
+                taskLinkReady: false,
+                readinessBlockers: []
+            )
+            feishuFeedback = error.localizedDescription
+        }
+    }
+
+    func sendFeishuTestMessage() {
+        guard !feishuActionInProgress, !selectedFeishuTargetAlias.isEmpty else { return }
+        feishuActionInProgress = true
+        feishuFeedback = nil
         Task { [weak self] in
             guard let self else { return }
-            defer { self.weChatActionInProgress = false }
+            defer { self.feishuActionInProgress = false }
             do {
-                _ = try await self.weChatConnector.beginLogin()
+                let client = self.feishuClient
+                let root = URL(fileURLWithPath: self.feishuBridgeRootPath, isDirectory: true)
+                let target = self.selectedFeishuTargetAlias
+                try await Task.detached(priority: .userInitiated) {
+                    try client.sendTest(rootURL: root, targetAlias: target)
+                }.value
+                self.feishuFeedback = "测试消息已发送到“\(target)”。"
+                await self.refreshFeishuBridge()
             } catch {
-                self.weChatFeedback = error.localizedDescription
+                self.feishuFeedback = error.localizedDescription
             }
         }
     }
 
-    func sendWeChatTestMessage() {
-        guard !weChatActionInProgress else { return }
-        weChatActionInProgress = true
-        weChatFeedback = nil
+    func feishuTaskLink(for task: ProjectTaskItem) -> FeishuTaskLinkSnapshot? {
+        guard let link = feishuTaskLinks[FeishuBridgeClient.taskKey(task.threadID)],
+              link.linkState == "active" else { return nil }
+        return link
+    }
+
+    func feishuTaskLinkError(for task: ProjectTaskItem) -> String? {
+        feishuTaskLinkErrors[task.id]
+    }
+
+    func toggleFeishuTaskLink(_ task: ProjectTaskItem) {
+        guard !feishuActionInProgress,
+              feishuBridge.availability == .ready,
+              !selectedFeishuTargetAlias.isEmpty,
+              !feishuBridgeRootPath.isEmpty,
+              !feishuTaskLinkActions.contains(task.id)
+        else { return }
+        feishuTaskLinkActions.insert(task.id)
+        feishuTaskLinkErrors.removeValue(forKey: task.id)
+        feishuFeedback = nil
+        let existing = feishuTaskLink(for: task)
+        let root = URL(fileURLWithPath: feishuBridgeRootPath, isDirectory: true)
+        let projectName = projectDashboard.projects.first(where: { $0.id == task.projectID })?.project?.name ?? "未分配项目"
+        let title = task.name?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? task.name! : "未命名任务"
+        let target = selectedFeishuTargetAlias
+        let client = feishuClient
         Task { [weak self] in
             guard let self else { return }
-            defer { self.weChatActionInProgress = false }
+            defer { self.feishuTaskLinkActions.remove(task.id) }
             do {
-                try await self.weChatConnector.send(text: "Codex Usage Bar 微信连接测试成功")
-                self.weChatFeedback = "测试消息已发送。"
+                let link = try await Task.detached(priority: .userInitiated) {
+                    if existing != nil {
+                        return try client.releaseTaskLink(rootURL: root, threadID: task.threadID)
+                    }
+                    return try client.createTaskLink(
+                        rootURL: root, threadID: task.threadID,
+                        title: title, projectName: projectName, targetAlias: target
+                    )
+                }.value
+                self.feishuTaskLinks[link.taskKey] = link
+                self.feishuTaskLinkErrors.removeValue(forKey: task.id)
+                self.feishuFeedback = existing == nil ? "“\(title)”已连接到飞书。" : "“\(title)”的飞书连接已解除。"
+                self.startFeishuTaskLinkPollingIfNeeded()
             } catch {
-                self.weChatFeedback = error.localizedDescription
+                let message = error.localizedDescription
+                self.feishuTaskLinkErrors[task.id] = message
+                self.feishuFeedback = message
             }
         }
     }
 
-    func disconnectWeChat() {
-        guard !weChatActionInProgress else { return }
-        weChatActionInProgress = true
-        weChatFeedback = nil
-        Task { [weak self] in
-            guard let self else { return }
-            await self.weChatConnector.disconnect()
-            self.weChatActionInProgress = false
-            self.weChatFeedback = "已断开微信并清除本地连接数据。"
+    private func configureSuggestedFeishuBridgeRoot(from catalog: [KSFProject]) {
+        guard feishuBridgeRootPath.isEmpty,
+              let project = catalog.first(where: { $0.name == "飞书桥" }),
+              let mapping = project.engineeringMappings.first(where: {
+                  FileManager.default.fileExists(atPath: $0.rootPath)
+              }) else { return }
+        do {
+            let root = URL(fileURLWithPath: mapping.rootPath, isDirectory: true).standardizedFileURL
+            try feishuClient.validate(rootURL: root)
+            feishuBridgeRootPath = root.path
+            defaults.set(root.path, forKey: "feishuBridgeRootPath")
+        } catch {
+            feishuFeedback = error.localizedDescription
         }
     }
 
@@ -674,12 +790,10 @@ final class UsageViewModel: ObservableObject {
         retryTask?.cancel()
         taskActivityUpdateTask?.cancel()
         projectRefreshTask?.cancel()
-        weChatStateTask?.cancel()
-        weChatCommandTask?.cancel()
+        feishuTaskLinkTimerTask?.cancel()
         Task { [weak self] in
             await self?.client?.stop()
             await self?.taskActivityProvider.stop()
-            await self?.weChatConnector.stop()
             await MainActor.run { NSApplication.shared.terminate(nil) }
         }
     }
@@ -722,6 +836,22 @@ final class UsageViewModel: ObservableObject {
                 await self?.refreshTokenUsage()
                 await self?.refreshProjects()
             }
+        }
+    }
+
+    private func startFeishuTaskLinkPollingIfNeeded() {
+        guard popoverIsOpen,
+              feishuTaskLinkTimerTask == nil,
+              feishuTaskLinks.values.contains(where: { $0.linkState == "active" })
+        else { return }
+        feishuTaskLinkTimerTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 3_000_000_000) } catch { break }
+                guard let self, self.popoverIsOpen else { break }
+                await self.refreshFeishuBridge(showProgress: false)
+                if !self.feishuTaskLinks.values.contains(where: { $0.linkState == "active" }) { break }
+            }
+            self?.feishuTaskLinkTimerTask = nil
         }
     }
 
@@ -789,6 +919,7 @@ final class UsageViewModel: ObservableObject {
             }.value
             bridgeEnabledAt = bridgeResult.0
             projectCatalog = bridgeResult.1.projects
+            configureSuggestedFeishuBridgeRoot(from: projectCatalog)
         } catch {
             await taskActivityProvider.reconcileLocalTaskCandidates([])
             projectDashboard = ProjectDashboardSnapshot(

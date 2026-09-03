@@ -91,8 +91,9 @@ public struct CodexTaskObservation: Equatable, Sendable {
 public enum TaskActivityClassifier {
     public enum Classification: Int, Comparable, Equatable, Sendable {
         case ignored = 0
-        case running = 1
-        case waiting = 2
+        case completed = 1
+        case running = 2
+        case waiting = 3
 
         public static func < (lhs: Classification, rhs: Classification) -> Bool {
             lhs.rawValue < rhs.rawValue

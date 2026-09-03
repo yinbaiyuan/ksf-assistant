@@ -23,10 +23,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @MainActor
-private final class StatusItemController: NSObject {
+private final class StatusItemController: NSObject, NSPopoverDelegate {
     private let viewModel = UsageViewModel()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    private let weChatConnectionIndicator = StatusItemImageRenderer.makeConnectionIndicator()
+    private let feishuConnectionIndicator = StatusItemImageRenderer.makeConnectionIndicator()
     private let popover = NSPopover()
     private var viewModelObservation: AnyCancellable?
     private var lastPresentation: StatusItemPresentation?
@@ -34,7 +34,7 @@ private final class StatusItemController: NSObject {
     override init() {
         super.init()
 
-        let contentView = UsagePopoverView(viewModel: viewModel)
+        let contentView = UsagePopoverView(viewModel: viewModel, refreshOnAppear: false)
         let hostingController = NSHostingController(rootView: contentView)
         hostingController.sizingOptions = [.preferredContentSize]
         hostingController.view.setFrameSize(NSSize(width: 336, height: 560))
@@ -43,6 +43,7 @@ private final class StatusItemController: NSObject {
         popover.contentSize = NSSize(width: 336, height: fittingHeight)
         popover.behavior = .transient
         popover.animates = false
+        popover.delegate = self
 
         if let button = statusItem.button {
             button.target = self
@@ -50,7 +51,7 @@ private final class StatusItemController: NSObject {
             button.sendAction(on: [.leftMouseUp])
             button.imagePosition = .imageOnly
             button.imageScaling = .scaleNone
-            button.addSubview(weChatConnectionIndicator)
+            button.addSubview(feishuConnectionIndicator)
         }
 
         updateStatusItem()
@@ -64,7 +65,12 @@ private final class StatusItemController: NSObject {
             popover.performClose(sender)
         } else {
             popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+            viewModel.popoverDidOpen()
         }
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        viewModel.popoverDidClose()
     }
 
     private func updateStatusItem() {
@@ -75,7 +81,7 @@ private final class StatusItemController: NSObject {
             runningText: viewModel.runningTaskText,
             waitingText: viewModel.waitingTaskText,
             accessibilityLabel: viewModel.menuTitle,
-            weChatConnected: viewModel.weChatState == .connected
+            feishuConnected: viewModel.feishuBridge.availability == .ready
         )
         guard presentation != lastPresentation else { return }
 
@@ -94,7 +100,7 @@ private final class StatusItemController: NSObject {
         button.image = image
         button.toolTip = presentation.accessibilityLabel
         button.setAccessibilityLabel(presentation.accessibilityLabel)
-        weChatConnectionIndicator.isHidden = !presentation.weChatConnected
+        feishuConnectionIndicator.isHidden = !presentation.feishuConnected
         lastPresentation = presentation
     }
 
@@ -104,6 +110,6 @@ private final class StatusItemController: NSObject {
         let runningText: String
         let waitingText: String
         let accessibilityLabel: String
-        let weChatConnected: Bool
+        let feishuConnected: Bool
     }
 }

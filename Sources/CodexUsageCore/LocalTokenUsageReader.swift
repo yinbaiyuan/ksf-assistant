@@ -27,10 +27,14 @@ public struct LocalTokenUsageReader {
         var hasCompleteBreakdown = true
 
         mutating func add(totalDelta: Int64, breakdown: TokenUsageBreakdown?) {
-            guard totalDelta > 0 else { return }
-            totalTokens += totalDelta
+            guard totalDelta >= 0 else { return }
+            if totalDelta > 0 {
+                totalTokens += totalDelta
+            }
             guard let breakdown else {
-                hasCompleteBreakdown = false
+                if totalDelta > 0 {
+                    hasCompleteBreakdown = false
+                }
                 return
             }
             regularInputTokens += breakdown.regularInputTokens
@@ -49,12 +53,18 @@ public struct LocalTokenUsageReader {
         }
 
         var breakdown: TokenUsageBreakdown? {
-            guard hasCompleteBreakdown else { return nil }
-            return TokenUsageBreakdown(
+            guard hasCompleteBreakdown,
+                  regularInputTokens >= 0,
+                  cachedInputTokens >= 0,
+                  outputTokens >= 0
+            else { return nil }
+            let result = TokenUsageBreakdown(
                 regularInputTokens: regularInputTokens,
                 cachedInputTokens: cachedInputTokens,
                 outputTokens: outputTokens
             )
+            guard result.totalTokens == totalTokens else { return nil }
+            return result
         }
     }
 
@@ -335,19 +345,19 @@ public struct LocalTokenUsageReader {
         let outputDelta: Int64
         if let previous {
             guard let previousBreakdown = previous.breakdown else { return nil }
-            inputDelta = max(0, currentBreakdown.inputTokens - previousBreakdown.inputTokens)
-            cachedInputDelta = max(
-                0,
-                currentBreakdown.cachedInputTokens - previousBreakdown.cachedInputTokens
-            )
-            outputDelta = max(0, currentBreakdown.outputTokens - previousBreakdown.outputTokens)
+            // Codex can revise the cumulative split without changing the cumulative total,
+            // for example by reclassifying previously ordinary input as cached input. Keep
+            // those signed component deltas so the final daily composition still reconciles.
+            inputDelta = currentBreakdown.inputTokens - previousBreakdown.inputTokens
+            cachedInputDelta = currentBreakdown.cachedInputTokens - previousBreakdown.cachedInputTokens
+            outputDelta = currentBreakdown.outputTokens - previousBreakdown.outputTokens
         } else {
             inputDelta = max(0, currentBreakdown.inputTokens)
             cachedInputDelta = max(0, currentBreakdown.cachedInputTokens)
             outputDelta = max(0, currentBreakdown.outputTokens)
         }
 
-        let regularInputDelta = max(0, inputDelta - cachedInputDelta)
+        let regularInputDelta = inputDelta - cachedInputDelta
         let breakdown = TokenUsageBreakdown(
             regularInputTokens: regularInputDelta,
             cachedInputTokens: cachedInputDelta,

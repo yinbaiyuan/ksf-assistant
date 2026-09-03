@@ -22,7 +22,7 @@ if rg -n -g '!Tests/**' -g '!dist/**' -g '!.build/**' \
     exit 1
 fi
 
-if git ls-files | rg '(^|/)(dist|\.build)/|token-history-v[0-9]+\.json$|wechat-state-v[0-9]+\.enc$'; then
+if git ls-files | rg '(^|/)(dist|\.build)/|token-history-v[0-9]+\.json$|wechat-state-v[0-9]+\.enc$|feishu-bridge/client\.json$'; then
     echo "Release hygiene failed: runtime or build data is tracked by Git." >&2
     exit 1
 fi

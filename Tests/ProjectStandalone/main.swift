@@ -187,6 +187,35 @@ private func testProjectAggregation() throws {
     )
     try expect(catalogOnly.count, 0, "catalog-only projects do not enter the home workset")
 
+    let completedItems = KSFProjectDashboardBuilder.build(
+        catalog: [alpha],
+        activeTasks: [],
+        threads: [CodexThreadMetadata(
+            id: "completed",
+            name: "已完成任务",
+            cwd: "/git/alpha",
+            createdAt: 1,
+            updatedAt: 20,
+            path: "/sessions/completed.jsonl"
+        )],
+        projections: [:],
+        pinnedProjectIDs: [],
+        usage: [:],
+        launchActions: [:]
+    )
+    try expect(completedItems.map(\.id), ["alpha"], "completed task keeps its project in the workset")
+    try expect(completedItems.first?.tasks.map(\.threadID), ["completed"], "completed task remains listed")
+    try expect(completedItems.first?.tasks.first?.classification, .completed, "completed task has a stable display state")
+    try expect(completedItems.first?.activeTaskCount, 0, "completed task is not counted as active")
+    try expect(KSFProjectWorkset.select(from: completedItems).isEmpty, true, "unpinned completed-only project leaves the home workset")
+    let pinnedCompleted = ProjectDashboardItem(
+        id: "alpha",
+        project: alpha,
+        isPinned: true,
+        tasks: completedItems[0].tasks
+    )
+    try expect(KSFProjectWorkset.select(from: [pinnedCompleted]).map(\.id), ["alpha"], "pinned project keeps completed tasks visible")
+
     let mixedWait = CodexTaskObservation(
         id: "mixed",
         hostID: "local",

@@ -3,7 +3,6 @@ import Foundation
 enum AppConfiguration {
     static let bundleIdentifier = "com.ksf.codexusagebar"
     static let applicationSupportDirectoryName = bundleIdentifier
-    static let weChatKeychainService = bundleIdentifier + ".wechat"
     static let appServerQueueLabel = bundleIdentifier + ".app-server.stdout"
     static let desktopIPCQueueLabel = bundleIdentifier + ".desktop-ipc.read"
 

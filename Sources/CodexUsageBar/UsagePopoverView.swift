@@ -1,7 +1,5 @@
 import AppKit
 import CodexUsageCore
-import CoreImage
-import CoreImage.CIFilterBuiltins
 import SwiftUI
 
 struct UsagePopoverView: View {
@@ -9,7 +7,7 @@ struct UsagePopoverView: View {
     var refreshOnAppear = true
     @State private var page: Page = .home
     @State private var showAllProjects = false
-    @State private var expandedTaskID: String?
+    @State private var selectedTaskID: String?
     @State private var selectedLocalHistoryDate: String?
 
     var body: some View {
@@ -24,10 +22,12 @@ struct UsagePopoverView: View {
                     tokenHistoryPage
                 case .projectLibrary:
                     projectLibraryPage
+                case .taskDetail:
+                    taskDetailPage
                 case .settings:
                     settingsPage
-                case .wechat:
-                    weChatPage
+                case .feishu:
+                    feishuPage
                 }
             }
         }
@@ -37,14 +37,9 @@ struct UsagePopoverView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
             page = .home
             showAllProjects = false
-            expandedTaskID = nil
+            selectedTaskID = nil
             selectedLocalHistoryDate = nil
             if refreshOnAppear { viewModel.popoverDidOpen() }
-        }
-        .onChange(of: viewModel.homeProjectItems.flatMap { $0.tasks.map(\.id) }) { taskIDs in
-            if let expandedTaskID, !taskIDs.contains(expandedTaskID) {
-                self.expandedTaskID = nil
-            }
         }
         .onChange(of: viewModel.localTokenHistory.map(\.startDate)) { dates in
             if selectedLocalHistoryDate == nil || !dates.contains(selectedLocalHistoryDate ?? "") {
@@ -123,7 +118,7 @@ struct UsagePopoverView: View {
             .buttonStyle(.borderedProminent)
             .disabled(viewModel.onboardingInProgress || viewModel.ksfRootPath.isEmpty)
 
-            Text("额度和实时任务读取独立于 KSF；微信连接可在完成设置后扫码启用。")
+            Text("额度和实时任务读取独立于 KSF；飞书消息通过本机飞书桥发送。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -240,7 +235,7 @@ struct UsagePopoverView: View {
     @ViewBuilder
     private func projectContainer(_ item: ProjectDashboardItem) -> some View {
         if item.isUnassigned {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 7) {
                     Image(systemName: "folder.badge.questionmark")
                         .font(.system(size: 11, weight: .medium))
@@ -256,7 +251,7 @@ struct UsagePopoverView: View {
                     ForEach(Array(item.tasks.enumerated()), id: \.element.id) { index, task in
                         projectTaskRow(task)
                         if index < item.tasks.count - 1 {
-                            Divider().padding(.leading, 16)
+                            Divider().opacity(0.45).padding(.leading, 16)
                         }
                     }
                 }
@@ -274,7 +269,7 @@ struct UsagePopoverView: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel(projectAccessibilityLabel(item))
         } else if let project = item.project {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 7) {
                     Text(project.name)
                         .font(.subheadline.weight(.semibold))
@@ -283,7 +278,8 @@ struct UsagePopoverView: View {
                     projectTaskStatus(item)
                     projectRowIconButton(
                         systemName: item.isPinned ? "pin.fill" : "pin",
-                        label: item.isPinned ? "取消固定" : "固定项目"
+                        label: item.isPinned ? "取消固定" : "固定项目",
+                        tint: .secondary
                     ) {
                         viewModel.togglePinned(item.id)
                     }
@@ -294,7 +290,7 @@ struct UsagePopoverView: View {
                         ForEach(Array(item.tasks.enumerated()), id: \.element.id) { index, task in
                             projectTaskRow(task)
                             if index < item.tasks.count - 1 {
-                                Divider().padding(.leading, 16)
+                                Divider().opacity(0.45).padding(.leading, 16)
                             }
                         }
                     }
@@ -346,113 +342,170 @@ struct UsagePopoverView: View {
     }
 
     private func projectTaskRow(_ task: ProjectTaskItem) -> some View {
-        let isExpanded = expandedTaskID == task.id
-        return VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 3) {
-                Button { toggleTaskExpansion(task.id) } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: taskStatusSymbol(task))
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(task.classification == .waiting ? Color.orange : .secondary)
-                            .frame(width: 11)
-                        Text(taskDisplayName(task))
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                        Spacer(minLength: 5)
-                        Text(taskStatusText(task))
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(task.classification == .waiting ? Color.orange : .secondary)
-                            .lineLimit(1)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .top, spacing: 5) {
+                Button { viewModel.openTask(task) } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 5) {
+                            Image(systemName: taskStatusSymbol(task))
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(taskStatusColor(task))
+                                .frame(width: 11)
+                            Text(taskDisplayName(task))
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            Spacer(minLength: 5)
+                            semanticBadge(
+                                taskStatusText(task),
+                                color: taskStatusColor(task)
+                            )
+                        }
+                        .frame(height: 20, alignment: .center)
+                        if let route = task.route {
+                            taskRouteSummaryLine(route)
+                            taskAbilitySummaryLine(route)
+                        } else {
+                            Label("未绑定 KSF 路由", systemImage: "link.badge.plus")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                                .padding(.leading, 16)
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 
-                projectRowIconButton(systemName: "arrow.up.forward.app", label: "在 Codex 中打开任务") {
-                    viewModel.openTask(task)
+                projectRowIconButton(systemName: "info.circle", label: "查看任务详情", tint: .secondary) {
+                    selectedTaskID = task.id
+                    page = .taskDetail
                 }
-                projectRowIconButton(
-                    systemName: isExpanded ? "chevron.up" : "chevron.down",
-                    label: isExpanded ? "收起任务路由" : "展开任务路由"
-                ) {
-                    toggleTaskExpansion(task.id)
-                }
-            }
-
-            Button { toggleTaskExpansion(task.id) } label: {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(taskCategoryAndJobText(task.route))
-                        .font(.caption2)
-                        .foregroundStyle(task.route == nil ? .tertiary : .secondary)
-                        .lineLimit(1)
-                    if let route = task.route {
-                        HStack(spacing: 4) {
-                            Text(taskAbilityText(route))
-                                .lineLimit(1)
-                            Spacer(minLength: 4)
-                            Text("\(route.dispatchableSkills.count) 可调度 Skill")
-                                .lineLimit(1)
-                        }
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                if viewModel.feishuTaskLinkActions.contains(task.id) {
+                    ProgressView().controlSize(.mini).frame(width: 20, height: 20)
+                } else {
+                    let link = viewModel.feishuTaskLink(for: task)
+                    projectRowIconButton(
+                        systemName: link == nil ? "paperplane" : feishuTaskLinkSymbol(link!.state),
+                        label: link == nil ? "连接此任务到飞书" : "解除飞书连接，当前状态：\(feishuTaskLinkText(link!.state))",
+                        tint: link.map { feishuTaskLinkColor($0.state) } ?? .secondary
+                    ) {
+                        viewModel.toggleFeishuTaskLink(task)
                     }
+                    .disabled(
+                        viewModel.feishuBridge.availability != .ready
+                            || viewModel.selectedFeishuTargetAlias.isEmpty
+                    )
                 }
-                .padding(.leading, 16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-
-            if isExpanded, let route = task.route {
-                expandedTaskRoute(route)
+            if let error = viewModel.feishuTaskLinkError(for: task) {
+                Label(error, systemImage: "exclamationmark.circle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
                     .padding(.leading, 16)
-                    .padding(.top, 2)
+                    .accessibilityLabel("飞书连接失败：\(error)")
             }
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 6)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(taskAccessibilityLabel(task))
     }
 
-    private func toggleTaskExpansion(_ taskID: String) {
-        expandedTaskID = expandedTaskID == taskID ? nil : taskID
+    private func taskRouteSummaryLine(_ route: KSFRouteSummary) -> some View {
+        HStack(spacing: 5) {
+            Label(route.category?.name ?? "未分类", systemImage: "square.grid.2x2")
+            Text("·")
+                .foregroundStyle(.tertiary)
+            Label(route.mainJob?.name ?? "无主岗位", systemImage: "person.crop.circle")
+        }
+        .font(.caption2.weight(.medium))
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .padding(.leading, 16)
     }
 
-    private func expandedTaskRoute(_ route: KSFRouteSummary) -> some View {
+    private func taskAbilitySummaryLine(_ route: KSFRouteSummary) -> some View {
+        HStack(spacing: 4) {
+            Label(taskAbilityText(route), systemImage: "hammer")
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Label("\(route.dispatchableSkills.count) Skill", systemImage: "sparkles")
+                .lineLimit(1)
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .padding(.leading, 16)
+    }
+
+    private func feishuTaskLinkText(_ state: String) -> String {
+        switch state {
+        case "waiting_current_turn": return "等待当前轮"
+        case "running": return "执行中"
+        case "waiting_input": return "等待输入"
+        case "desktop_action_required": return "需要桌面操作"
+        case "queued": return "消息排队"
+        case "completed": return "本轮完成"
+        case "interrupted": return "本轮已停止"
+        case "failed": return "执行失败"
+        default: return "已连接"
+        }
+    }
+
+    private func feishuTaskLinkSymbol(_ state: String) -> String {
+        switch state {
+        case "waiting_current_turn", "queued": return "clock.badge"
+        case "running": return "paperplane.fill"
+        case "waiting_input": return "questionmark.bubble"
+        case "desktop_action_required": return "desktopcomputer"
+        case "interrupted": return "stop.circle"
+        case "failed": return "exclamationmark.triangle"
+        default: return "paperplane.circle.fill"
+        }
+    }
+
+    private func taskRouteDetails(_ route: KSFRouteSummary) -> some View {
         let presentation = KSFRoutePresentation(route: route)
-        return VStack(alignment: .leading, spacing: 5) {
+        return VStack(alignment: .leading, spacing: 9) {
             routeDetailLine(
                 label: "工作类别",
                 value: presentation.category?.name ?? "未分类",
-                status: presentation.category?.validationStatus
+                status: presentation.category?.validationStatus,
+                symbol: "square.grid.2x2",
+                color: .indigo
             )
             ForEach(Array(presentation.jobGroups.enumerated()), id: \.offset) { _, group in
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 6) {
                     routeDetailLine(
                         label: group.job?.role == "main" ? "主岗位" : group.job == nil ? "其他基本功" : "协同岗位",
                         value: group.job?.name ?? "未关联岗位",
-                        status: group.job?.validationStatus
+                        status: group.job?.validationStatus,
+                        symbol: group.job?.role == "main" ? "person.crop.circle.fill" : "person.2.fill",
+                        color: .purple
                     )
                     ForEach(Array(group.abilities.enumerated()), id: \.offset) { _, abilityGroup in
                         VStack(alignment: .leading, spacing: 2) {
                             routeDetailLine(
                                 label: "基本功",
                                 value: abilityGroup.ability.name ?? "未命名基本功",
-                                status: abilityGroup.ability.validationStatus
+                                status: abilityGroup.ability.validationStatus,
+                                symbol: "hammer.fill",
+                                color: .teal
                             )
                             ForEach(Array(abilityGroup.skills.enumerated()), id: \.offset) { _, skill in
                                 skillDetailLine(skill)
                             }
                         }
-                        .padding(.leading, 8)
+                        .padding(.leading, 12)
                     }
                 }
+                .padding(.vertical, 2)
             }
             if !presentation.unassignedSkills.isEmpty {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("其他可调度 Skill")
-                        .font(.caption2.weight(.medium))
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("其他可调度 Skill", systemImage: "sparkles")
+                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                     ForEach(Array(presentation.unassignedSkills.enumerated()), id: \.offset) { _, skill in
                         skillDetailLine(skill)
@@ -460,33 +513,193 @@ struct UsagePopoverView: View {
                 }
             }
         }
-        .padding(6)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.65), in: RoundedRectangle(cornerRadius: 6))
     }
 
-    private func routeDetailLine(label: String, value: String, status: String?) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 4) {
-            Text(label).foregroundStyle(.tertiary)
-            Text(value).foregroundStyle(.primary)
+    private func routeDetailLine(
+        label: String,
+        value: String,
+        status: String?,
+        symbol: String,
+        color: Color
+    ) -> some View {
+        HStack(alignment: .center, spacing: 6) {
+            Image(systemName: symbol)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(color)
+                .frame(width: 13)
+            Text(label)
+                .foregroundStyle(.secondary)
+                .frame(width: 48, alignment: .leading)
+            Text(value)
+                .fontWeight(.medium)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+            Spacer(minLength: 4)
             if let status, !status.isEmpty {
-                Text("[\(status)]").foregroundStyle(.secondary)
+                Text(status)
+                    .foregroundStyle(validationStatusColor(status))
             }
         }
         .font(.caption2)
-        .lineLimit(1)
     }
 
     private func skillDetailLine(_ skill: KSFDispatchableSkill) -> some View {
-        HStack(spacing: 4) {
-            Text("可调度 Skill").foregroundStyle(.tertiary)
-            Text(skill.skillID ?? "未命名 Skill").foregroundStyle(.primary)
+        HStack(spacing: 5) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(Color.blue)
+                .frame(width: 12)
+            Text(skill.skillID ?? "未命名 Skill")
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+            Spacer(minLength: 4)
             if let stage = skill.skillStage, !stage.isEmpty {
-                Text("[\(stage)]").foregroundStyle(.secondary)
+                Text(stage)
+                    .foregroundStyle(skillStageColor(stage))
             }
         }
         .font(.caption2)
-        .lineLimit(1)
-        .padding(.leading, 8)
+        .padding(.leading, 12)
+    }
+
+    private var taskDetailPage: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            secondaryHeader(title: "任务详情", backLabel: "返回工作台") {
+                page = .home
+                selectedTaskID = nil
+            }
+
+            if let context = selectedTaskContext {
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Circle()
+                            .fill(taskStatusColor(context.task))
+                            .frame(width: 6, height: 6)
+                        Text(taskDisplayName(context.task))
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(2)
+                        Spacer(minLength: 4)
+                        Text(taskStatusText(context.task))
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(taskStatusColor(context.task))
+                    }
+                    Label(context.projectName, systemImage: "folder")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .padding(10)
+                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "point.3.connected.trianglepath.dotted")
+                            .foregroundStyle(Color.indigo)
+                        Text("KSF 路由")
+                            .foregroundStyle(.primary)
+                    }
+                    .font(.caption.weight(.semibold))
+                    if let route = context.task.route {
+                        taskRouteDetails(route)
+                    } else {
+                        Text("该任务尚未绑定 KSF 路由。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+                    }
+                }
+                .padding(10)
+                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+
+                taskDetailActions(context.task)
+
+                if let failure = viewModel.taskOpenFailure,
+                   failure.projectID == context.task.projectID {
+                    compactStatus(failure.message, color: .red, symbol: "exclamationmark.circle.fill")
+                }
+                if let feedback = viewModel.feishuFeedback {
+                    compactStatus(
+                        feedback,
+                        color: feedback.contains("成功") || feedback.contains("已连接") ? .green : .orange,
+                        symbol: feedback.contains("成功") || feedback.contains("已连接")
+                            ? "checkmark.circle.fill" : "info.circle.fill"
+                    )
+                }
+            } else {
+                emptyState("任务详情暂不可用", detail: "任务可能已被归档、移除，或当前项目数据尚未完成同步。")
+            }
+        }
+    }
+
+    private func taskDetailActions(_ task: ProjectTaskItem) -> some View {
+        let link = viewModel.feishuTaskLink(for: task)
+        let isUpdatingLink = viewModel.feishuTaskLinkActions.contains(task.id)
+        return VStack(alignment: .leading, spacing: 6) {
+            Divider()
+
+            HStack(spacing: 8) {
+                Button { viewModel.openTask(task) } label: {
+                    Label("打开 Codex", systemImage: "arrow.up.forward.app")
+                        .frame(maxWidth: .infinity)
+                }
+                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
+
+                Button { viewModel.toggleFeishuTaskLink(task) } label: {
+                    HStack(spacing: 5) {
+                        if isUpdatingLink {
+                            ProgressView()
+                                .controlSize(.mini)
+                        } else {
+                            Image(systemName: link == nil ? "paperplane" : "paperplane.slash")
+                        }
+                        Text(isUpdatingLink ? "正在更新" : link == nil ? "连接飞书" : "解除飞书")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .controlSize(.small)
+                .buttonStyle(.bordered)
+                .disabled(
+                    isUpdatingLink
+                        || viewModel.feishuBridge.availability != .ready
+                        || viewModel.selectedFeishuTargetAlias.isEmpty
+                )
+            }
+
+            if let link {
+                VStack(alignment: .leading, spacing: 3) {
+                    Label(
+                        "\(link.targetAlias) · 全权限 · 24 小时",
+                        systemImage: feishuTaskLinkSymbol(link.state)
+                    )
+                    .foregroundStyle(feishuTaskLinkColor(link.state))
+                    HStack(spacing: 4) {
+                        Text(feishuTaskLinkText(link.state))
+                        Text("·")
+                        Text("当前控制：\(feishuTurnOwnerText(link.turnOwner))")
+                    }
+                    Text("剩余 \(feishuRemainingTime(link.remainingSeconds)) · 最后同步 \(feishuTimestamp(link.updatedAt))")
+                        .foregroundStyle(.tertiary)
+                    if !link.phase.isEmpty {
+                        Text("\(link.phase)\(link.detailSummary.isEmpty ? "" : " · \(link.detailSummary)")")
+                            .lineLimit(2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .font(.caption2)
+            }
+        }
+        .padding(.top, 1)
+    }
+
+    private var selectedTaskContext: (task: ProjectTaskItem, projectName: String)? {
+        guard let selectedTaskID else { return nil }
+        for item in viewModel.projectDashboard.projects {
+            if let task = item.tasks.first(where: { $0.id == selectedTaskID }) {
+                return (task, item.project?.name ?? "无项目")
+            }
+        }
+        return nil
     }
 
     private func projectInlineMetric(_ label: String, value: String) -> some View {
@@ -496,6 +709,7 @@ struct UsagePopoverView: View {
             Text(value)
                 .fontWeight(.semibold)
                 .monospacedDigit()
+                .foregroundStyle(.primary)
         }
         .font(.caption2)
         .lineLimit(1)
@@ -517,22 +731,27 @@ struct UsagePopoverView: View {
                 viewModel.openProjectCard(project)
             }
         }
+        .padding(.top, 7)
+        .overlay(alignment: .top) { Divider().opacity(0.55) }
     }
 
     private func projectRowIconButton(
         systemName: String,
         label: String,
         disabled: Bool = false,
+        tint: Color = .secondary,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(tint)
                 .frame(width: 20, height: 20)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(disabled)
+        .opacity(disabled ? 0.45 : 1)
         .help(label)
         .accessibilityLabel(label)
     }
@@ -630,20 +849,30 @@ struct UsagePopoverView: View {
         HStack(spacing: 5) {
             switch viewModel.taskActivity.availability {
             case .loading:
-                Label("…", systemImage: "play.fill")
+                projectTaskCount("…", systemImage: "play.fill", color: .secondary)
             case .unsupportedProtocol, .offline:
-                Label("—", systemImage: "play.fill")
-                Label("—", systemImage: "person.fill.questionmark")
+                projectTaskCount("—", systemImage: "play.fill", color: .secondary)
+                projectTaskCount("—", systemImage: "person.fill.questionmark", color: .secondary)
             case .available, .desktopNotRunning:
-                Label("\(item.runningCount)", systemImage: "play.fill")
+                projectTaskCount(
+                    "\(item.runningCount)",
+                    systemImage: "play.fill",
+                    color: item.runningCount > 0 ? .blue : .secondary
+                )
                 if item.waitingCount > 0 {
-                    Label("\(item.waitingCount)", systemImage: "person.fill.questionmark")
+                    projectTaskCount("\(item.waitingCount)", systemImage: "person.fill.questionmark", color: .orange)
                 }
             }
         }
-        .font(.system(size: 10, weight: .medium, design: .rounded))
         .monospacedDigit()
-        .foregroundStyle(item.waitingCount > 0 ? Color.orange : .secondary)
+    }
+
+    private func projectTaskCount(_ text: String, systemImage: String, color: Color) -> some View {
+        Label(text, systemImage: systemImage)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .accessibilityElement(children: .combine)
     }
 
     private func mainQuotaCard(_ bucket: RateLimitBucket) -> some View {
@@ -1074,12 +1303,12 @@ struct UsagePopoverView: View {
                 )
                 Divider()
                 Button {
-                    page = .wechat
+                    page = .feishu
                 } label: {
                     HStack(spacing: 8) {
                         VStack(alignment: .leading, spacing: 1) {
-                            Text("微信连接").font(.caption)
-                            Text(viewModel.weChatStatusText)
+                            Text("飞书桥").font(.caption)
+                            Text(viewModel.feishuStatusText)
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
                         }
@@ -1092,7 +1321,7 @@ struct UsagePopoverView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.vertical, 7)
-                .accessibilityLabel("微信连接，\(viewModel.weChatStatusText)")
+                .accessibilityLabel("飞书桥，\(viewModel.feishuStatusText)")
             }
             .padding(.horizontal, 10)
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
@@ -1109,137 +1338,120 @@ struct UsagePopoverView: View {
         }
     }
 
-    private var weChatPage: some View {
+    private var feishuPage: some View {
         VStack(alignment: .leading, spacing: 10) {
-            secondaryHeader(title: "微信连接", backLabel: "返回设置") { page = .settings }
+            secondaryHeader(title: "飞书桥", backLabel: "返回设置") { page = .settings }
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 7) {
-                    Image(systemName: weChatStatusSymbol)
-                        .foregroundStyle(weChatStatusColor)
+                    Image(systemName: feishuStatusSymbol)
+                        .foregroundStyle(feishuStatusColor)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(viewModel.weChatStatusText)
+                        Text(viewModel.feishuStatusText)
                             .font(.caption.weight(.semibold))
-                        Text(weChatStatusDetail)
+                        Text(feishuStatusDetail)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if viewModel.weChatActionInProgress || viewModel.weChatState == .connecting {
+                    if viewModel.feishuActionInProgress {
                         ProgressView().controlSize(.small)
                     }
                 }
 
-                if let content = viewModel.weChatQRCodeContent,
-                   let image = qrCodeImage(for: content) {
-                    VStack(spacing: 6) {
-                        Image(nsImage: image)
-                            .interpolation(.none)
-                            .resizable()
-                            .frame(width: 152, height: 152)
-                            .accessibilityLabel("微信连接二维码")
-                        Text("使用手机微信扫码并确认连接")
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("桥工程").font(.caption)
+                        Text(viewModel.feishuBridgeRootPath.isEmpty ? "尚未选择" : viewModel.feishuBridgeRootPath)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 4)
+                    Spacer()
+                    Button("选择") { viewModel.chooseFeishuBridgeRoot() }
+                        .controlSize(.small)
                 }
 
-                if let feedback = viewModel.weChatFeedback {
+                if !viewModel.feishuBridge.targetAliases.isEmpty {
+                    Picker("授权单聊", selection: Binding(
+                        get: { viewModel.selectedFeishuTargetAlias },
+                        set: { viewModel.setFeishuTargetAlias($0) }
+                    )) {
+                        Text("请选择").tag("")
+                        ForEach(viewModel.feishuBridge.targetAliases, id: \.self) { alias in
+                            Text(alias).tag(alias)
+                        }
+                    }
+                    .font(.caption)
+                } else if !viewModel.feishuBridgeRootPath.isEmpty {
+                    Text("飞书桥尚未配置可控制任务的授权单聊别名。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                Text("测试正文：Codex Usage Bar 飞书桥连接测试成功")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                if let feedback = viewModel.feishuFeedback {
                     Text(feedback)
                         .font(.caption2)
                         .foregroundStyle(feedback.contains("成功") || feedback.contains("已发送") ? .green : .secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                weChatActions
+                HStack(spacing: 8) {
+                    Button("刷新状态") {
+                        Task { await viewModel.refreshFeishuBridge() }
+                    }
+                    .controlSize(.small)
+                    .disabled(viewModel.feishuActionInProgress || viewModel.feishuBridgeRootPath.isEmpty)
+                    Spacer()
+                    Button("发送测试消息") { viewModel.sendFeishuTestMessage() }
+                        .controlSize(.small)
+                        .disabled(
+                            viewModel.feishuActionInProgress
+                                || viewModel.selectedFeishuTargetAlias.isEmpty
+                                || viewModel.feishuBridge.availability != .ready
+                        )
+                }
             }
             .padding(10)
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
 
-            Text("仅接收扫码账号本人的文字单聊。收到的命令会加密保存在本机待处理队列；当前不会执行命令或连接 Codex 任务。")
+            Text("Usage Bar 不保存飞书凭据或真实目标 ID。连接后，指定单聊可在 24 小时闲置租约内以全权限控制所选 Codex 任务；身份校验、附件、脱敏和审计均由飞书桥负责。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    @ViewBuilder
-    private var weChatActions: some View {
-        switch viewModel.weChatState {
-        case .connected:
-            HStack(spacing: 8) {
-                Button("发送测试消息") { viewModel.sendWeChatTestMessage() }
-                    .controlSize(.small)
-                    .disabled(viewModel.weChatActionInProgress)
-                Spacer()
-                Button("断开", role: .destructive) { viewModel.disconnectWeChat() }
-                    .controlSize(.small)
-                    .disabled(viewModel.weChatActionInProgress)
-            }
-        case .reconnecting:
-            HStack(spacing: 8) {
-                Text("网络恢复后会自动继续接收。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("断开", role: .destructive) { viewModel.disconnectWeChat() }
-                    .controlSize(.small)
-            }
-        case .awaitingScan, .connecting:
-            Button("刷新二维码") { viewModel.connectWeChat() }
-                .controlSize(.small)
-                .disabled(viewModel.weChatActionInProgress)
-        case .disconnected, .credentialsExpired, .failed:
-            Button(viewModel.weChatState == .disconnected ? "连接微信" : "重新连接") {
-                viewModel.connectWeChat()
-            }
-            .controlSize(.small)
-            .disabled(viewModel.weChatActionInProgress)
+    private var feishuStatusSymbol: String {
+        switch viewModel.feishuBridge.availability {
+        case .ready: return "checkmark.circle.fill"
+        case .dryRun: return "testtube.2"
+        case .unavailable: return "exclamationmark.triangle.fill"
+        case .stopped: return "pause.circle"
+        case .notConfigured: return "link.badge.plus"
         }
     }
 
-    private var weChatStatusSymbol: String {
-        switch viewModel.weChatState {
-        case .connected: return "checkmark.circle.fill"
-        case .awaitingScan, .connecting: return "qrcode.viewfinder"
-        case .reconnecting: return "arrow.triangle.2.circlepath"
-        case .credentialsExpired, .failed: return "exclamationmark.triangle.fill"
-        case .disconnected: return "link.badge.plus"
-        }
-    }
-
-    private var weChatStatusColor: Color {
-        switch viewModel.weChatState {
-        case .connected: return .green
-        case .credentialsExpired, .failed: return .orange
+    private var feishuStatusColor: Color {
+        switch viewModel.feishuBridge.availability {
+        case .ready: return .green
+        case .dryRun, .unavailable: return .orange
         default: return .secondary
         }
     }
 
-    private var weChatStatusDetail: String {
-        switch viewModel.weChatState {
-        case .disconnected: return "扫码后自动保持连接"
-        case .awaitingScan: return "二维码五分钟内有效"
-        case .connecting: return "请在手机微信中确认"
-        case .connected: return "正在接收消息"
-        case .reconnecting: return "连接暂时中断"
-        case .credentialsExpired: return "需要重新扫码授权"
-        case let .failed(message): return message
+    private var feishuStatusDetail: String {
+        switch viewModel.feishuBridge.availability {
+        case .notConfigured: return "请选择飞书桥工程"
+        case let .unavailable(message): return message
+        case .stopped: return "请先启动本机飞书桥"
+        case .dryRun: return "主动出站仍处于 dry-run"
+        case .ready: return "单聊收发、卡片回调与 Codex 控制均已就绪"
         }
-    }
-
-    private func qrCodeImage(for content: String) -> NSImage? {
-        let filter = CIFilter.qrCodeGenerator()
-        filter.message = Data(content.utf8)
-        filter.correctionLevel = "M"
-        guard let output = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 8, y: 8)) else {
-            return nil
-        }
-        let context = CIContext(options: [.useSoftwareRenderer: false])
-        guard let cgImage = context.createCGImage(output, from: output.extent) else { return nil }
-        return NSImage(cgImage: cgImage, size: NSSize(width: output.extent.width, height: output.extent.height))
     }
 
     private func secondaryHeader(title: String, backLabel: String, action: @escaping () -> Void) -> some View {
@@ -1277,6 +1489,87 @@ struct UsagePopoverView: View {
             .padding(.vertical, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(color.opacity(0.09), in: RoundedRectangle(cornerRadius: 7))
+    }
+
+    private func semanticBadge(
+        _ text: String,
+        systemImage: String? = nil,
+        color: Color
+    ) -> some View {
+        HStack(spacing: 3) {
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.system(size: 8, weight: .semibold))
+            }
+            Text(text)
+                .lineLimit(1)
+        }
+        .font(.system(size: 9, weight: .semibold, design: .rounded))
+        .foregroundStyle(color)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(color.opacity(0.11), in: Capsule())
+        .accessibilityElement(children: .combine)
+    }
+
+    private func taskStatusColor(_ task: ProjectTaskItem) -> Color {
+        switch task.classification {
+        case .running: return .blue
+        case .waiting: return .orange
+        case .completed: return .green
+        case .ignored: return .secondary
+        }
+    }
+
+    private func validationStatusColor(_ status: String) -> Color {
+        switch status {
+        case "高可用": return .green
+        case "可用": return .blue
+        case "待验证": return .orange
+        default: return .secondary
+        }
+    }
+
+    private func skillStageColor(_ stage: String) -> Color {
+        switch stage.lowercased() {
+        case "active": return .green
+        case "trial": return .orange
+        default: return .secondary
+        }
+    }
+
+    private func feishuTaskLinkColor(_ state: String) -> Color {
+        switch state {
+        case "waiting_current_turn", "waiting_input", "queued", "desktop_action_required": return .orange
+        case "running", "connected": return .blue
+        case "completed": return .green
+        case "failed", "expired": return .red
+        default: return .secondary
+        }
+    }
+
+    private func feishuTurnOwnerText(_ owner: String) -> String {
+        switch owner {
+        case "desktop": return "Codex Desktop"
+        case "bridge": return "飞书桥"
+        default: return "无运行轮次"
+        }
+    }
+
+    private func feishuRemainingTime(_ seconds: Int) -> String {
+        guard seconds > 0 else { return "即将失效" }
+        let hours = seconds / 3600
+        let minutes = (seconds % 3600) / 60
+        return hours > 0 ? "\(hours)小时\(minutes)分" : "\(max(1, minutes))分钟"
+    }
+
+    private func feishuTimestamp(_ value: String) -> String {
+        let formatter = ISO8601DateFormatter()
+        guard let date = formatter.date(from: value) else { return "刚刚" }
+        let display = DateFormatter()
+        display.locale = Locale(identifier: "zh_CN")
+        display.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm:ss" : "M月d日 HH:mm"
+        return display.string(from: date)
     }
 
     private func settingRow(title: String, status: String, isOn: Binding<Bool>) -> some View {
@@ -1394,10 +1687,16 @@ struct UsagePopoverView: View {
     }
 
     private func taskStatusSymbol(_ task: ProjectTaskItem) -> String {
-        task.classification == .waiting ? "person.fill.questionmark" : "play.fill"
+        switch task.classification {
+        case .waiting: return "person.fill.questionmark"
+        case .running: return "play.fill"
+        case .completed: return "checkmark.circle"
+        case .ignored: return "circle"
+        }
     }
 
     private func taskStatusText(_ task: ProjectTaskItem) -> String {
+        if task.classification == .completed { return "已完成" }
         guard task.classification == .waiting else { return "运行中" }
         switch task.waitingReason {
         case .approval: return "待批准"
@@ -1561,7 +1860,8 @@ struct UsagePopoverView: View {
         case home
         case tokenHistory
         case projectLibrary
+        case taskDetail
         case settings
-        case wechat
+        case feishu
     }
 }

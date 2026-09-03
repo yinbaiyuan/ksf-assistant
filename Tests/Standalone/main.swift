@@ -167,6 +167,33 @@ private func testLocalTodayUsage() throws {
     try expect(account.dailyUsage(on: "2026-08-30"), nil, "missing account day remains unsynchronized")
 }
 
+private func testLocalTodayUsagePreservesCounterReclassification() throws {
+    let fileManager = FileManager.default
+    let root = fileManager.temporaryDirectory
+        .appendingPathComponent("codex-usage-reclassification-\(UUID().uuidString)", isDirectory: true)
+    try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: root) }
+
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+    let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 1, hour: 18))!
+    let lines = [
+        #"{"timestamp":"2026-09-01T09:02:41Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":60672,"input_tokens":60605,"cached_input_tokens":11008,"output_tokens":67}}}}"#,
+        #"{"timestamp":"2026-09-01T09:07:20Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":60726,"input_tokens":60680,"cached_input_tokens":60160,"output_tokens":46}}}}"#,
+    ]
+    let sessionURL = root.appendingPathComponent("reclassified.jsonl")
+    try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: sessionURL)
+    try fileManager.setAttributes([.modificationDate: now], ofItemAtPath: sessionURL.path)
+
+    let usage = LocalTokenUsageReader(sessionRoot: root, fileManager: fileManager)
+        .readToday(now: now, calendar: calendar)
+    try expect(usage?.tokens, 60_726, "counter reclassification preserves the total")
+    try expect(usage?.breakdown?.regularInputTokens, 520, "counter reclassification preserves ordinary input")
+    try expect(usage?.breakdown?.cachedInputTokens, 60_160, "counter reclassification preserves cached input")
+    try expect(usage?.breakdown?.outputTokens, 46, "counter reclassification preserves output")
+    try expect(usage?.breakdown?.totalTokens, usage?.tokens, "reclassified split reconciles")
+}
+
 private func testLocalTokenHistory() throws {
     let fileManager = FileManager.default
     let root = fileManager.temporaryDirectory
@@ -338,18 +365,24 @@ private func testLocalTokenHistoryStoreKeepsMonotonicHistory() throws {
 }
 
 private func testLocalTokenHistorySeries() throws {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+    let endDate = calendar.date(from: DateComponents(year: 2026, month: 8, day: 30))!
     let series = LocalTokenHistorySeries(days: [
         DailyUsageBucket(startDate: "2026-08-30", tokens: 20),
         DailyUsageBucket(startDate: "2026-08-28", tokens: 0),
         DailyUsageBucket(startDate: "2026-08-29", tokens: 80),
-    ])
+    ], through: endDate, calendar: calendar)
     try expect(
-        series.days.map(\.startDate),
-        ["2026-08-28", "2026-08-29", "2026-08-30"],
-        "history series orders days"
+        series.days.count,
+        30,
+        "history series always contains thirty natural days"
     )
+    try expect(series.days.first?.startDate, "2026-08-01", "history series starts twenty-nine days earlier")
+    try expect(series.days.last?.startDate, "2026-08-30", "history series ends on the requested day")
+    try expect(series.usage(on: "2026-08-27")?.tokens, 0, "history series fills missing days with zero")
     try expect(series.totalTokens, 100, "history series sums the visible range")
-    try expect(series.averageTokens, 33, "history series averages every requested day")
+    try expect(series.averageTokens, 3, "history series averages all thirty natural days")
     try expect(series.activeDayCount, 2, "history series counts non-zero days")
     try expect(series.maximumTokens, 80, "history series exposes the factual scale maximum")
     try expect(series.latestDay?.startDate, "2026-08-30", "history series defaults to the latest day")
@@ -429,6 +462,7 @@ private enum StandaloneTestRunner {
             ("token normalization", testTokenNormalization),
             ("million token formatting", testMillionTokenFormatting),
             ("local today usage", testLocalTodayUsage),
+            ("local today counter reclassification", testLocalTodayUsagePreservesCounterReclassification),
             ("local token history", testLocalTokenHistory),
             ("local token roots", testLocalTokenHistoryIncludesArchivedSessionsWithoutDuplicates),
             ("local token history store", testLocalTokenHistoryStoreKeepsMonotonicHistory),

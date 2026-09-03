@@ -24,11 +24,11 @@ private enum StatusItemImageTestRunner {
             }
             let indicator = StatusItemImageRenderer.makeConnectionIndicator()
             guard indicator.frame.size == NSSize(width: 5, height: 5) else {
-                throw TestFailure(description: "unexpected WeChat indicator size \(indicator.frame.size)")
+                throw TestFailure(description: "unexpected connection indicator size \(indicator.frame.size)")
             }
             guard indicator.layer?.backgroundColor == NSColor.systemGreen.cgColor,
                   indicator.layer?.cornerRadius == 2.5 else {
-                throw TestFailure(description: "WeChat indicator is not a solid system-green circle")
+                throw TestFailure(description: "connection indicator is not a solid system-green circle")
             }
             guard let data = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: data) else {
                 throw TestFailure(description: "status image did not rasterize")
@@ -68,7 +68,7 @@ private enum StatusItemImageTestRunner {
                 throw TestFailure(description: "waiting-task group was not rendered")
             }
 
-            print("PASS status image includes quota, local Token, running, waiting, and WeChat connection indicator")
+            print("PASS status image includes quota, local Token, running, waiting, and Feishu connection indicator")
         } catch {
             fputs("FAIL \(error)\n", stderr)
             exit(1)

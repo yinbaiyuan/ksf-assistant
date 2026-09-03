@@ -110,6 +110,42 @@ final class ProjectWorkbenchTests: XCTestCase {
         XCTAssertTrue(catalogOnly.isEmpty)
     }
 
+    func testCompletedProjectTaskRemainsVisibleAndReopenable() {
+        let alpha = project("alpha", root: "/git/alpha")
+        let completed = CodexThreadMetadata(
+            id: "completed",
+            name: "已完成任务",
+            cwd: "/git/alpha",
+            createdAt: 1,
+            updatedAt: 20,
+            path: "/sessions/completed.jsonl"
+        )
+
+        let items = KSFProjectDashboardBuilder.build(
+            catalog: [alpha],
+            activeTasks: [],
+            threads: [completed],
+            projections: [:],
+            pinnedProjectIDs: [],
+            usage: [:],
+            launchActions: [:]
+        )
+
+        XCTAssertEqual(items.map(\.id), ["alpha"])
+        XCTAssertEqual(items.first?.tasks.map(\.threadID), ["completed"])
+        XCTAssertEqual(items.first?.tasks.first?.classification, .completed)
+        XCTAssertEqual(items.first?.activeTaskCount, 0)
+        XCTAssertTrue(KSFProjectWorkset.select(from: items).isEmpty)
+
+        let pinned = ProjectDashboardItem(
+            id: "alpha",
+            project: alpha,
+            isPinned: true,
+            tasks: items[0].tasks
+        )
+        XCTAssertEqual(KSFProjectWorkset.select(from: [pinned]).map(\.id), ["alpha"])
+    }
+
     func testRoutePresentationGroupsAbilitiesAndSkillsWithoutDroppingOrphans() {
         let route = KSFRouteSummary(
             category: KSFRouteCategory(name: "产品研发", validationStatus: "草案"),

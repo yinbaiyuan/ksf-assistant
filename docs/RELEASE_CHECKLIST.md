@@ -14,6 +14,6 @@
 
 ## GitLab
 
-- 推送 `main` 后创建带说明的 `v0.4.0-internal.1` 标签。
+- 推送 `main` 后创建带说明的 `v0.7.0-internal.1` 标签。
 - GitLab Release 附上 universal ZIP、源码归档、校验文件和未公证声明。
 - 发布后在一台全新用户环境复核下载、校验、解压和右键打开路径。

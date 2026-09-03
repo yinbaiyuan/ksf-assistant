@@ -485,7 +485,7 @@ public struct ProjectDashboardItem: Equatable, Sendable, Identifiable {
     public var isUnassigned: Bool { kind == .unassigned }
     public var runningCount: Int { tasks.filter { $0.classification == .running }.count }
     public var waitingCount: Int { tasks.filter { $0.classification == .waiting }.count }
-    public var activeTaskCount: Int { tasks.count }
+    public var activeTaskCount: Int { runningCount + waitingCount }
 
     public func replacingTasks(_ tasks: [ProjectTaskItem]) -> ProjectDashboardItem {
         ProjectDashboardItem(
@@ -527,7 +527,7 @@ public struct ProjectDashboardSnapshot: Equatable, Sendable {
 public enum KSFProjectWorkset {
     public static func select(from items: [ProjectDashboardItem]) -> [ProjectDashboardItem] {
         items.filter { item in
-            item.isPinned || item.runningCount > 0 || item.waitingCount > 0
+            item.isPinned || item.activeTaskCount > 0
         }
     }
 }
@@ -739,6 +739,43 @@ public enum KSFProjectDashboardBuilder {
             } else {
                 unassignedAggregate = aggregate
             }
+        }
+
+        let activeThreadIDs = Set(activeTasks.map(\.id))
+        for metadata in metadataByID.values where !activeThreadIDs.contains(metadata.id) {
+            guard metadata.parentThreadId == nil,
+                  metadata.agentNickname?.isEmpty != false,
+                  metadata.path != nil
+            else { continue }
+            let projected = projections[metadata.id]?.currentBinding
+            let cwdMatch = engineeringMatch(matching: metadata.cwd, projects: catalog)
+            let projectID = projected?.projectCard ?? cwdMatch?.projectID
+            guard let projectID, projectsByID[projectID] != nil else { continue }
+
+            var aggregate = aggregates[projectID] ?? Aggregate()
+            let created = Date(timeIntervalSince1970: TimeInterval(metadata.createdAt))
+            aggregate.tasks.append(ProjectTaskItem(
+                threadID: metadata.id,
+                hostID: "local",
+                name: metadata.name,
+                classification: .completed,
+                route: projected?.route,
+                createdAt: created,
+                projectID: projectID
+            ))
+            let updated = Date(timeIntervalSince1970: TimeInterval(metadata.updatedAt))
+            aggregate.latestActivity = max(aggregate.latestActivity ?? .distantPast, updated)
+            if let cwdMatch, cwdMatch.projectID == projectID {
+                let candidate = EngineeringCandidate(
+                    priority: 0,
+                    updatedAt: updated,
+                    engineeringID: cwdMatch.engineeringID
+                )
+                if aggregate.engineeringCandidate == nil || candidate > aggregate.engineeringCandidate! {
+                    aggregate.engineeringCandidate = candidate
+                }
+            }
+            aggregates[projectID] = aggregate
         }
 
         let includedIDs = Set(aggregates.keys).union(pinnedProjectIDs)

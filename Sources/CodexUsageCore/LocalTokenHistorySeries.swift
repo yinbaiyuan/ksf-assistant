@@ -1,8 +1,34 @@
+import Foundation
+
 public struct LocalTokenHistorySeries: Equatable {
     public let days: [DailyUsageBucket]
 
-    public init(days: [DailyUsageBucket]) {
-        self.days = days.sorted { $0.startDate < $1.startDate }
+    public init(
+        days: [DailyUsageBucket],
+        through endDate: Date = Date(),
+        calendar: Calendar = .current
+    ) {
+        var observedByDate: [String: DailyUsageBucket] = [:]
+        for day in days {
+            observedByDate[day.startDate] = day
+        }
+
+        let end = calendar.startOfDay(for: endDate)
+        self.days = (0..<30).compactMap { offset in
+            guard let date = calendar.date(byAdding: .day, value: offset - 29, to: end) else {
+                return nil
+            }
+            let startDate = LocalTokenUsageReader.dateString(for: date, calendar: calendar)
+            return observedByDate[startDate] ?? DailyUsageBucket(
+                startDate: startDate,
+                tokens: 0,
+                breakdown: TokenUsageBreakdown(
+                    regularInputTokens: 0,
+                    cachedInputTokens: 0,
+                    outputTokens: 0
+                )
+            )
+        }
     }
 
     public var totalTokens: Int64 {

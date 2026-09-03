@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-version="${RELEASE_VERSION:-0.4.0-internal.1}"
+version="${RELEASE_VERSION:-0.7.0-internal.1}"
 release_root="$repo_root/dist/release-$version"
 app_path="$repo_root/dist/Codex Usage Bar.app"
 zip_path="$release_root/Codex-Usage-Bar-$version-universal.zip"

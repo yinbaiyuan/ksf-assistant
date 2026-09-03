@@ -34,12 +34,11 @@ private enum UsageViewModelStandaloneTestRunner {
 
             try await MainActor.run {
                 guard AppConfiguration.bundleIdentifier == "com.ksf.codexusagebar",
-                      AppConfiguration.weChatKeychainService == "com.ksf.codexusagebar.wechat",
                       AppConfiguration.applicationSupportDirectory().lastPathComponent == "com.ksf.codexusagebar"
                 else {
                     throw TestFailure(description: "team application identity is not isolated from the personal build")
                 }
-                let viewModel = UsageViewModel(autoStart: false)
+                let viewModel = UsageViewModel(autoStart: false, cleanupLegacyWeChatData: false)
                 guard viewModel.projectDashboard.availability == .loading else {
                     throw TestFailure(description: "expected the initial project dashboard to be loading")
                 }

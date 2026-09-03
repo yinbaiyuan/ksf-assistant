@@ -67,16 +67,6 @@ echo "Command Line Tools cannot provide SDK PlatformPath; using the Swift 5.8 di
     -I "$build_dir" \
     -L "$build_dir" \
     -lCodexUsageCore \
-    "$repo_root/Tests/WeChatStandalone/main.swift" \
-    -o "$build_dir/wechat-tests"
-"$build_dir/wechat-tests"
-
-/usr/bin/swiftc \
-    -parse-as-library \
-    -target arm64-apple-macos13.0 \
-    -I "$build_dir" \
-    -L "$build_dir" \
-    -lCodexUsageCore \
     "$repo_root/Sources/CodexUsageBar/CodexTaskOpener.swift" \
     "$repo_root/Tests/TaskOpeningStandalone/main.swift" \
     -framework AppKit \
@@ -94,6 +84,14 @@ echo "Command Line Tools cannot provide SDK PlatformPath; using the Swift 5.8 di
     -o "$build_dir/ksf-bridge-tests"
 "$build_dir/ksf-bridge-tests"
 
+/usr/bin/swiftc \
+    -parse-as-library \
+    -target arm64-apple-macos13.0 \
+    "$repo_root/Sources/CodexUsageBar/FeishuBridgeClient.swift" \
+    "$repo_root/Tests/FeishuBridgeStandalone/main.swift" \
+    -o "$build_dir/feishu-bridge-tests"
+"$build_dir/feishu-bridge-tests"
+
 view_model_test_app="$build_dir/UsageViewModelTests.app"
 view_model_test_binary="$view_model_test_app/Contents/MacOS/CodexUsageBar"
 mkdir -p "$view_model_test_app/Contents/MacOS"
@@ -107,6 +105,8 @@ cp "$repo_root/Resources/Info.plist" "$view_model_test_app/Contents/Info.plist"
     "$repo_root/Sources/CodexUsageBar/AppConfiguration.swift" \
     "$repo_root/Sources/CodexUsageBar/CodexLocator.swift" \
     "$repo_root/Sources/CodexUsageBar/CodexTaskOpener.swift" \
+    "$repo_root/Sources/CodexUsageBar/FeishuBridgeClient.swift" \
+    "$repo_root/Sources/CodexUsageBar/LegacyWeChatDataCleaner.swift" \
     "$repo_root/Sources/CodexUsageBar/KSFBridgeClient.swift" \
     "$repo_root/Sources/CodexUsageBar/ProcessAppServerTransport.swift" \
     "$repo_root/Sources/CodexUsageBar/ProjectUsageStore.swift" \
@@ -115,7 +115,6 @@ cp "$repo_root/Resources/Info.plist" "$view_model_test_app/Contents/Info.plist"
     "$repo_root/Sources/CodexUsageBar/TerminalActionLauncher.swift" \
     "$repo_root/Sources/CodexUsageBar/UnixSocketDesktopIPCTransport.swift" \
     "$repo_root/Sources/CodexUsageBar/UsageViewModel.swift" \
-    "$repo_root/Sources/CodexUsageBar/WeChatConnector.swift" \
     "$repo_root/Tests/UsageViewModelStandalone/main.swift" \
     -framework AppKit \
     -framework Security \

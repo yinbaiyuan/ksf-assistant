@@ -6,7 +6,7 @@ final class CodexDesktopTaskSubmissionClientTests: XCTestCase {
     func testDesktopOwnsInitialTurnAfterVisibleTaskIsOpened() async throws {
         let transport = SubmissionTestTransport()
         let client = CodexDesktopTaskSubmissionClient { transport }
-        let opened = OpenProbe()
+        let opened = await MainActor.run { OpenProbe() }
 
         try await client.submitInitialTurn(
             threadID: "thread-123",
@@ -18,7 +18,8 @@ final class CodexDesktopTaskSubmissionClientTests: XCTestCase {
             }
         )
 
-        XCTAssertTrue(await opened.wasOpened)
+        let wasOpened = await MainActor.run { opened.wasOpened }
+        XCTAssertTrue(wasOpened)
         XCTAssertEqual(
             transport.sentMethods,
             [

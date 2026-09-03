@@ -3,15 +3,20 @@ import XCTest
 
 final class LocalTokenUsageReaderTests: XCTestCase {
     func testHistorySeriesSortsDaysAndDerivesComparableSummary() {
+        let calendar = shanghaiCalendar()
+        let endDate = calendar.date(from: DateComponents(year: 2026, month: 8, day: 30))!
         let series = LocalTokenHistorySeries(days: [
             DailyUsageBucket(startDate: "2026-08-30", tokens: 20),
             DailyUsageBucket(startDate: "2026-08-28", tokens: 0),
             DailyUsageBucket(startDate: "2026-08-29", tokens: 80),
-        ])
+        ], through: endDate, calendar: calendar)
 
-        XCTAssertEqual(series.days.map(\.startDate), ["2026-08-28", "2026-08-29", "2026-08-30"])
+        XCTAssertEqual(series.days.count, 30)
+        XCTAssertEqual(series.days.first?.startDate, "2026-08-01")
+        XCTAssertEqual(series.days.last?.startDate, "2026-08-30")
+        XCTAssertEqual(series.usage(on: "2026-08-27")?.tokens, 0)
         XCTAssertEqual(series.totalTokens, 100)
-        XCTAssertEqual(series.averageTokens, 33)
+        XCTAssertEqual(series.averageTokens, 3)
         XCTAssertEqual(series.activeDayCount, 2)
         XCTAssertEqual(series.maximumTokens, 80)
         XCTAssertEqual(series.latestDay?.startDate, "2026-08-30")
@@ -100,6 +105,46 @@ final class LocalTokenUsageReaderTests: XCTestCase {
 
         XCTAssertEqual(usage?.tokens, 50)
         XCTAssertNil(usage?.breakdown)
+    }
+
+    func testTodayUsagePreservesCounterReclassificationWithinTheDay() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("codex-usage-bar-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let calendar = shanghaiCalendar()
+        let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 1, hour: 18))!
+        try writeSession(
+            at: root.appendingPathComponent("reclassified.jsonl"),
+            lines: [
+                tokenLine(
+                    timestamp: "2026-09-01T09:02:41Z",
+                    total: 60_672,
+                    input: 60_605,
+                    cachedInput: 11_008,
+                    output: 67
+                ),
+                tokenLine(
+                    timestamp: "2026-09-01T09:07:20Z",
+                    total: 60_726,
+                    input: 60_680,
+                    cachedInput: 60_160,
+                    output: 46
+                ),
+            ],
+            modifiedAt: now
+        )
+
+        let usage = LocalTokenUsageReader(sessionRoot: root, fileManager: fileManager)
+            .readToday(now: now, calendar: calendar)
+
+        XCTAssertEqual(usage?.tokens, 60_726)
+        XCTAssertEqual(usage?.breakdown?.regularInputTokens, 520)
+        XCTAssertEqual(usage?.breakdown?.cachedInputTokens, 60_160)
+        XCTAssertEqual(usage?.breakdown?.outputTokens, 46)
+        XCTAssertEqual(usage?.breakdown?.totalTokens, usage?.tokens)
     }
 
     func testRequestedDayUsesThatLocalCalendarBoundary() throws {
