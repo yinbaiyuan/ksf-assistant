@@ -46,10 +46,11 @@ struct FeishuSetupState: Codable, Equatable {
     let verificationURL: String?
     let userCode: String?
     let lastError: String?
+    let readyToActivate: Bool?
 
     static let notStarted = FeishuSetupState(
         version: 1, stage: "not_started", mode: nil,
-        verificationURL: nil, userCode: nil, lastError: nil
+        verificationURL: nil, userCode: nil, lastError: nil, readyToActivate: nil
     )
 }
 
@@ -136,12 +137,12 @@ actor SharedCoreProcessClient {
         if let runtime = Self.locateFeishuRuntime() {
             environment["CODEX_USAGE_BAR_MANAGED"] = "1"
             environment["CODEX_USAGE_BAR_FEISHU_SERVICE_ROOT"] = runtime.service.path
+            if let larkCLI = runtime.larkCLI {
+                environment["CODEX_USAGE_BAR_LARK_CLI"] = larkCLI.path
+            }
             if ProcessInfo.processInfo.environment["CODEX_USAGE_BAR_FEISHU_GO_PREVIEW"] == "1",
                let bridge = runtime.bridge {
                 environment["CODEX_USAGE_BAR_FEISHU_BRIDGE"] = bridge.path
-                if let larkCLI = runtime.larkCLI {
-                    environment["CODEX_USAGE_BAR_LARK_CLI"] = larkCLI.path
-                }
             }
             environment["FEISHU_BRIDGE_DATA_DIR"] = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".config/feishu-bridge", isDirectory: true).path
@@ -396,6 +397,10 @@ actor SharedCoreProcessClient {
 
     func verifyFeishuSetup() throws -> SharedCoreFeishuSetupResult {
         try decode(method: "feishu/setup/verify", params: [:])
+    }
+
+    func activateFeishuSetup(targetAlias: String) throws -> SharedCoreFeishuSetupResult {
+        try decode(method: "feishu/setup/activate", params: ["targetAlias": targetAlias])
     }
 
     func cancelFeishuSetup() throws -> FeishuSetupState {

@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -118,4 +119,30 @@ process.exit(1);
     assert.doesNotMatch(error.message, /config init --new/);
     return true;
   });
+});
+
+test('current OAuth user becomes the private authorized 我 alias without exposing the open_id', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'feishu-current-user-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const fakeCliPath = path.join(dir, 'fake-lark-cli.js');
+  fs.writeFileSync(fakeCliPath, `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({ ok: true, data: { users: [{ open_id: 'ou_private_current' }] } }));
+`, { mode: 0o700 });
+
+  const clientPath = path.join(__dirname, '..', 'scripts', 'bridge-client.js');
+  const result = spawnSync(process.execPath, [clientPath, 'auth', 'ensure-current-user'], {
+    cwd: path.join(__dirname, '..'),
+    env: {
+      ...process.env,
+      CODEX_USAGE_BAR_MANAGED: '1',
+      FEISHU_BRIDGE_DATA_DIR: dir,
+      LARK_CLI_BIN: fakeCliPath,
+    },
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /ou_private_current/);
+  const config = JSON.parse(fs.readFileSync(path.join(dir, 'client.json'), 'utf8'));
+  assert.deepEqual(config.directAllowedAliases, ['我']);
+  assert.deepEqual(config.messageTargets['我'], { type: 'open_id', id: 'ou_private_current' });
 });

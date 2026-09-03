@@ -60,6 +60,8 @@ private enum UILayoutTestRunner {
             try expect(source.contains("创建专用飞书应用"), "new Feishu app setup path is missing")
             try expect(source.contains("接入已有应用"), "existing Feishu app setup path is missing")
             try expect(source.contains("feishuSetupContent"), "resumable Feishu setup state is missing")
+            try expect(source.contains("确认启用并发送测试消息"), "Feishu setup has no explicit activation confirmation")
+            try expect(source.contains("activateFeishuSetup"), "Feishu setup activation is not wired to the shared core")
             try expect(!source.contains("Button(\"启动\")"), "Feishu exposes a lifecycle-conflicting start button")
             try expect(source.contains("KSF 是可选增强能力"), "KSF is not described as optional")
             try expect(!source.contains("if !viewModel.isOnboardingComplete"), "KSF still blocks the whole application")

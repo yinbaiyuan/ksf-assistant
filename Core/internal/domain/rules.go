@@ -280,7 +280,9 @@ func BuildProjectDashboard(catalog []Project, threads []CodexThread, projections
 	for _, id := range ids {
 		group := aggregates[id]
 		if group == nil {
-			group = &aggregate{}
+			group = &aggregate{tasks: []ProjectTask{}}
+		} else if group.tasks == nil {
+			group.tasks = []ProjectTask{}
 		}
 		sortTasks(group.tasks)
 		project, available := projectsByID[id]

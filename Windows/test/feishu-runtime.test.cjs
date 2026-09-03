@@ -27,3 +27,11 @@ test('Windows package copies Feishu production dependencies as an explicit resou
   assert.ok(resources.some((item) => item.from === '../dist/runtime/lark-cli/windows-${arch}'
     && item.to === 'runtime/lark-cli/windows-${arch}'));
 });
+
+test('both desktop hosts give the compatibility bridge the pinned packaged lark-cli', () => {
+  const windowsMain = fs.readFileSync(path.join(repoRoot, 'Windows', 'src', 'main.cjs'), 'utf8');
+  const macClient = fs.readFileSync(path.join(repoRoot, 'Sources', 'CodexUsageBar', 'SharedCoreProcessClient.swift'), 'utf8');
+  assert.match(windowsMain, /CODEX_USAGE_BAR_LARK_CLI:\s*runtime\.larkCLI/);
+  assert.doesNotMatch(windowsMain, /CODEX_USAGE_BAR_LARK_CLI:[^\n]*FEISHU_GO_PREVIEW/);
+  assert.match(macClient, /if let larkCLI = runtime\.larkCLI \{\s*environment\["CODEX_USAGE_BAR_LARK_CLI"\] = larkCLI\.path\s*\}/);
+});

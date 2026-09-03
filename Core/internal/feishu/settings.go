@@ -63,7 +63,7 @@ type Settings struct {
 func DefaultSettings() Settings {
 	return Settings{
 		Version:   1,
-		Profile:   ProfileManualOnly,
+		Profile:   ProfilePrimary,
 		Outbound:  DryRunSwitch{DryRun: true},
 		Docbox:    DryRunSwitch{DryRun: true},
 		Actionbox: DryRunSwitch{DryRun: true},
@@ -91,6 +91,7 @@ type SetupState struct {
 	VerificationURL string `json:"verificationURL,omitempty"`
 	UserCode        string `json:"userCode,omitempty"`
 	LastError       string `json:"lastError,omitempty"`
+	ReadyToActivate bool   `json:"readyToActivate,omitempty"`
 }
 
 func DefaultSetupState() SetupState {

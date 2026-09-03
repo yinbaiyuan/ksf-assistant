@@ -15,7 +15,7 @@ func TestSettingsStoreStartsWithSafeDefaultsAndWritesPrivately(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.Version != 1 || settings.Profile != ProfileManualOnly {
+	if settings.Version != 1 || settings.Profile != ProfilePrimary {
 		t.Fatalf("unexpected defaults: %#v", settings)
 	}
 	if settings.Outbound.Enabled || !settings.Outbound.DryRun || settings.Group.Enabled {

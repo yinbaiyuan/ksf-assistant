@@ -180,3 +180,47 @@ func TestOnlyReadyFeishuSetupConfiguresManagedBridge(t *testing.T) {
 		t.Fatal("ready setup did not configure the bridge")
 	}
 }
+
+func TestFeishuSetupSettingsKeepRealWritesDisabledUntilConfirmation(t *testing.T) {
+	settings := managedfeishu.DefaultSettings()
+	prepared := prepareFeishuDryRunSettings(settings)
+	if prepared.Profile != managedfeishu.ProfilePrimary {
+		t.Fatalf("onboarding must enable the primary inbound profile: %q", prepared.Profile)
+	}
+	if !prepared.Outbound.Enabled || !prepared.Outbound.DryRun {
+		t.Fatalf("verification must prepare dry-run only: %#v", prepared.Outbound)
+	}
+	if feishuSetupCanBecomeReady(prepared) {
+		t.Fatal("dry-run setup must not be marked ready")
+	}
+
+	activated := activateFeishuSettings(prepared)
+	if !activated.Outbound.Enabled || activated.Outbound.DryRun {
+		t.Fatalf("explicit confirmation did not activate real outbound: %#v", activated.Outbound)
+	}
+	if !feishuSetupCanBecomeReady(activated) {
+		t.Fatal("confirmed outbound setup should be eligible for ready")
+	}
+}
+
+func TestFeishuActivationWaitsForReadyBeforeSending(t *testing.T) {
+	source, err := os.ReadFile("service.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(source)
+	start := strings.Index(body, "func (service *Service) ActivateFeishuSetup")
+	if start < 0 {
+		t.Fatal("activation implementation not found")
+	}
+	end := strings.Index(body[start:], "func (service *Service) prepareFeishuDryRun")
+	if end < 0 {
+		t.Fatal("activation implementation not found")
+	}
+	body = body[start : start+end]
+	wait := strings.Index(body, `waitForFeishuAvailability(ctx, "ready"`)
+	send := strings.Index(body, "service.SendFeishuTest(ctx, targetAlias)")
+	if wait < 0 || send <= wait {
+		t.Fatal("activation must wait for the managed bridge before its real test send")
+	}
+}

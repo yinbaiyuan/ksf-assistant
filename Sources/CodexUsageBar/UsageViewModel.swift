@@ -1013,6 +1013,27 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
+    func activateFeishuSetup() {
+        guard sharedCoreEnabled, !feishuActionInProgress, !selectedFeishuTargetAlias.isEmpty else { return }
+        feishuActionInProgress = true
+        feishuFeedback = nil
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.feishuActionInProgress = false }
+            do {
+                self.applyFeishuSetup(
+                    try await self.sharedCore.activateFeishuSetup(targetAlias: self.selectedFeishuTargetAlias)
+                )
+                self.feishuFeedback = "飞书桥已启用，测试消息已发送到“\(self.selectedFeishuTargetAlias)”。"
+                await self.refreshSharedDashboard()
+            } catch {
+                self.feishuFeedback = error.localizedDescription
+                await self.refreshFeishuSetup()
+                await self.refreshSharedDashboard()
+            }
+        }
+    }
+
     func cancelFeishuSetup() {
         guard sharedCoreEnabled else { return }
         Task { [weak self] in

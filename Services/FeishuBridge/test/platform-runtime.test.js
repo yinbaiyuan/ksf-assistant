@@ -37,6 +37,27 @@ test('macOS defaults remain backward compatible', () => {
   assert.equal(defaultDesktopIPCPath({ platform: 'darwin', env: {}, homeDir: '/Users/test' }), '/Users/test/.codex/ipc/ipc.sock');
 });
 
+test('managed macOS runtime keeps mutable logs outside the signed application bundle', () => {
+  const projectRoot = '/Applications/CodexAssistant.app/Contents/Resources/services/feishu-bridge';
+  const dataRoot = '/Users/test/.config/feishu-bridge';
+  const env = {
+    CODEX_USAGE_BAR_MANAGED: '1',
+    FEISHU_BRIDGE_DATA_DIR: dataRoot,
+  };
+  assert.equal(defaultLogDir(projectRoot, { platform: 'darwin', env, homeDir: '/Users/test' }), path.join(dataRoot, 'logs'));
+});
+
+test('managed compatibility launcher uses the host-provided pinned lark-cli', () => {
+  const projectRoot = '/Applications/CodexAssistant.app/Contents/Resources/services/feishu-bridge';
+  const larkCLI = '/Applications/CodexAssistant.app/Contents/Resources/runtime/lark-cli/darwin-arm64/lark-cli';
+  assert.equal(defaultLarkCliBin(projectRoot, {
+    platform: 'darwin', env: { CODEX_USAGE_BAR_LARK_CLI: larkCLI },
+  }), larkCLI);
+  const source = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'start-bridge.js'), 'utf8');
+  assert.match(source, /runtimeEnv\.CODEX_USAGE_BAR_LARK_CLI/);
+  assert.match(source, /FEISHU_AUDIT_DIR:[\s\S]*path\.join\(logDir, 'audit'\)/);
+});
+
 test('JavaScript CLI entrypoints are launched through the current Node runtime', () => {
   const invocation = commandForNodeScript('/workspace/run.js', ['--version']);
   assert.equal(invocation.command, process.execPath);

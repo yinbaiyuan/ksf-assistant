@@ -329,6 +329,7 @@ func (service *Service) ContinueFeishuSetup(ctx context.Context) (map[string]any
 		return nil, err
 	}
 	var result map[string]any
+	verifyAfterSave := false
 	switch state.Stage {
 	case managedfeishu.SetupAppPending, managedfeishu.SetupAppConfigured:
 		result, err = service.StartFeishuAuth(ctx)
@@ -338,12 +339,19 @@ func (service *Service) ContinueFeishuSetup(ctx context.Context) (map[string]any
 			state.UserCode, _ = result["userCode"].(string)
 		}
 	case managedfeishu.SetupAuthorizationPending:
-		err = service.FinishFeishuAuth(ctx)
+		err = service.feishu.EnsureCurrentUserTarget(ctx, service.feishuRoot)
+		if err != nil {
+			err = service.FinishFeishuAuth(ctx)
+			if err == nil {
+				err = service.feishu.EnsureCurrentUserTarget(ctx, service.feishuRoot)
+			}
+		}
 		if err == nil {
 			state.Stage = managedfeishu.SetupPlatformPending
 			state.VerificationURL = ""
 			state.UserCode = ""
 			result = map[string]any{"status": "authenticated"}
+			verifyAfterSave = true
 		}
 	case managedfeishu.SetupPlatformPending, managedfeishu.SetupFailed:
 		return service.VerifyFeishuSetup(ctx)
@@ -360,6 +368,9 @@ func (service *Service) ContinueFeishuSetup(ctx context.Context) (map[string]any
 	state.LastError = ""
 	if err := store.Save(state); err != nil {
 		return nil, err
+	}
+	if verifyAfterSave {
+		return service.VerifyFeishuSetup(ctx)
 	}
 	result["setup"] = state
 	return result, nil
@@ -379,8 +390,21 @@ func (service *Service) VerifyFeishuSetup(ctx context.Context) (map[string]any, 
 		return nil, err
 	}
 	state.Stage = managedfeishu.SetupPlatformPending
+	state.ReadyToActivate = false
 	if permissionsReady(permissions) {
-		state.Stage = managedfeishu.SetupReady
+		if err := service.feishu.EnsureCurrentUserTarget(ctx, service.feishuRoot); err != nil {
+			state.Stage = managedfeishu.SetupFailed
+			state.LastError = safeSetupError(err)
+			_ = store.Save(state)
+			return nil, err
+		}
+		if err := service.prepareFeishuDryRun(ctx); err != nil {
+			state.Stage = managedfeishu.SetupFailed
+			state.LastError = safeSetupError(err)
+			_ = store.Save(state)
+			return nil, err
+		}
+		state.ReadyToActivate = true
 	}
 	state.LastError = ""
 	if err := store.Save(state); err != nil {
@@ -390,6 +414,177 @@ func (service *Service) VerifyFeishuSetup(ctx context.Context) (map[string]any, 
 		service.managedFeishuSupervisor.SetConfigured(feishuSetupConfiguresBridge(state.Stage))
 	}
 	return map[string]any{"status": state.Stage, "setup": state, "permissions": permissions["permissions"]}, nil
+}
+
+func (service *Service) ActivateFeishuSetup(ctx context.Context, targetAlias string) (map[string]any, error) {
+	store := managedfeishu.NewSetupStore(service.feishuDataRoot)
+	state, err := store.Load()
+	if err != nil {
+		return nil, err
+	}
+	targetAlias = strings.TrimSpace(targetAlias)
+	if !state.ReadyToActivate || (state.Stage != managedfeishu.SetupPlatformPending && state.Stage != managedfeishu.SetupFailed) {
+		return nil, errors.New("请先重新检查飞书后台设置")
+	}
+	if targetAlias == "" {
+		return nil, errors.New("请选择软件内显示的测试目标")
+	}
+	snapshot, err := service.feishu.Inspect(ctx, service.feishuRoot)
+	if err != nil || !containsString(snapshot.TargetAliases, targetAlias) {
+		return nil, errors.New("测试目标已失效，请重新检查飞书配置")
+	}
+
+	settingsStore := managedfeishu.NewSettingsStore(service.feishuDataRoot)
+	previous, err := settingsStore.Load()
+	if err != nil {
+		return nil, err
+	}
+	activated := activateFeishuSettings(previous)
+	if err := service.saveAndRestartFeishuSettings(ctx, activated); err != nil {
+		return nil, err
+	}
+	_, err = service.waitForFeishuAvailability(ctx, "ready", 8*time.Second)
+	if err == nil {
+		err = service.SendFeishuTest(ctx, targetAlias)
+	}
+	if err != nil {
+		rollbackContext, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		_ = service.saveAndRestartFeishuSettings(rollbackContext, prepareFeishuDryRunSettings(previous))
+		state.Stage = managedfeishu.SetupFailed
+		state.ReadyToActivate = true
+		state.LastError = safeSetupError(err)
+		_ = store.Save(state)
+		return nil, err
+	}
+
+	state.Stage = managedfeishu.SetupReady
+	state.ReadyToActivate = false
+	state.LastError = ""
+	if err := store.Save(state); err != nil {
+		return nil, err
+	}
+	if service.managedFeishuSupervisor != nil {
+		service.managedFeishuSupervisor.SetConfigured(true)
+	}
+	service.clearFeishuCache()
+	return map[string]any{"status": state.Stage, "setup": state}, nil
+}
+
+func (service *Service) prepareFeishuDryRun(ctx context.Context) error {
+	store := managedfeishu.NewSettingsStore(service.feishuDataRoot)
+	settings, err := store.Load()
+	if err != nil {
+		return err
+	}
+	settings = prepareFeishuDryRunSettings(settings)
+	if err := service.saveAndRestartFeishuSettings(ctx, settings); err != nil {
+		return err
+	}
+	snapshot, err := service.waitForFeishuAvailability(ctx, "dryRun", 8*time.Second)
+	if err != nil {
+		return err
+	}
+	target := preferredFeishuSetupTarget(snapshot.TargetAliases)
+	if target == "" {
+		return errors.New("未找到软件自动授权的飞书测试目标")
+	}
+	return service.SendFeishuTest(ctx, target)
+}
+
+func (service *Service) saveAndRestartFeishuSettings(ctx context.Context, settings managedfeishu.Settings) error {
+	store := managedfeishu.NewSettingsStore(service.feishuDataRoot)
+	previous, err := store.Load()
+	if err != nil {
+		return err
+	}
+	if err := store.Save(settings); err != nil {
+		return err
+	}
+	if strings.TrimSpace(service.feishuRoot) != "" {
+		if _, err := service.feishu.SetProfile(ctx, service.feishuRoot, settings.Profile); err != nil {
+			if rollbackErr := store.Save(previous); rollbackErr != nil {
+				return fmt.Errorf("更新飞书事件档位失败，且无法恢复原设置：%v；恢复失败：%w", err, rollbackErr)
+			}
+			return err
+		}
+	}
+	if err := service.restartFeishuSupervisor(ctx); err != nil {
+		if rollbackErr := store.Save(previous); rollbackErr != nil {
+			return fmt.Errorf("重启飞书桥失败，且无法恢复原设置：%v；恢复失败：%w", err, rollbackErr)
+		}
+		if strings.TrimSpace(service.feishuRoot) != "" {
+			_, _ = service.feishu.SetProfile(context.Background(), service.feishuRoot, previous.Profile)
+		}
+		return err
+	}
+	service.clearFeishuCache()
+	return nil
+}
+
+func (service *Service) waitForFeishuAvailability(ctx context.Context, expected string, timeout time.Duration) (domain.FeishuSnapshot, error) {
+	deadline := time.Now().Add(timeout)
+	var lastError error
+	for {
+		snapshot, err := service.feishu.Inspect(ctx, service.feishuRoot)
+		if err == nil && snapshot.Availability == expected {
+			return snapshot, nil
+		}
+		if err != nil {
+			lastError = err
+		} else {
+			lastError = errors.New(snapshot.Message)
+		}
+		if time.Now().After(deadline) {
+			if lastError == nil || strings.TrimSpace(lastError.Error()) == "" {
+				lastError = errors.New("飞书桥尚未完成启动")
+			}
+			return domain.FeishuSnapshot{}, lastError
+		}
+		select {
+		case <-ctx.Done():
+			return domain.FeishuSnapshot{}, ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+func prepareFeishuDryRunSettings(settings managedfeishu.Settings) managedfeishu.Settings {
+	settings.Profile = managedfeishu.ProfilePrimary
+	settings.Outbound.Enabled = true
+	settings.Outbound.DryRun = true
+	return settings
+}
+
+func activateFeishuSettings(settings managedfeishu.Settings) managedfeishu.Settings {
+	settings.Outbound.Enabled = true
+	settings.Outbound.DryRun = false
+	return settings
+}
+
+func feishuSetupCanBecomeReady(settings managedfeishu.Settings) bool {
+	return settings.Outbound.Enabled && !settings.Outbound.DryRun
+}
+
+func preferredFeishuSetupTarget(aliases []string) string {
+	for _, alias := range aliases {
+		if alias == "我" {
+			return alias
+		}
+	}
+	if len(aliases) == 1 {
+		return aliases[0]
+	}
+	return ""
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func (service *Service) CancelFeishuSetup() (managedfeishu.SetupState, error) {

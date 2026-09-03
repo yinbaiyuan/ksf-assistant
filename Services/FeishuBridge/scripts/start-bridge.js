@@ -22,13 +22,15 @@ const env = {
   FEISHU_BRIDGE_PROJECT_ROOT: projectRoot,
   FEISHU_BRIDGE_DATA_DIR: runtimeEnv.FEISHU_BRIDGE_DATA_DIR || dataRoot,
   FEISHU_BRIDGE_LOG_DIR: runtimeEnv.FEISHU_BRIDGE_LOG_DIR || logDir,
-  LARK_CLI_BIN: runtimeEnv.LARK_CLI_BIN || defaultLarkCliBin(projectRoot, { env: runtimeEnv }),
+  LARK_CLI_BIN: runtimeEnv.LARK_CLI_BIN
+    || runtimeEnv.CODEX_USAGE_BAR_LARK_CLI
+    || defaultLarkCliBin(projectRoot, { env: runtimeEnv }),
   LARK_CLI_AS: runtimeEnv.LARK_CLI_AS || 'bot',
   FEISHU_EVENT_CONSUMER_ENABLED: runtimeEnv.FEISHU_EVENT_CONSUMER_ENABLED || 'true',
   FEISHU_EVENT_TRANSPORT: runtimeEnv.FEISHU_EVENT_TRANSPORT || 'official-sdk',
   KMS_ROOT: runtimeEnv.KMS_ROOT || path.join(homeDir, 'Documents', 'KMS'),
   FEISHU_AUDIT_DIR: runtimeEnv.FEISHU_AUDIT_DIR
-    || path.join(runtimeEnv.FEISHU_BRIDGE_LOG_DIR || path.join(projectRoot, 'logs'), 'audit'),
+    || path.join(logDir, 'audit'),
   CODEX_BYPASS_APPROVALS: runtimeEnv.CODEX_BYPASS_APPROVALS || 'true',
   FEISHU_DIRECT_ALLOWED_OPEN_IDS: runtimeEnv.FEISHU_DIRECT_ALLOWED_OPEN_IDS || '',
   FEISHU_GROUP_ENABLED: runtimeEnv.FEISHU_GROUP_ENABLED || 'false',

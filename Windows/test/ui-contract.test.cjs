@@ -92,6 +92,8 @@ test('Feishu settings use the packaged service and keep secrets out of persisted
   assert.match(preload, /feishu:setup-begin/);
   assert.match(preload, /feishu:setup-continue/);
   assert.match(preload, /feishu:setup-verify/);
+  assert.match(preload, /feishu:setup-activate/);
+  assert.match(app, /确认启用并发送测试消息/);
   assert.doesNotMatch(app, /data-action="feishu-start"/);
   assert.doesNotMatch(main, /settings\.update\([^)]*appSecret/s);
 });

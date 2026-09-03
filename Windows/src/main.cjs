@@ -263,6 +263,7 @@ function registerIPC() {
   ipcMain.handle('feishu:setup-begin', (_event, payload) => core.request('feishu/setup/begin', payload));
   ipcMain.handle('feishu:setup-continue', () => core.request('feishu/setup/continue'));
   ipcMain.handle('feishu:setup-verify', () => core.request('feishu/setup/verify'));
+  ipcMain.handle('feishu:setup-activate', (_event, targetAlias) => core.request('feishu/setup/activate', { targetAlias }));
   ipcMain.handle('feishu:setup-cancel', () => core.request('feishu/setup/cancel'));
   ipcMain.handle('feishu:supervisor-restart', () => core.request('feishu/supervisor/restart'));
   ipcMain.handle('feishu:open-external', async (_event, value) => {
@@ -326,7 +327,7 @@ app.whenReady().then(async () => {
       CODEX_USAGE_BAR_FEISHU_SERVICE_ROOT: runtime.serviceRoot,
       CODEX_USAGE_BAR_NODE: runtime.node,
       CODEX_USAGE_BAR_FEISHU_BRIDGE: process.env.CODEX_USAGE_BAR_FEISHU_GO_PREVIEW === '1' ? runtime.bridge : '',
-      CODEX_USAGE_BAR_LARK_CLI: process.env.CODEX_USAGE_BAR_FEISHU_GO_PREVIEW === '1' ? runtime.larkCLI : '',
+      CODEX_USAGE_BAR_LARK_CLI: runtime.larkCLI,
       FEISHU_BRIDGE_DATA_DIR: path.join(os.homedir(), '.config', 'feishu-bridge'),
     },
   });

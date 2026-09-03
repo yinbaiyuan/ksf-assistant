@@ -1700,15 +1700,25 @@ struct UsagePopoverView: View {
             feishuPendingStep(title: "完成用户授权", actionTitle: "我已授权，继续")
         case "platform_pending", "failed":
             VStack(alignment: .leading, spacing: 8) {
-                Text("检查飞书后台设置").font(.caption.weight(.semibold))
-                Text("请确认机器人、精确权限、23 类事件、长连接和应用版本发布。CodexAssistant 会自动核验结果。")
-                    .font(.caption2).foregroundStyle(.secondary)
-                if viewModel.feishuSetup.verificationURL != nil {
-                    Button("在飞书中继续") { viewModel.openFeishuSetupURL() }.controlSize(.small)
-                }
-                HStack {
-                    Button("重新检查") { viewModel.verifyFeishuSetup() }.buttonStyle(.borderedProminent)
-                    Button("重新配置") { viewModel.cancelFeishuSetup() }.controlSize(.small)
+                if viewModel.feishuSetup.readyToActivate == true {
+                    Text("授权与后台检查已通过").font(.caption.weight(.semibold))
+                    Text("主动通道当前处于演练模式。确认后会启用真实发送，并向所选别名发送一条连接测试消息。")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    feishuActivationTargetPicker
+                    Button("确认启用并发送测试消息") { viewModel.activateFeishuSetup() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(viewModel.selectedFeishuTargetAlias.isEmpty || viewModel.feishuActionInProgress)
+                } else {
+                    Text("检查飞书后台设置").font(.caption.weight(.semibold))
+                    Text("请确认机器人、精确权限、23 类事件、长连接和应用版本发布。CodexAssistant 会自动核验结果。")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    if viewModel.feishuSetup.verificationURL != nil {
+                        Button("在飞书中继续") { viewModel.openFeishuSetupURL() }.controlSize(.small)
+                    }
+                    HStack {
+                        Button("重新检查") { viewModel.verifyFeishuSetup() }.buttonStyle(.borderedProminent)
+                        Button("重新配置") { viewModel.cancelFeishuSetup() }.controlSize(.small)
+                    }
                 }
             }
         case "verifying":
@@ -1766,6 +1776,17 @@ struct UsagePopoverView: View {
         }
         .padding(10)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var feishuActivationTargetPicker: some View {
+        Picker("测试目标", selection: Binding(
+            get: { viewModel.selectedFeishuTargetAlias },
+            set: { viewModel.setFeishuTargetAlias($0) }
+        )) {
+            Text("请选择").tag("")
+            ForEach(viewModel.feishuBridge.targetAliases, id: \.self) { Text($0).tag($0) }
+        }
+        .disabled(viewModel.feishuBridge.targetAliases.isEmpty)
     }
 
     private func feishuQRCode(_ dataURL: String) -> NSImage? {

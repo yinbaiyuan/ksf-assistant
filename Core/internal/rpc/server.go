@@ -204,6 +204,14 @@ func (server *Server) dispatch(ctx context.Context, method string, params json.R
 		return server.service.ContinueFeishuSetup(ctx)
 	case "feishu/setup/verify":
 		return server.service.VerifyFeishuSetup(ctx)
+	case "feishu/setup/activate":
+		var input struct {
+			TargetAlias string `json:"targetAlias"`
+		}
+		if err := decodeParams(params, &input); err != nil {
+			return nil, err
+		}
+		return server.service.ActivateFeishuSetup(ctx, input.TargetAlias)
 	case "feishu/setup/cancel":
 		return server.service.CancelFeishuSetup()
 	case "feishu/settings/read":

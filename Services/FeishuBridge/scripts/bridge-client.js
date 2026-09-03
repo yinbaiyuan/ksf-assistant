@@ -11,6 +11,7 @@ const {
   controlBridgeService,
   createLark,
   defaultClientConfigPath,
+  directAllowedOpenIds,
   documentIdentityForTarget,
   doctor,
   fingerprintIdentifier,
@@ -92,6 +93,7 @@ const {
 const {
   configureExisting,
   finishUser,
+  findValue,
   startConfig,
   startUser,
 } = require('../lib/auth-flow');
@@ -217,6 +219,9 @@ function buildGroupDirectoryService(runtime) {
 async function ensureBridgeRunning(runtime, config, { autoStart = true } = {}) {
   if (pidAlive(runtime)) return { alreadyRunning: true };
   if (!autoStart) throw new Error('bridge is not running');
+  if (runtime.env.CODEX_USAGE_BAR_MANAGED === '1') {
+    throw new Error('managed bridge is not ready');
+  }
   const action = controlBridgeService(config, {
     restart: false,
     platform: runtime.platform,
@@ -1200,7 +1205,7 @@ async function handleMinutes(args, flags) {
 }
 
 function publicTargets(config, runtime) {
-  const allowedOpenIds = new Set(parseCsv(runtime?.env?.FEISHU_DIRECT_ALLOWED_OPEN_IDS));
+  const allowedOpenIds = directAllowedOpenIds(config, runtime?.env);
   const messages = Object.entries(config.messageTargets || {}).map(([alias, target]) => ({
     alias,
     ...sanitizeTarget(target, config),
@@ -1340,7 +1345,7 @@ async function handleTargets(args, flags) {
     config.documentTargets[alias] = { kind: target.kind, value: target.value };
   }
   writeSecureJson(configPath, config);
-  return { status: 'saved', category: targetType, alias, targets: publicTargets(config) };
+  return { status: 'saved', category: targetType, alias, targets: publicTargets(config, runtime) };
 }
 
 async function handleSend(flags) {
@@ -1637,8 +1642,8 @@ async function handleTaskLink(args, flags) {
   const payload = JSON.parse(await readPayload(flags, 'payloadFile'));
   const target = resolveMessageTarget(requireValue(payload.targetAlias, 'payload.targetAlias'), config);
   if (target.type !== 'open_id') throw new Error('task links require an authorized direct-message target');
-  const allowedOpenIds = parseCsv(runtime.env.FEISHU_DIRECT_ALLOWED_OPEN_IDS);
-  if (!allowedOpenIds.includes(target.id)) throw new Error('task link target is not present in the direct-message authorization whitelist');
+  const allowedOpenIds = directAllowedOpenIds(config, runtime.env);
+  if (!allowedOpenIds.has(target.id)) throw new Error('task link target is not present in the direct-message authorization whitelist');
   await ensureBridgeRunning(runtime, config, { autoStart: flags.autoStart !== 'false' });
   const authoritative = await authoritativeTaskThread(runtime, requireValue(payload.threadId, 'payload.threadId'));
   const initialState = authoritative.state;
@@ -2277,9 +2282,26 @@ function handleRecent(args, flags) {
   };
 }
 
+async function ensureCurrentUserTarget(runtime, configPath) {
+  const lark = createLark(runtime, { as: 'user' });
+  lark.ensureReady();
+  const response = await lark.runLarkCliJson([
+    'contact', '+search-user', '--user-ids', 'me', '--as', 'user', '--json',
+  ]);
+  const openId = findValue(response, ['open_id', 'openId']);
+  if (!/^ou_[A-Za-z0-9_-]+$/.test(openId)) {
+    throw new Error('无法从飞书授权中确认当前用户身份');
+  }
+  const config = loadClientConfig(configPath);
+  config.messageTargets['我'] = { type: 'open_id', id: openId };
+  config.directAllowedAliases = [...new Set([...(config.directAllowedAliases || []), '我'])];
+  writeSecureJson(configPath, config);
+  return { status: 'configured', targetAlias: '我' };
+}
+
 async function handleAuth(args, flags) {
-  const action = requireValue(args[0], 'auth action (configure-existing|start-config|start-user|finish-user)');
-  const { runtime } = loadContext(flags);
+  const action = requireValue(args[0], 'auth action (configure-existing|start-config|start-user|finish-user|ensure-current-user)');
+  const { runtime, configPath } = loadContext(flags);
   if (action === 'configure-existing') {
     const payload = JSON.parse(await readPayload(flags, 'payloadFile'));
     return configureExisting(runtime, {
@@ -2306,7 +2328,10 @@ async function handleAuth(args, flags) {
       deviceCode: String(flags.deviceCode || ''),
     });
   }
-  throw new Error('auth action must be configure-existing, start-config, start-user, or finish-user');
+  if (action === 'ensure-current-user') {
+    return ensureCurrentUserTarget(runtime, configPath);
+  }
+  throw new Error('auth action must be configure-existing, start-config, start-user, finish-user, or ensure-current-user');
 }
 
 function handleProfile(args, flags) {
@@ -2350,6 +2375,7 @@ function help() {
       'bridge-client.js auth start-config [--profile default] [--create-new]',
       'bridge-client.js auth start-user [--scope required|recommend|<scope-list>]',
       'bridge-client.js auth finish-user [--device-code <device-code>]',
+      'bridge-client.js auth ensure-current-user',
       'bridge-client.js profile catalog|show|set <primary|manual-only>',
       'bridge-client.js capability catalog|get|read|write [capability-id] --payload-file - [--dry-run] [--save-as Codex桥测试…]',
       'bridge-client.js events catalog|status|recent|get',

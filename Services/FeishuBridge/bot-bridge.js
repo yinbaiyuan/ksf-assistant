@@ -22,6 +22,7 @@ const {
 const { cleanupStagedMedia } = require('./lib/media-staging');
 const {
   defaultClientConfigPath,
+  directAllowedOpenIds,
   documentIdentityForTarget,
   loadClientConfig,
   saveTestAssetBinding,
@@ -219,7 +220,10 @@ const groupDirectoryPageSize = Math.max(1, Math.min(100, parseNumber(
   process.env.FEISHU_GROUP_DIRECTORY_PAGE_SIZE,
   100,
 )));
-const directAllowedOpenIds = parseCsv(process.env.FEISHU_DIRECT_ALLOWED_OPEN_IDS);
+const directAllowedOpenIdsSet = directAllowedOpenIds(
+  loadClientConfig(defaultClientConfigPath()),
+  process.env,
+);
 const groupEnabled = parseBool(process.env.FEISHU_GROUP_ENABLED || 'false');
 const groupAllowedChatIds = parseCsv(process.env.FEISHU_GROUP_ALLOWED_CHAT_IDS);
 const groupAllowedOpenIds = parseCsv(process.env.FEISHU_GROUP_ALLOWED_OPEN_IDS);
@@ -701,10 +705,10 @@ async function authorizeMessage(message, sender) {
 
   if (kind === 'direct') {
     return {
-      allowed: directAllowedOpenIds.has(openId),
+      allowed: directAllowedOpenIdsSet.has(openId),
       kind,
       chat,
-      reason: directAllowedOpenIds.has(openId)
+      reason: directAllowedOpenIdsSet.has(openId)
         ? 'direct_allowed'
         : 'direct_sender_not_allowed',
     };
@@ -3093,7 +3097,7 @@ async function statusText() {
     `default_conversation_count: ${activeDefaultConversations.length}`,
     `legacy_default_session_key: ${defaultSessionName}`,
     `default_thread_title: ${defaultThreadTitle}`,
-    `direct_allowed_open_ids: ${directAllowedOpenIds.size}`,
+    `direct_allowed_open_ids: ${directAllowedOpenIdsSet.size}`,
     `group_enabled: ${groupEnabled}`,
     `group_allowed_chat_ids: ${groupAllowedChatIds.size || 'all'}`,
     `group_allowed_open_ids: ${groupAllowedOpenIds.size || 'all'}`,

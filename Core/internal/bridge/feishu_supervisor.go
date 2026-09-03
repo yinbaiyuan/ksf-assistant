@@ -14,10 +14,11 @@ import (
 )
 
 type FeishuSupervisor struct {
-	root string
-	node string
-	mu   sync.Mutex
-	cmd  *exec.Cmd
+	root    string
+	node    string
+	mu      sync.Mutex
+	cmd     *exec.Cmd
+	running bool
 }
 
 func NewFeishuSupervisor(root, node string) *FeishuSupervisor {
@@ -27,7 +28,7 @@ func NewFeishuSupervisor(root, node string) *FeishuSupervisor {
 func (supervisor *FeishuSupervisor) Start() error {
 	supervisor.mu.Lock()
 	defer supervisor.mu.Unlock()
-	if supervisor.cmd != nil && supervisor.cmd.ProcessState == nil {
+	if supervisor.running {
 		return nil
 	}
 	_, node, err := validateFeishuWithNode(supervisor.root, supervisor.node)
@@ -48,11 +49,13 @@ func (supervisor *FeishuSupervisor) Start() error {
 		return fmt.Errorf("无法启动飞书桥: %w", err)
 	}
 	supervisor.cmd = cmd
+	supervisor.running = true
 	go func(current *exec.Cmd) {
 		_ = current.Wait()
 		supervisor.mu.Lock()
 		if supervisor.cmd == current {
 			supervisor.cmd = nil
+			supervisor.running = false
 		}
 		supervisor.mu.Unlock()
 	}(cmd)
@@ -104,7 +107,7 @@ func (supervisor *FeishuSupervisor) Stop(ctx context.Context) error {
 func (supervisor *FeishuSupervisor) Status() map[string]any {
 	supervisor.mu.Lock()
 	defer supervisor.mu.Unlock()
-	running := supervisor.cmd != nil && supervisor.cmd.ProcessState == nil
+	running := supervisor.running
 	result := map[string]any{"running": running, "managedBy": "codex-usage-core-v2"}
 	if running {
 		result["pid"] = supervisor.cmd.Process.Pid

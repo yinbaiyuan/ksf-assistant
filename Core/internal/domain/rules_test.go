@@ -60,3 +60,14 @@ func TestProjectDashboardPrefersProjectionAndKeepsUnassignedActiveTasks(t *testi
 		t.Fatal("active and pinned projects must both remain visible")
 	}
 }
+
+func TestPinnedProjectWithoutTasksSerializesAnEmptyTaskList(t *testing.T) {
+	project := Project{ID: "project-a", Name: "A"}
+	items := BuildProjectDashboard(
+		[]Project{project}, nil, nil, nil,
+		map[string]bool{"project-a": true}, nil, nil, time.Unix(100, 0),
+	)
+	if len(items) != 1 || items[0].Tasks == nil || len(items[0].Tasks) != 0 {
+		t.Fatalf("empty pinned project must keep a non-nil task list: %#v", items)
+	}
+}

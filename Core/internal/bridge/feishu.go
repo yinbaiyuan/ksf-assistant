@@ -196,6 +196,11 @@ func (client FeishuClient) Permissions(ctx context.Context, root string) (map[st
 	return client.command(ctx, root, []string{"permissions"}, nil)
 }
 
+func (client FeishuClient) EnsureCurrentUserTarget(ctx context.Context, root string) error {
+	_, err := client.command(ctx, root, []string{"auth", "ensure-current-user"}, nil)
+	return err
+}
+
 func (client FeishuClient) command(ctx context.Context, root string, args []string, input []byte) (map[string]any, error) {
 	script, node, err := validateFeishuWithNode(root, client.Node)
 	if err != nil {

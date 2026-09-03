@@ -12,6 +12,7 @@ const {
   fingerprintIdentifier,
   initializeClientConfig,
   loadClientConfig,
+  directAllowedOpenIds,
   readCompleteJsonl,
   requestId,
   resolveDocumentTarget,
@@ -193,6 +194,21 @@ test('message aliases and arbitrary explicit targets resolve while output hides 
   assert.equal(sanitized.target.idFingerprint, fingerprintIdentifier('ou_private_value'));
   assert.equal(JSON.stringify(sanitized).includes('ou_private_value'), false);
   assert.equal(JSON.stringify(sanitized).includes('om_private'), false);
+});
+
+test('private authorized aliases replace the legacy direct-message environment list', () => {
+  const config = {
+    messageTargets: {
+      我: { type: 'open_id', id: 'ou_private_value' },
+      群聊: { type: 'chat_id', id: 'oc_private_value' },
+    },
+    directAllowedAliases: ['我', '群聊', '不存在'],
+  };
+  assert.deepEqual([...directAllowedOpenIds(config, {})], ['ou_private_value']);
+  assert.deepEqual(
+    [...directAllowedOpenIds(config, { FEISHU_DIRECT_ALLOWED_OPEN_IDS: 'ou_legacy' })].sort(),
+    ['ou_legacy', 'ou_private_value'],
+  );
 });
 
 test('production outbound has no local destination allowlist gate', () => {
@@ -563,4 +579,15 @@ test('production docbox creation is fixed lark-cli create then reread, without a
   assert.ok(reread > create);
   assert.match(body, /docboxLarkForRequest\(request\)/);
   assert.doesNotMatch(body, /runCodex|docbox\.log|buildDocboxTaskPrompt/);
+});
+
+test('managed clients never fall back to an external service manager while the supervisor starts', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'bridge-client.js'), 'utf8');
+  const start = source.indexOf('async function ensureBridgeRunning');
+  const end = source.indexOf('function docboxSourceAllowed', start);
+  const body = source.slice(start, end);
+  const managedGuard = body.indexOf("runtime.env.CODEX_USAGE_BAR_MANAGED === '1'");
+  const serviceFallback = body.indexOf('controlBridgeService');
+  assert.ok(managedGuard >= 0);
+  assert.ok(serviceFallback > managedGuard);
 });

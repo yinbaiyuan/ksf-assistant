@@ -204,6 +204,7 @@ function defaultClientConfig() {
     windowsTaskName: 'FeishuBotBridge',
     defaultSource: 'codex',
     messageTargets: {},
+    directAllowedAliases: [],
     nameBindings: {},
     groupNameBindings: {},
     documentTargets: {},
@@ -239,6 +240,10 @@ function loadClientConfig(configPath = defaultClientConfigPath()) {
     ...loaded,
     schemaVersion: Math.max(4, Number(loaded.schemaVersion) || 0),
     messageTargets: { ...(loaded.messageTargets || {}) },
+    directAllowedAliases: [...new Set(
+      (Array.isArray(loaded.directAllowedAliases) ? loaded.directAllowedAliases : [])
+        .filter((alias) => typeof alias === 'string' && alias && alias.length <= 100),
+    )],
     nameBindings: { ...(loaded.nameBindings || {}) },
     groupNameBindings: { ...(loaded.groupNameBindings || {}) },
     documentTargets: { ...(loaded.documentTargets || {}) },
@@ -397,6 +402,17 @@ function isSensitiveRemoteIdentifierKey(key) {
 function messageAliasForTarget(target, config) {
   return Object.entries(config.messageTargets || {})
     .find(([, item]) => item.type === target?.type && item.id === target?.id)?.[0] || '';
+}
+
+function directAllowedOpenIds(config, env = {}) {
+  const values = new Set(parseCsv(env.FEISHU_DIRECT_ALLOWED_OPEN_IDS));
+  for (const alias of config.directAllowedAliases || []) {
+    const target = config.messageTargets?.[alias];
+    if (target?.type === 'open_id' && typeof target.id === 'string' && target.id) {
+      values.add(target.id);
+    }
+  }
+  return values;
 }
 
 function sanitizeTarget(target, config) {
@@ -1281,6 +1297,7 @@ module.exports = {
   defaultClientConfig,
   defaultClientConfigPath,
   doctor,
+  directAllowedOpenIds,
   documentIdentityForTarget,
   eventConnectionAssessment,
   fingerprintIdentifier,

@@ -15,13 +15,16 @@ function defaultDataRoot({ platform = process.platform, env = process.env, homeD
 function defaultLogDir(projectRoot, options = {}) {
   const { platform = process.platform, env = process.env } = options;
   if (env.FEISHU_BRIDGE_LOG_DIR) return path.resolve(projectRoot, env.FEISHU_BRIDGE_LOG_DIR);
-  if (platform === 'win32') return path.join(defaultDataRoot(options), 'logs');
+  if (platform === 'win32' || env.CODEX_USAGE_BAR_MANAGED === '1' || env.FEISHU_BRIDGE_DATA_DIR) {
+    return path.join(defaultDataRoot(options), 'logs');
+  }
   const pathApi = platform === 'darwin' ? path.posix : path;
   return pathApi.join(projectRoot, 'logs');
 }
 
 function defaultLarkCliBin(projectRoot, { platform = process.platform, env = process.env } = {}) {
-  if (env.LARK_CLI_BIN) return path.resolve(projectRoot, env.LARK_CLI_BIN);
+  const managedBinary = env.LARK_CLI_BIN || env.CODEX_USAGE_BAR_LARK_CLI;
+  if (managedBinary) return path.resolve(projectRoot, managedBinary);
   return platform === 'win32'
     ? path.join(projectRoot, 'node_modules', '@larksuite', 'cli', 'scripts', 'run.js')
     : path.join(projectRoot, 'node_modules', '.bin', 'lark-cli');

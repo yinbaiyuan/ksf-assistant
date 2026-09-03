@@ -419,7 +419,9 @@ function renderFeishuPage() {
   } else if (setup.stage === 'authorization_pending') {
     step = renderFeishuQRStep('完成用户授权', '在飞书中确认授权，然后返回继续。', qrDataURL, verificationURL, setup.userCode, 'feishu-continue', '我已授权，继续');
   } else if (setup.stage === 'platform_pending' || setup.stage === 'failed') {
-    step = `<section class="card settings-list"><div class="setting"><div class="setting-title">检查飞书后台设置</div><div class="setting-description">请在已打开的飞书页面确认机器人、精确权限、23 类事件、长连接和应用版本发布。CodexAssistant 会自动核验结果。</div>${verificationURL ? `<button class="button" type="button" data-action="feishu-open-url" data-url="${escapeHTML(verificationURL)}">在飞书中继续</button>` : ''}<div class="detail-actions"><button class="button primary" type="button" data-action="feishu-verify">重新检查</button><button class="button" type="button" data-action="feishu-cancel">重新配置</button></div></div></section>`;
+    step = setup.readyToActivate
+      ? renderFeishuActivation(feishu)
+      : `<section class="card settings-list"><div class="setting"><div class="setting-title">检查飞书后台设置</div><div class="setting-description">请在已打开的飞书页面确认机器人、精确权限、23 类事件、长连接和应用版本发布。CodexAssistant 会自动核验结果。</div>${verificationURL ? `<button class="button" type="button" data-action="feishu-open-url" data-url="${escapeHTML(verificationURL)}">在飞书中继续</button>` : ''}<div class="detail-actions"><button class="button primary" type="button" data-action="feishu-verify">重新检查</button><button class="button" type="button" data-action="feishu-cancel">重新配置</button></div></div></section>`;
   } else if (setup.stage === 'verifying') {
     step = '<section class="card skeleton" aria-label="正在核验飞书配置"></section>';
   } else {
@@ -428,6 +430,12 @@ function renderFeishuPage() {
   return `${header('飞书配置')}
     <section class="card setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">${escapeHTML(feishuSetupStageText(setup))}</div><div class="setting-description">桥进程 ${escapeHTML(feishuComponentStatusText(feishu))} · ${escapeHTML(feishuProfileText(feishu.profile))}</div></div>${isFaulted ? '<button class="button" type="button" data-action="feishu-restart">重新启动</button>' : ''}</div></section>
     ${setupError}${step}`;
+}
+
+function renderFeishuActivation(feishu) {
+  const aliases = feishu.targetAliases || [];
+  const selected = state.settings?.selectedFeishuTargetAlias || '';
+  return `<section class="card settings-list"><div class="setting"><div class="setting-title">授权与后台检查已通过</div><div class="setting-description">主动通道当前处于演练模式。确认后会启用真实发送，并向所选别名发送一条连接测试消息。</div><label class="setting-title" for="feishu-target">测试目标</label><select id="feishu-target" data-field="feishu-target" ${!aliases.length ? 'disabled' : ''}><option value="">请选择</option>${aliases.map((alias) => `<option value="${escapeHTML(alias)}" ${alias === selected ? 'selected' : ''}>${escapeHTML(alias)}</option>`).join('')}</select><div class="detail-actions"><button class="button primary" type="button" data-action="feishu-activate" ${!selected ? 'disabled' : ''}>确认启用并发送测试消息</button></div></div></section>`;
 }
 
 function renderFeishuQRStep(title, description, qrDataURL, verificationURL, userCode, action, actionLabel) {
@@ -611,6 +619,15 @@ async function handleAction(action, element) {
     const result = await api.verifyFeishuSetup();
     state.feishuSetup = result.setup;
     state.feishuSetupPayload = result;
+  }
+  else if (action === 'feishu-activate') {
+    const targetAlias = state.settings?.selectedFeishuTargetAlias || '';
+    if (!targetAlias) throw new Error('请选择软件内显示的测试目标');
+    const result = await api.activateFeishuSetup(targetAlias);
+    state.feishuSetup = result.setup;
+    state.feishuSetupPayload = result;
+    showToast(`飞书桥已启用，测试消息已发送到“${targetAlias}”`);
+    return refresh({ quiet: true });
   }
   else if (action === 'feishu-cancel') { state.feishuSetup = await api.cancelFeishuSetup(); state.feishuSetupPayload = null; state.feishuSetupMode = 'new'; }
   else if (action === 'feishu-open-url') return api.openFeishuURL(element.dataset.url);
