@@ -133,7 +133,7 @@ func New() *Service {
 			Environment: environment,
 		})
 		if setup, err := managedfeishu.NewSetupStore(dataRoot).Load(); err == nil {
-			managedSupervisor.SetConfigured(setup.Stage != managedfeishu.SetupNotStarted)
+			managedSupervisor.SetConfigured(feishuSetupConfiguresBridge(setup.Stage))
 		}
 	}
 	return &Service{
@@ -316,7 +316,7 @@ func (service *Service) BeginFeishuSetup(ctx context.Context, mode, appID, appSe
 		return nil, err
 	}
 	if service.managedFeishuSupervisor != nil {
-		service.managedFeishuSupervisor.SetConfigured(true)
+		service.managedFeishuSupervisor.SetConfigured(false)
 	}
 	result["setup"] = state
 	return result, nil
@@ -386,12 +386,23 @@ func (service *Service) VerifyFeishuSetup(ctx context.Context) (map[string]any, 
 	if err := store.Save(state); err != nil {
 		return nil, err
 	}
+	if service.managedFeishuSupervisor != nil {
+		service.managedFeishuSupervisor.SetConfigured(feishuSetupConfiguresBridge(state.Stage))
+	}
 	return map[string]any{"status": state.Stage, "setup": state, "permissions": permissions["permissions"]}, nil
 }
 
 func (service *Service) CancelFeishuSetup() (managedfeishu.SetupState, error) {
 	state := managedfeishu.DefaultSetupState()
-	return state, managedfeishu.NewSetupStore(service.feishuDataRoot).Save(state)
+	err := managedfeishu.NewSetupStore(service.feishuDataRoot).Save(state)
+	if err == nil && service.managedFeishuSupervisor != nil {
+		service.managedFeishuSupervisor.SetConfigured(false)
+	}
+	return state, err
+}
+
+func feishuSetupConfiguresBridge(stage string) bool {
+	return stage == managedfeishu.SetupReady
 }
 
 func safeSetupError(err error) string {

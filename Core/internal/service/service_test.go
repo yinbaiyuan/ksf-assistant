@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"codexusagebar/core/internal/domain"
+	managedfeishu "codexusagebar/core/internal/feishu"
 )
 
 func TestTaskBootstrapRequiresProjectCardInsideKSFRoot(t *testing.T) {
@@ -158,5 +159,24 @@ func TestNormalizedDaysSortsBeforeApplyingLimit(t *testing.T) {
 	}, 2)
 	if len(days) != 2 || days[0].StartDate != "2026-09-02" || days[1].StartDate != "2026-09-03" {
 		t.Fatalf("unexpected normalized days: %#v", days)
+	}
+}
+
+func TestOnlyReadyFeishuSetupConfiguresManagedBridge(t *testing.T) {
+	for _, stage := range []string{
+		managedfeishu.SetupNotStarted,
+		managedfeishu.SetupAppPending,
+		managedfeishu.SetupAppConfigured,
+		managedfeishu.SetupAuthorizationPending,
+		managedfeishu.SetupPlatformPending,
+		managedfeishu.SetupVerifying,
+		managedfeishu.SetupFailed,
+	} {
+		if feishuSetupConfiguresBridge(stage) {
+			t.Fatalf("unfinished stage %q configured the bridge", stage)
+		}
+	}
+	if !feishuSetupConfiguresBridge(managedfeishu.SetupReady) {
+		t.Fatal("ready setup did not configure the bridge")
 	}
 }
