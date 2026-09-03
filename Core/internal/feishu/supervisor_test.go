@@ -1,0 +1,83 @@
+package feishu
+
+import (
+	"context"
+	"io"
+	"os"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestManagedSupervisorStartsAndStopsChildWithPublicState(t *testing.T) {
+	supervisor := newTestSupervisor(t, "wait")
+	supervisor.SetConfigured(false)
+	if err := supervisor.Start(); err != nil {
+		t.Fatal(err)
+	}
+	status := supervisor.Status()
+	if status.State != StateIdleUnconfigured || status.PID <= 0 || status.Configured {
+		t.Fatalf("unexpected running status: %#v", status)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := supervisor.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	status = supervisor.Status()
+	if status.State != StateStopped || status.PID != 0 {
+		t.Fatalf("unexpected stopped status: %#v", status)
+	}
+}
+
+func TestManagedSupervisorRestartsThreeTimesThenDegrades(t *testing.T) {
+	supervisor := newTestSupervisor(t, "crash")
+	supervisor.restartDelays = []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 15 * time.Millisecond}
+	supervisor.restartWindow = time.Second
+	supervisor.healthyReset = time.Hour
+	if err := supervisor.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		status := supervisor.Status()
+		if status.State == StateDegraded {
+			if status.RestartCount != 3 || !strings.Contains(status.LastError, "exit status") {
+				t.Fatalf("unexpected degraded status: %#v", status)
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("supervisor did not degrade: %#v", supervisor.Status())
+}
+
+func TestFeishuSupervisorHelperProcess(t *testing.T) {
+	if os.Getenv("CODEX_USAGE_BAR_TEST_BRIDGE") != "1" {
+		return
+	}
+	mode := os.Getenv("CODEX_USAGE_BAR_TEST_BRIDGE_MODE")
+	if mode == "crash" {
+		os.Exit(7)
+	}
+	_, _ = io.Copy(io.Discard, os.Stdin)
+	os.Exit(0)
+}
+
+func newTestSupervisor(t *testing.T, mode string) *Supervisor {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewSupervisor(SupervisorOptions{
+		Executable: executable,
+		Arguments:  []string{"-test.run=TestFeishuSupervisorHelperProcess"},
+		Environment: []string{
+			"CODEX_USAGE_BAR_TEST_BRIDGE=1",
+			"CODEX_USAGE_BAR_TEST_BRIDGE_MODE=" + mode,
+		},
+	})
+}

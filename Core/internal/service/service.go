@@ -16,11 +16,12 @@ import (
 	"codexusagebar/core/internal/codex"
 	"codexusagebar/core/internal/desktop"
 	"codexusagebar/core/internal/domain"
+	managedfeishu "codexusagebar/core/internal/feishu"
 	"codexusagebar/core/internal/pricing"
 	"codexusagebar/core/internal/tokens"
 )
 
-const Version = "0.9.0"
+const Version = "0.10.0-preview.1"
 
 const (
 	rateRefreshInterval      = 5 * time.Minute
@@ -74,30 +75,31 @@ type PricingCatalogRequest struct {
 }
 
 type Service struct {
-	home                  string
-	codex                 *codex.Client
-	ksf                   bridge.KSFClient
-	feishu                bridge.FeishuClient
-	desktop               *desktop.ActivityClient
-	mu                    sync.Mutex
-	lastUsage             domain.UsageSnapshot
-	lastThreads           []domain.CodexThread
-	lastRateAttempt       time.Time
-	lastTokenAttempt      time.Time
-	lastLocalTokenAttempt time.Time
-	lastThreadAttempt     time.Time
-	projectSources        map[string]projectSourceCache
-	feishuRoot            string
-	feishuSupervisor      *bridge.FeishuSupervisor
-	lastFeishuRoot        string
-	lastFeishuAt          time.Time
-	lastFeishu            domain.FeishuSnapshot
-	lastTokenHistoryAt    time.Time
-	lastTokenHistoryDays  int
-	lastTokenHistory      []domain.DailyUsageBucket
-	lastServerHistoryAt   time.Time
-	lastServerHistory     []domain.DailyUsageBucket
-	trackingAt            map[string]time.Time
+	home                    string
+	codex                   *codex.Client
+	ksf                     bridge.KSFClient
+	feishu                  bridge.FeishuClient
+	desktop                 *desktop.ActivityClient
+	mu                      sync.Mutex
+	lastUsage               domain.UsageSnapshot
+	lastThreads             []domain.CodexThread
+	lastRateAttempt         time.Time
+	lastTokenAttempt        time.Time
+	lastLocalTokenAttempt   time.Time
+	lastThreadAttempt       time.Time
+	projectSources          map[string]projectSourceCache
+	feishuRoot              string
+	legacyFeishuSupervisor  *bridge.FeishuSupervisor
+	managedFeishuSupervisor *managedfeishu.Supervisor
+	lastFeishuRoot          string
+	lastFeishuAt            time.Time
+	lastFeishu              domain.FeishuSnapshot
+	lastTokenHistoryAt      time.Time
+	lastTokenHistoryDays    int
+	lastTokenHistory        []domain.DailyUsageBucket
+	lastServerHistoryAt     time.Time
+	lastServerHistory       []domain.DailyUsageBucket
+	trackingAt              map[string]time.Time
 }
 
 type projectSourceCache struct {
@@ -114,15 +116,35 @@ func New() *Service {
 	home, _ := os.UserHomeDir()
 	feishuRoot := os.Getenv("CODEX_USAGE_BAR_FEISHU_SERVICE_ROOT")
 	feishuNode := os.Getenv("CODEX_USAGE_BAR_NODE")
+	dataRoot := os.Getenv("FEISHU_BRIDGE_DATA_DIR")
+	if strings.TrimSpace(dataRoot) == "" {
+		dataRoot = filepath.Join(home, ".config", "feishu-bridge")
+	}
+	var managedSupervisor *managedfeishu.Supervisor
+	if executable := strings.TrimSpace(os.Getenv("CODEX_USAGE_BAR_FEISHU_BRIDGE")); executable != "" {
+		environment := []string{"FEISHU_BRIDGE_DATA_DIR=" + dataRoot}
+		if larkCLI := strings.TrimSpace(os.Getenv("CODEX_USAGE_BAR_LARK_CLI")); larkCLI != "" {
+			environment = append(environment, "LARK_CLI_BIN="+larkCLI)
+		}
+		managedSupervisor = managedfeishu.NewSupervisor(managedfeishu.SupervisorOptions{
+			Executable:  executable,
+			Directory:   filepath.Dir(executable),
+			Environment: environment,
+		})
+		if setup, err := managedfeishu.NewSetupStore(dataRoot).Load(); err == nil {
+			managedSupervisor.SetConfigured(setup.Stage != managedfeishu.SetupNotStarted)
+		}
+	}
 	return &Service{
-		home:             home,
-		feishu:           bridge.FeishuClient{Node: feishuNode},
-		feishuRoot:       feishuRoot,
-		feishuSupervisor: bridge.NewFeishuSupervisor(feishuRoot, feishuNode),
-		desktop:          desktop.New(desktop.DefaultEndpoint(home)),
-		trackingAt:       map[string]time.Time{},
-		projectSources:   map[string]projectSourceCache{},
-		lastUsage:        domain.UsageSnapshot{Buckets: []domain.RateLimitBucket{}, DailyUsageBuckets: []domain.DailyUsageBucket{}, Status: "loading"},
+		home:                    home,
+		feishu:                  bridge.FeishuClient{Node: feishuNode},
+		feishuRoot:              feishuRoot,
+		legacyFeishuSupervisor:  bridge.NewFeishuSupervisor(feishuRoot, feishuNode),
+		managedFeishuSupervisor: managedSupervisor,
+		desktop:                 desktop.New(desktop.DefaultEndpoint(home)),
+		trackingAt:              map[string]time.Time{},
+		projectSources:          map[string]projectSourceCache{},
+		lastUsage:               domain.UsageSnapshot{Buckets: []domain.RateLimitBucket{}, DailyUsageBuckets: []domain.DailyUsageBucket{}, Status: "loading"},
 	}
 }
 
@@ -133,7 +155,7 @@ func (service *Service) Initialize(ctx context.Context) map[string]any {
 		_ = service.codex.Start(ctx)
 	}
 	_ = service.desktop.Start(ctx)
-	_ = service.feishuSupervisor.Start()
+	_ = service.startFeishuSupervisor()
 	return map[string]any{
 		"protocol": domain.Protocol,
 		"version":  Version,
@@ -252,14 +274,14 @@ func (service *Service) SetFeishuProfile(ctx context.Context, profile string) (m
 func (service *Service) ControlFeishuService(ctx context.Context, action string) (map[string]any, error) {
 	var err error
 	if action == "start" {
-		err = service.feishuSupervisor.Start()
+		err = service.startFeishuSupervisor()
 	} else if action == "restart" {
-		err = service.feishuSupervisor.Restart()
+		err = service.restartFeishuSupervisor(ctx)
 	} else {
 		err = errors.New("不支持的飞书服务动作")
 	}
 	service.clearFeishuCache()
-	return service.feishuSupervisor.Status(), err
+	return service.feishuSupervisorStatus(), err
 }
 
 func (service *Service) clearFeishuCache() {
@@ -379,7 +401,7 @@ func (service *Service) PrepareProjectLaunch(ctx context.Context, request Prepar
 func (service *Service) Close() {
 	stopContext, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
-	_ = service.feishuSupervisor.Stop(stopContext)
+	_ = service.stopFeishuSupervisor(stopContext)
 	if service.codex != nil {
 		_ = service.codex.Close()
 	}
@@ -498,12 +520,64 @@ func (service *Service) readFeishu(ctx context.Context, root string, now time.Ti
 	if err != nil {
 		snapshot = domain.FeishuSnapshot{Availability: "unavailable", Message: err.Error(), TargetAliases: []string{}, Links: []domain.FeishuTaskLink{}}
 	}
+	service.applyFeishuSupervisorStatus(&snapshot)
 	service.mu.Lock()
 	service.lastFeishuRoot = root
 	service.lastFeishuAt = now
 	service.lastFeishu = snapshot
 	service.mu.Unlock()
 	return snapshot
+}
+
+func (service *Service) startFeishuSupervisor() error {
+	if service.managedFeishuSupervisor != nil {
+		return service.managedFeishuSupervisor.Start()
+	}
+	return service.legacyFeishuSupervisor.Start()
+}
+
+func (service *Service) restartFeishuSupervisor(ctx context.Context) error {
+	if service.managedFeishuSupervisor != nil {
+		return service.managedFeishuSupervisor.Restart(ctx)
+	}
+	return service.legacyFeishuSupervisor.Restart()
+}
+
+func (service *Service) stopFeishuSupervisor(ctx context.Context) error {
+	if service.managedFeishuSupervisor != nil {
+		return service.managedFeishuSupervisor.Stop(ctx)
+	}
+	return service.legacyFeishuSupervisor.Stop(ctx)
+}
+
+func (service *Service) feishuSupervisorStatus() map[string]any {
+	if service.managedFeishuSupervisor != nil {
+		status := service.managedFeishuSupervisor.Status()
+		return map[string]any{
+			"state": status.State, "configured": status.Configured, "pid": status.PID,
+			"restartCount": status.RestartCount, "lastError": status.LastError,
+		}
+	}
+	legacy := service.legacyFeishuSupervisor.Status()
+	running, _ := legacy["running"].(bool)
+	state := managedfeishu.StateStopped
+	if running {
+		state = managedfeishu.StateRunning
+	}
+	return map[string]any{
+		"state": state, "configured": strings.TrimSpace(service.feishuRoot) != "",
+		"pid": legacy["pid"], "restartCount": 0, "lastError": "",
+	}
+}
+
+func (service *Service) applyFeishuSupervisorStatus(snapshot *domain.FeishuSnapshot) {
+	status := service.feishuSupervisorStatus()
+	snapshot.ProcessState, _ = status["state"].(string)
+	snapshot.Configured, _ = status["configured"].(bool)
+	snapshot.ProcessPID, _ = status["pid"].(int)
+	snapshot.RestartCount, _ = status["restartCount"].(int)
+	snapshot.LastError, _ = status["lastError"].(string)
+	snapshot.ProcessRunning = snapshot.ProcessState == managedfeishu.StateRunning || snapshot.ProcessState == managedfeishu.StateIdleUnconfigured || snapshot.ProcessState == managedfeishu.StateStarting
 }
 
 func (service *Service) readProjects(ctx context.Context, request DashboardRequest, threads []domain.CodexThread, observations []domain.TaskObservation, now time.Time) domain.ProjectDashboardSnapshot {

@@ -360,6 +360,11 @@ type FeishuTaskLink struct {
 type FeishuSnapshot struct {
 	Availability            string           `json:"availability"`
 	Message                 string           `json:"message,omitempty"`
+	ProcessState            string           `json:"processState"`
+	Configured              bool             `json:"configured"`
+	ProcessPID              int              `json:"processPid"`
+	RestartCount            int              `json:"restartCount"`
+	LastError               string           `json:"lastError,omitempty"`
 	Profile                 string           `json:"profile,omitempty"`
 	ProfileValid            bool             `json:"profileValid"`
 	InboundConnection       bool             `json:"inboundConnection"`

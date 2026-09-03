@@ -14,6 +14,10 @@ func TestFeishuSupervisorOwnsChildLifecycle(t *testing.T) {
 	if err != nil {
 		t.Skip("Node is unavailable")
 	}
+	node, err = filepath.EvalSymlinks(node)
+	if err != nil {
+		t.Fatal(err)
+	}
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "scripts"), 0o700); err != nil {
 		t.Fatal(err)
