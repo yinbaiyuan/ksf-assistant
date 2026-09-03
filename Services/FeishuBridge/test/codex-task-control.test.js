@@ -6,6 +6,8 @@ const {
   changedFilePathsFromTurn,
   finalAnswerTextFromTurn,
   finalTextFromTurn,
+  planImplementationPrompt,
+  planImplementationRevision,
   projectDesktopTaskSnapshot,
   publicPlanText,
   publicPlanTextFromItem,
@@ -17,6 +19,7 @@ const {
   recoveredRunningTurnOwner,
   terminalTaskLinkDetail,
   taskLinkFollowupProjection,
+  taskLinkPlanImplementationRequest,
   taskLinkProgressForTurn,
   taskLinkCollaborationMode,
   taskLinkSnapshotRequiresSync,
@@ -234,6 +237,72 @@ test('Desktop task projection carries the generated plan independently from repl
   });
   assert.equal(snapshot.planText, plan);
   assert.equal(snapshot.finalText, '计划已经完成。');
+});
+
+test('pending plan implementation projects plan_ready with a stable non-secret revision', () => {
+  const pendingPlanImplementation = {
+    turnId: 'turn-plan',
+    planContent: '# 实施计划\n\n1. 修改协议\n2. 运行测试',
+  };
+  const snapshot = projectDesktopTaskSnapshot({
+    thread: { pendingPlanImplementation },
+    turn: { id: 'turn-plan', status: 'completed', items: [] },
+    publicState: { turnState: 'completed', turnOwner: 'none', actionRequired: 'none' },
+  }, {
+    turnId: 'turn-plan', state: 'completed', finalText: '计划已完成。',
+    collaborationMode: { mode: 'plan', settings: { model: 'gpt-5.6-sol' } },
+  });
+  assert.deepEqual(snapshot.publicState, {
+    turnState: 'plan_ready', turnOwner: 'none', actionRequired: 'feishu',
+  });
+  assert.equal(snapshot.planText, pendingPlanImplementation.planContent);
+  assert.equal(planImplementationRevision(pendingPlanImplementation).length, 20);
+  assert.equal(planImplementationRevision(pendingPlanImplementation).includes('实施计划'), false);
+  assert.equal(
+    planImplementationPrompt(pendingPlanImplementation.planContent),
+    `PLEASE IMPLEMENT THIS PLAN:\n${pendingPlanImplementation.planContent}`,
+  );
+  assert.throws(() => planImplementationPrompt(''), /没有可执行计划/);
+});
+
+test('pending plan revisions force task-card synchronization and default execution preserves model settings', () => {
+  const pendingPlanImplementation = { turnId: 'turn-plan', planContent: '执行这份计划' };
+  const revision = planImplementationRevision(pendingPlanImplementation);
+  const snapshot = {
+    publicState: { turnState: 'plan_ready', turnOwner: 'none', actionRequired: 'feishu' },
+    pendingPlanImplementation,
+    journalTurn: {
+      collaborationMode: {
+        mode: 'plan', settings: { model: 'gpt-5.6-sol', reasoning_effort: 'high' },
+      },
+    },
+  };
+  const link = {
+    turnState: 'plan_ready', turnOwner: 'none', actionRequired: 'feishu',
+    pendingPlanTurnId: 'turn-plan', pendingPlanRevision: revision,
+    activeTurnMode: 'plan', nextTurnMode: 'plan',
+  };
+  assert.equal(taskLinkSnapshotRequiresSync(link, snapshot), false);
+  assert.equal(taskLinkSnapshotRequiresSync({ ...link, pendingPlanRevision: '0'.repeat(20) }, snapshot), true);
+  assert.deepEqual(taskLinkCollaborationMode({ nextTurnMode: 'plan' }, snapshot, 'default'), {
+    mode: 'default',
+    settings: {
+      model: 'gpt-5.6-sol', reasoning_effort: 'high', developer_instructions: null,
+    },
+  });
+  assert.deepEqual(taskLinkPlanImplementationRequest({
+    threadId: 'thread-original', cwd: '/project/original', nextTurnMode: 'plan',
+  }, snapshot), {
+    threadId: 'thread-original',
+    cwd: '/project/original',
+    input: [{ type: 'text', text: 'PLEASE IMPLEMENT THIS PLAN:\n执行这份计划' }],
+    collaborationMode: {
+      mode: 'default',
+      settings: {
+        model: 'gpt-5.6-sol', reasoning_effort: 'high', developer_instructions: null,
+      },
+    },
+  });
 });
 
 test('unchanged terminal task snapshots do not replace a card while the user is typing', () => {

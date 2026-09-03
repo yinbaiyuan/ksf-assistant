@@ -8,6 +8,7 @@ const {
   encodeFrame,
   extractTurnId,
   matchingDesktopUserInputRequest,
+  pendingPlanImplementation,
   desktopConversationTurns,
   desktopThreadSnapshot,
   normalizeCollaborationMode,
@@ -169,6 +170,47 @@ test('Desktop paginated history projects an authoritative task thread', () => {
   assert.equal(snapshot.turns[1].status, 'inProgress');
   assert.equal(snapshot.turns[1].completedAt, '');
   assert.throws(() => desktopThreadSnapshot({ id: 'other' }, 'thread-1'), /different task/);
+});
+
+test('Desktop pending-plan projection distinguishes incomplete, completed, missing, and conflicting state', () => {
+  const incomplete = {
+    turns: [{ id: 'turn-plan', items: [{
+      type: 'planImplementation', turnId: 'turn-plan', planContent: '1. 实现\n2. 验证', isCompleted: false,
+    }] }],
+  };
+  assert.deepEqual(pendingPlanImplementation(incomplete), {
+    turnId: 'turn-plan', planContent: '1. 实现\n2. 验证',
+  });
+  assert.equal(pendingPlanImplementation({
+    turns: [{ id: 'turn-plan', items: [{
+      type: 'planImplementation', turnId: 'turn-plan', planContent: '计划', isCompleted: true,
+    }] }],
+  }), null);
+  assert.equal(pendingPlanImplementation({ turns: [{ id: 'turn-1', items: [] }] }), null);
+  assert.throws(() => pendingPlanImplementation({
+    ...incomplete,
+    requests: [{
+      method: 'item/plan/requestImplementation',
+      params: { turnId: 'turn-plan', planContent: '被替换的计划' },
+    }],
+  }), /conflicting plan implementation state/);
+
+  const snapshot = desktopThreadSnapshot({ id: 'thread-1', cwd: '/project', ...incomplete }, 'thread-1');
+  assert.deepEqual(snapshot.pendingPlanImplementation, {
+    turnId: 'turn-plan', planContent: '1. 实现\n2. 验证',
+  });
+});
+
+test('language-neutral pending-plan fixtures remain reusable by the Go bridge', () => {
+  const fixture = require('./fixtures/plan-implementation-contract-v1.json');
+  assert.equal(fixture.schemaVersion, 1);
+  for (const contract of fixture.cases) {
+    assert.deepEqual(
+      pendingPlanImplementation(contract.conversationState),
+      contract.expected,
+      contract.name,
+    );
+  }
 });
 
 test('Desktop controller reads the thread through its live owner', async () => {

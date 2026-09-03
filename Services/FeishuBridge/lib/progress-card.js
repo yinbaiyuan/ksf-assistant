@@ -1,5 +1,5 @@
 const CARD_ACTION_NAMESPACE = 'feishu_bridge';
-const TASK_LINK_CARD_REVISION = 27;
+const TASK_LINK_CARD_REVISION = 28;
 const FEISHU_CARD_REQUEST_MAX_BYTES = 30 * 1024;
 const CARD_REQUEST_RESERVE_BYTES = 512;
 const CARD_REQUEST_SAFE_BYTES = FEISHU_CARD_REQUEST_MAX_BYTES - CARD_REQUEST_RESERVE_BYTES;
@@ -305,6 +305,7 @@ function taskLinkStatus(taskLink, fallbackStatus) {
     waiting_input: '等待回答',
     desktop_action_required: '等待桌面操作',
     queued: '已排队',
+    plan_ready: '等待开始执行',
     completed: '已完成',
     failed: '本轮失败',
     interrupted: '本轮已停止',
@@ -326,11 +327,13 @@ function taskLinkContextLine(taskLink, fallbackStatus, progress) {
   if (turnState === 'running' && ownerLabels[taskLink.turnOwner]) parts.push(ownerLabels[taskLink.turnOwner]);
   const activeMode = String(taskLink.activeTurnMode || '');
   const nextMode = String(taskLink.nextTurnMode || 'default');
-  if (activeMode === 'plan') {
+  if (turnState === 'plan_ready') parts.push('Plan 已完成');
+  if (activeMode === 'plan' && turnState !== 'plan_ready') {
     parts.push(['running', 'waiting_input', 'desktop_action_required', 'queued'].includes(turnState)
       ? 'Plan 模式' : '本轮 Plan');
   }
-  if (nextMode !== activeMode && (nextMode === 'plan' || activeMode === 'plan')) {
+  if (turnState !== 'plan_ready'
+    && nextMode !== activeMode && (nextMode === 'plan' || activeMode === 'plan')) {
     parts.push(nextMode === 'plan' ? '下轮 Plan' : '下轮默认');
   }
   parts.push('全权限');
@@ -358,6 +361,9 @@ function taskLinkContent(taskLink, status, detail, progress, hasQuestion) {
   const progressDetail = String(progress?.detail || '').trim();
   if (turnState === 'completed') {
     return { title: '', body: preferredDetail || taskLink.detailSummary || progressDetail || '本轮已完成。' };
+  }
+  if (turnState === 'plan_ready') {
+    return { title: '', body: '计划已生成。可直接开始执行，或在下方提出修改意见。' };
   }
   if (turnState === 'running') {
     return { title: '', body: progressDetail || preferredDetail || 'Codex 正在处理。' };
@@ -427,6 +433,17 @@ function taskLinkContextElement(taskLink, status, progress) {
 
 function taskLinkControlButtons(taskLink) {
   const buttons = [];
+  if (taskLink.controls?.canImplementPlan) {
+    buttons.push(cardV2Button({
+      name: 'implement_task_link_plan',
+      text: '开始执行',
+      type: 'primary_filled',
+      action: bridgeAction('task_link_implement_plan', {
+        taskKey: taskLink.taskKey,
+        planRevision: taskLink.planImplementationRevision,
+      }),
+    }));
+  }
   if (taskLink.controls?.canSetMode) {
     const nextMode = taskLink.nextTurnMode === 'plan' ? 'default' : 'plan';
     buttons.push(cardV2Button({
@@ -447,10 +464,14 @@ function taskLinkControlButtons(taskLink) {
 function taskLinkQuickReplyForm(taskLink) {
   if (!taskLinkCanQuickReply(taskLink)) return null;
   const controls = taskLink.controls || {};
-  const label = controls.canAnswer
+  const label = taskLink.turnState === 'plan_ready'
+    ? '修改计划'
+    : controls.canAnswer
     ? '快速回答'
     : controls.canSteer ? '快速补充' : '快速回复';
-  const placeholder = controls.canAnswer
+  const placeholder = taskLink.turnState === 'plan_ready'
+    ? '输入需要调整的内容'
+    : controls.canAnswer
     ? '输入对当前问题的回答'
     : controls.canSteer ? '输入一句补充或修正' : '输入下一步问题或要求';
   return cardV2QuickReplyForm({
@@ -474,6 +495,7 @@ function taskLinkStatusTag(taskLink, fallbackStatus) {
         waiting_input: 'orange',
         desktop_action_required: 'orange',
         queued: 'orange',
+        plan_ready: 'orange',
         completed: 'green',
         failed: 'red',
         interrupted: 'grey',

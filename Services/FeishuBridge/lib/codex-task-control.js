@@ -1,4 +1,7 @@
+const crypto = require('node:crypto');
 const path = require('node:path');
+
+const PLAN_IMPLEMENTATION_PREFIX = 'PLEASE IMPLEMENT THIS PLAN:';
 
 function threadFromResult(result) {
   return result?.thread || result;
@@ -278,6 +281,35 @@ function planTextFromTurn(turn) {
   return '';
 }
 
+function planImplementationRevision(pendingPlan) {
+  const turnId = String(pendingPlan?.turnId || '').trim();
+  const planContent = String(pendingPlan?.planContent || '').trim();
+  if (!turnId || !planContent) return '';
+  return crypto.createHash('sha256')
+    .update(`${turnId}\u0000${planContent}`, 'utf8')
+    .digest('hex')
+    .slice(0, 20);
+}
+
+function planImplementationPrompt(planContent) {
+  const plan = String(planContent || '').trim();
+  if (!plan) throw new Error('Codex Desktop 当前没有可执行计划');
+  return `${PLAN_IMPLEMENTATION_PREFIX}\n${plan}`;
+}
+
+function withPendingPlanImplementation(projection, snapshot) {
+  const pendingPlanImplementation = snapshot?.thread?.pendingPlanImplementation
+    || snapshot?.pendingPlanImplementation
+    || null;
+  if (!pendingPlanImplementation) return { ...projection, pendingPlanImplementation: null };
+  return {
+    ...projection,
+    publicState: { turnState: 'plan_ready', turnOwner: 'none', actionRequired: 'feishu' },
+    pendingPlanImplementation,
+    planText: pendingPlanImplementation.planContent,
+  };
+}
+
 function projectDesktopTaskSnapshot(snapshot, journalTurn) {
   const appTurnId = String(snapshot?.turn?.id || '');
   const appFinalText = finalAnswerTextFromTurn(snapshot?.turn);
@@ -285,7 +317,7 @@ function projectDesktopTaskSnapshot(snapshot, journalTurn) {
   const appChangedFilePaths = changedFilePathsFromTurn(snapshot?.turn);
   if (!journalTurn?.turnId) {
     const timing = publicTurnTiming(snapshot?.turn);
-    return {
+    return withPendingPlanImplementation({
       ...snapshot,
       turnId: appTurnId,
       finalText: appFinalText || (snapshot?.publicState?.turnState === 'completed'
@@ -299,7 +331,7 @@ function projectDesktopTaskSnapshot(snapshot, journalTurn) {
       planText: planTextFromTurn(snapshot?.turn),
       changedFilePaths: appChangedFilePaths,
       journalTurn: null,
-    };
+    }, snapshot);
   }
 
   const appMatchesJournal = appTurnId === journalTurn.turnId;
@@ -326,7 +358,7 @@ function projectDesktopTaskSnapshot(snapshot, journalTurn) {
   }
   const matchedFallback = appMatchesJournal ? finalTextFromTurn(snapshot?.turn) : '';
   const timing = publicTurnTiming(appMatchesJournal ? snapshot?.turn : null, journalTurn);
-  return {
+  return withPendingPlanImplementation({
     ...snapshot,
     publicState,
     turnId: journalTurn.turnId,
@@ -340,7 +372,7 @@ function projectDesktopTaskSnapshot(snapshot, journalTurn) {
     planText: journalTurn.planText || (appMatchesJournal ? planTextFromTurn(snapshot?.turn) : ''),
     changedFilePaths: appMatchesJournal ? appChangedFilePaths : null,
     journalTurn,
-  };
+  }, snapshot);
 }
 
 function recoveredRunningTurnOwner(link, observedState, observedTurnId) {
@@ -358,6 +390,11 @@ function recoveredRunningTurnOwner(link, observedState, observedTurnId) {
 
 function taskLinkSnapshotRequiresSync(link, snapshot) {
   const next = snapshot?.publicState || {};
+  const pendingRevision = planImplementationRevision(snapshot?.pendingPlanImplementation);
+  if (String(link.pendingPlanRevision || '') !== pendingRevision
+    || String(link.pendingPlanTurnId || '') !== String(snapshot?.pendingPlanImplementation?.turnId || '')) {
+    return true;
+  }
   const nextOwner = recoveredRunningTurnOwner(link, next, snapshot?.turnId);
   if (link.turnState !== next.turnState
     || link.turnOwner !== nextOwner
@@ -429,8 +466,8 @@ function taskLinkFollowupProjection(link, now = new Date()) {
   };
 }
 
-function taskLinkCollaborationMode(link, snapshot) {
-  const mode = String(link?.nextTurnMode || 'default');
+function taskLinkCollaborationMode(link, snapshot, modeOverride = '') {
+  const mode = String(modeOverride || link?.nextTurnMode || 'default');
   if (!['default', 'plan'].includes(mode)) throw new Error('unsupported task collaboration mode');
   const journal = snapshot?.journalTurn || {};
   const current = journal.collaborationMode || {};
@@ -444,6 +481,21 @@ function taskLinkCollaborationMode(link, snapshot) {
       reasoning_effort: reasoningEffort == null ? null : String(reasoningEffort),
       developer_instructions: null,
     },
+  };
+}
+
+function taskLinkPlanImplementationRequest(link, snapshot) {
+  const threadId = String(link?.threadId || '').trim();
+  const cwd = String(link?.cwd || '').trim();
+  const pendingPlan = snapshot?.pendingPlanImplementation;
+  if (!threadId || !path.isAbsolute(cwd) || !pendingPlan) {
+    throw new Error('无法构造待执行计划的 Codex 请求');
+  }
+  return {
+    threadId,
+    cwd,
+    input: [{ type: 'text', text: planImplementationPrompt(pendingPlan.planContent) }],
+    collaborationMode: taskLinkCollaborationMode(link, snapshot, 'default'),
   };
 }
 
@@ -484,11 +536,14 @@ function safeQuestionSummary(questions) {
 }
 
 module.exports = {
+  PLAN_IMPLEMENTATION_PREFIX,
   changedFilePathsFromEvent,
   changedFilePathsFromTurn,
   finalAnswerTextFromTurn,
   finalTextFromTurn,
   latestTurn,
+  planImplementationPrompt,
+  planImplementationRevision,
   projectDesktopTaskSnapshot,
   publicPlanText,
   publicPlanTextFromItem,
@@ -501,6 +556,7 @@ module.exports = {
   safeQuestionSummary,
   terminalTaskLinkDetail,
   taskLinkCollaborationMode,
+  taskLinkPlanImplementationRequest,
   taskLinkFollowupProjection,
   taskLinkProgressForTurn,
   taskLinkSnapshotRequiresSync,

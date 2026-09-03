@@ -108,6 +108,35 @@ test('stores the next and active collaboration modes but rejects unsupported val
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('plan_ready stores only the plan turn and revision while exposing safe execution controls', () => {
+  const { root, cwd, api } = isolatedStore();
+  let link = api.upsertLink({
+    threadId: '019c1234-abcd-7890-abcd-123456789abc', cwd, title: '计划任务', targetAlias: '我',
+  });
+  link = api.updateLink(link.id, {
+    turnState: 'plan_ready', turnOwner: 'none', actionRequired: 'feishu',
+    pendingPlanTurnId: 'turn-plan', pendingPlanRevision: '0123456789abcdef0123',
+    nextTurnMode: 'plan', activeTurnMode: 'plan',
+  });
+  const publicLink = api.publicLink(link);
+  assert.equal(publicLink.hasPendingPlanImplementation, true);
+  assert.equal(publicLink.planImplementationRevision, '0123456789abcdef0123');
+  assert.equal(publicLink.controls.canImplementPlan, true);
+  assert.equal(publicLink.controls.canSend, true);
+  assert.equal(publicLink.controls.canSetMode, false);
+  assert.equal(publicLink.controls.canInterrupt, false);
+  assert.equal(JSON.stringify(publicLink).includes('turn-plan'), false);
+  assert.equal(api.publicLink(link, Date.now() + 48 * 60 * 60 * 1000).linkState, 'active');
+
+  link = api.updateLink(link.id, {
+    turnState: 'running', turnOwner: 'desktop', actionRequired: 'none', activeTurnId: 'turn-next',
+  });
+  assert.equal(link.pendingPlanTurnId, '');
+  assert.equal(link.pendingPlanRevision, '');
+  assert.equal(api.publicLink(link).hasPendingPlanImplementation, false);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('running links do not expire mid-turn and released links cannot be resurrected', () => {
   const { root, cwd, api } = isolatedStore();
   let link = api.upsertLink({

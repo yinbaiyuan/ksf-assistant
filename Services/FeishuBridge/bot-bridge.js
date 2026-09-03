@@ -93,6 +93,7 @@ const {
   changedFilePathsFromEvent,
   finalTextFromTurn,
   latestTurn,
+  planImplementationRevision,
   projectDesktopTaskSnapshot,
   publicProgressFromEvent,
   publicProgressText,
@@ -102,6 +103,7 @@ const {
   terminalTaskLinkDetail,
   taskLinkCollaborationMode,
   taskLinkFollowupProjection,
+  taskLinkPlanImplementationRequest,
   taskLinkProgressForTurn,
   taskLinkSnapshotRequiresSync,
   taskInput,
@@ -273,6 +275,8 @@ const taskLinkCardPushes = new Map();
 const taskLinkJournalWatchers = new Map();
 const taskLinkRefreshes = new Set();
 const taskLinkFollowupTransitions = new Map();
+const taskLinkPlanImplementations = new Set();
+const taskLinkPendingPlans = new Map();
 const cardFollowupExecutions = new Set();
 const defaultConversationChains = new Map();
 let taskLinkCaffeinate = null;
@@ -4070,6 +4074,41 @@ function taskLinkCardPushState(linkId) {
   return taskLinkCardPushes.get(linkId);
 }
 
+function taskLinkCardProgress(link, progress = link.progress) {
+  const pendingPlan = link?.turnState === 'plan_ready'
+    ? String(taskLinkPendingPlans.get(link.id) || '') : '';
+  return pendingPlan ? { ...progress, plan: pendingPlan } : progress;
+}
+
+function projectPlanReadyLink(link, snapshot) {
+  const pendingPlan = snapshot?.pendingPlanImplementation;
+  const pendingPlanRevision = planImplementationRevision(pendingPlan);
+  if (!pendingPlan || !pendingPlanRevision) {
+    throw new Error('Codex Desktop returned an invalid pending plan');
+  }
+  taskLinkFinalResults.delete(link.id);
+  taskLinkPendingPlans.set(link.id, pendingPlan.planContent);
+  return updateTaskLink(link.id, {
+    turnState: 'plan_ready',
+    turnOwner: 'none',
+    actionRequired: 'feishu',
+    activeTurnId: '',
+    activeTurnMode: 'plan',
+    nextTurnMode: 'plan',
+    pendingPlanTurnId: pendingPlan.turnId,
+    pendingPlanRevision,
+    detailSummary: '计划已生成，等待开始执行。',
+    progress: {
+      ...taskLinkProgressForTurn(link.progress, pendingPlan.turnId, snapshot.changedFilePaths),
+      phase: '等待开始执行',
+      detail: '计划已生成。可直接开始执行，或在下方提出修改意见。',
+      plan: '',
+      startedAt: snapshot.turnStartedAt || link.progress?.startedAt || '',
+      durationSeconds: snapshot.turnDurationSeconds,
+    },
+  });
+}
+
 function cancelTaskLinkCardPush(linkId) {
   const state = taskLinkCardPushes.get(linkId);
   if (!state) return;
@@ -4094,7 +4133,7 @@ async function patchTaskLinkCard(
       title: link.title,
     detail: resolvedDetail,
     taskLink: publicTaskLink(link),
-    progress,
+    progress: taskLinkCardProgress(link, progress),
       latestInput: resolvedLatestInput,
       questions,
     });
@@ -4185,7 +4224,7 @@ function fittedTaskLinkCard(link, status, detail, {
     title: link.title,
     detail: taskLinkDisplayDetail(link, status, detail),
     taskLink: publicTaskLink(link),
-    progress: link.progress,
+    progress: taskLinkCardProgress(link),
     latestInput: taskLinkLatestInputs.get(link.id) || latestInput || '',
     questions,
     openIds,
@@ -4804,7 +4843,8 @@ async function refreshTaskLinks(onlyLinkId = '') {
     if (onlyLinkId && link.id !== onlyLinkId) continue;
     if (taskLinkEffectiveState(link) !== 'active'
       || taskLinkExecutions.has(link.threadId)
-      || taskLinkFollowupTransitions.has(link.threadId)) continue;
+      || taskLinkFollowupTransitions.has(link.threadId)
+      || taskLinkPlanImplementations.has(link.id)) continue;
     if (taskLinkRefreshes.has(link.id)) continue;
     taskLinkRefreshes.add(link.id);
     try {
@@ -4817,6 +4857,9 @@ async function refreshTaskLinks(onlyLinkId = '') {
         ...snapshot.publicState,
         turnOwner: recoveredRunningTurnOwner(link, snapshot.publicState, snapshot.turnId),
       };
+      if (snapshot.pendingPlanImplementation?.planContent) {
+        taskLinkPendingPlans.set(link.id, snapshot.pendingPlanImplementation.planContent);
+      }
       if (next.turnState === 'waiting_input' && !pendingInput) {
         const failed = updateTaskLink(link.id, {
           turnState: 'desktop_action_required', turnOwner: 'desktop', actionRequired: 'desktop',
@@ -4833,6 +4876,13 @@ async function refreshTaskLinks(onlyLinkId = '') {
         && !taskLinkCardRevisionAttempts.has(link.id);
       if (needsCardRevision) taskLinkCardRevisionAttempts.add(link.id);
       if (!needsCardRevision && !inputChanged && !taskLinkSnapshotRequiresSync(link, snapshot)) continue;
+      if (next.turnState === 'plan_ready') {
+        const ready = projectPlanReadyLink(link, snapshot);
+        cancelTaskLinkCardPush(link.id);
+        await patchTaskLinkCard(ready, 'plan_ready', ready.progress.detail, ready.progress);
+        continue;
+      }
+      taskLinkPendingPlans.delete(link.id);
       if (['running', 'waiting_input', 'desktop_action_required'].includes(next.turnState)) {
         taskLinkFinalResults.delete(link.id);
         const sameTurn = String(link.activeTurnId || '') === String(snapshot.turnId || '');
@@ -5411,6 +5461,103 @@ async function handleTaskLinkFollowup(event, action, authz, link) {
   }
 }
 
+async function handleTaskLinkImplementPlan(event, action, link) {
+  if (taskLinkPlanImplementations.has(link.id)) {
+    await replyText(
+      event.messageId,
+      event.chatId,
+      '计划正在启动，请勿重复点击。',
+      { phase: `task-link-implement-plan-duplicate:${event.eventId}` },
+    );
+    return fittedTaskLinkCard(
+      link,
+      link.turnState,
+      link.detailSummary || link.progress?.detail || '计划正在启动。',
+      { openIds: [event.operatorId] },
+    );
+  }
+
+  taskLinkPlanImplementations.add(link.id);
+  let authoritativeSnapshot = null;
+  try {
+    const current = readTaskLinkStore().links.find((item) => item.id === link.id) || link;
+    if (current.turnState !== 'plan_ready'
+      || current.pendingPlanRevision !== action.planRevision) {
+      if (current.turnState === 'running') {
+        return fittedTaskLinkCard(
+          current,
+          'running',
+          '计划已经开始执行。',
+          { openIds: [event.operatorId] },
+        );
+      }
+      throw new Error('该计划卡片已失效，请刷新后重试');
+    }
+
+    authoritativeSnapshot = await readTaskLinkSnapshot(current.threadId);
+    const pendingPlan = authoritativeSnapshot.pendingPlanImplementation;
+    const revision = planImplementationRevision(pendingPlan);
+    if (authoritativeSnapshot.publicState?.turnState !== 'plan_ready'
+      || !pendingPlan
+      || revision !== action.planRevision
+      || revision !== current.pendingPlanRevision
+      || pendingPlan.turnId !== current.pendingPlanTurnId) {
+      throw new Error('计划状态已经变化，卡片已刷新，请确认最新计划');
+    }
+
+    const submitted = await codexDesktopTaskController.startTurn(
+      taskLinkPlanImplementationRequest(current, authoritativeSnapshot),
+    );
+    taskLinkPendingPlans.delete(current.id);
+    const running = updateTaskLink(current.id, {
+      turnState: 'running',
+      turnOwner: 'desktop',
+      actionRequired: 'none',
+      activeTurnId: submitted.turnId || '',
+      activeTurnMode: 'default',
+      nextTurnMode: 'default',
+      pendingPlanTurnId: '',
+      pendingPlanRevision: '',
+      inputCapture: null,
+      detailSummary: '计划已开始执行。',
+      progress: {
+        ...taskLinkProgressForTurn(current.progress, submitted.turnId || ''),
+        phase: '执行',
+        detail: '计划已开始执行。',
+        plan: '',
+        startedAt: new Date().toISOString(),
+        durationSeconds: undefined,
+      },
+    }, undefined, { renew: true });
+    return fittedTaskLinkCard(
+      running,
+      'running',
+      running.progress.detail,
+      { openIds: [event.operatorId] },
+    );
+  } catch (error) {
+    let refreshed = readTaskLinkStore().links.find((item) => item.id === link.id) || link;
+    if (authoritativeSnapshot?.publicState?.turnState === 'plan_ready'
+      && authoritativeSnapshot.pendingPlanImplementation) {
+      refreshed = projectPlanReadyLink(refreshed, authoritativeSnapshot);
+    }
+    await replyText(
+      event.messageId,
+      event.chatId,
+      `开始执行失败：${safeOneLine(error.message || String(error), 240)}`,
+      { phase: `task-link-implement-plan-error:${event.eventId}` },
+    );
+    return fittedTaskLinkCard(
+      refreshed,
+      refreshed.turnState,
+      refreshed.detailSummary || refreshed.progress?.detail || '请重试开始执行。',
+      { openIds: [event.operatorId] },
+    );
+  } finally {
+    taskLinkPlanImplementations.delete(link.id);
+  }
+}
+
 async function handleCardAction(data) {
   const event = normalizeCardAction(data);
   if (!event.eventId || !event.chatId || !event.messageId || !event.operatorId || !event.token) {
@@ -5494,7 +5641,7 @@ async function handleCardAction(data) {
   } else if ([
     'task_link_detail', 'task_link_refresh', 'task_link_interrupt', 'task_link_release',
     'task_link_answer', 'task_link_followup', 'task_link_capture', 'task_link_capture_cancel',
-    'task_link_mode',
+    'task_link_mode', 'task_link_implement_plan',
   ].includes(action.action)) {
     const link = findTaskLinkByKey(action.taskKey);
     if (!link) {
@@ -5520,6 +5667,8 @@ async function handleCardAction(data) {
         link.linkState === 'released' ? '任务连接已解除。' : '任务连接已过期。',
         { openIds: [event.operatorId] },
       );
+    } else if (action.action === 'task_link_implement_plan') {
+      card = await handleTaskLinkImplementPlan(event, action, link);
     } else if (action.action === 'task_link_followup') {
       await handleTaskLinkFollowup(event, action, authz, link);
     } else if (['task_link_capture', 'task_link_capture_cancel'].includes(action.action)) {
@@ -5933,6 +6082,8 @@ async function shutdown(signal = 'SIGTERM') {
   for (const linkId of taskLinkCardPushes.keys()) cancelTaskLinkCardPush(linkId);
   taskLinkFinalResults.clear();
   taskLinkFollowupTransitions.clear();
+  taskLinkPlanImplementations.clear();
+  taskLinkPendingPlans.clear();
   if (taskLinkCaffeinate) { taskLinkCaffeinate.kill(); taskLinkCaffeinate = null; }
   directoryService.stop();
   groupDirectoryService.stop();

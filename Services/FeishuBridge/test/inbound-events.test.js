@@ -578,6 +578,46 @@ test('Plan mode task cards show the full plan separately and preserve it after c
   assert.match(JSON.stringify(completed), /计划已经生成，可以按此执行/);
 });
 
+test('plan_ready cards offer one safe start action and hide the mode toggle', () => {
+  const plan = '# 测试计划\n\n1. 保持原任务\n2. 点击后开始执行';
+  const card = progressCard({
+    status: 'plan_ready',
+    title: '等待执行的任务',
+    taskLink: {
+      taskKey: '0123456789abcdef0123', linkState: 'active', turnState: 'plan_ready',
+      turnOwner: 'none', actionRequired: 'feishu', nextTurnMode: 'plan', activeTurnMode: 'plan',
+      hasPendingPlanImplementation: true,
+      planImplementationRevision: 'abcdef0123456789abcd',
+      controls: {
+        canSend: true, canImplementPlan: true, canRelease: true, canSetMode: false,
+      },
+    },
+    progress: { phase: '等待开始执行', detail: '计划已生成。', plan },
+  });
+  assert.deepEqual(card.header.text_tag_list, [{
+    tag: 'text_tag', text: { tag: 'plain_text', content: '等待开始执行' }, color: 'orange',
+  }]);
+  assert.match(JSON.stringify(card), /测试计划/);
+  assert.equal(cardElements(card, 'input')[0].label.content, '修改计划');
+  assert.equal(cardElements(card, 'input')[0].placeholder.content, '输入需要调整的内容');
+  const buttons = cardElements(card, 'button');
+  const implement = buttons.find((button) => button.name === 'implement_task_link_plan');
+  assert.equal(implement.text.content, '开始执行');
+  assert.equal(implement.type, 'primary_filled');
+  assert.equal(buttons.some((button) => button.name === 'set_task_link_mode'), false);
+  assert.equal(buttons.some((button) => button.name === 'release_task_link'), true);
+  assert.deepEqual(implement.behaviors[0].value, {
+    namespace: 'feishu_bridge', version: 1, action: 'task_link_implement_plan',
+    taskKey: '0123456789abcdef0123', planRevision: 'abcdef0123456789abcd',
+  });
+  assert.deepEqual(bridgeCardAction({ actionValue: implement.behaviors[0].value }), {
+    action: 'task_link_implement_plan', taskId: '', taskKey: '0123456789abcdef0123',
+    planRevision: 'abcdef0123456789abcd',
+  });
+  assert.equal(JSON.stringify(implement.behaviors[0].value).includes(plan), false);
+  assert.equal(JSON.stringify(implement.behaviors[0].value).includes('thread'), false);
+});
+
 test('legacy input capture state no longer changes task-card controls', () => {
   const card = progressCard({
     status: 'completed',
@@ -691,6 +731,12 @@ test('task-link follow-up actions reject empty, oversized, and forged submission
     actionValue: {
       namespace: 'feishu_bridge', version: 1, action: 'task_link_mode',
       taskKey: '0123456789abcdef0123', mode: 'unsafe',
+    },
+  }), null);
+  assert.equal(bridgeCardAction({
+    actionValue: {
+      namespace: 'feishu_bridge', version: 1, action: 'task_link_implement_plan',
+      taskKey: '0123456789abcdef0123', planRevision: 'forged',
     },
   }), null);
 });

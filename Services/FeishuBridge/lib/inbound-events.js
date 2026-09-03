@@ -63,6 +63,7 @@ function bridgeCardAction(event) {
     'status', 'task_status', 'task_link_detail', 'task_link_refresh',
     'task_link_interrupt', 'task_link_release', 'task_link_answer', 'task_link_followup',
     'task_link_capture', 'task_link_capture_cancel', 'task_link_mode',
+    'task_link_implement_plan',
     'chat_followup', 'dismiss',
   ].includes(value.action)) return null;
   if (value.action === 'task_status' && !/^TASK-[A-Za-z0-9-]+$/.test(String(value.taskId || ''))) return null;
@@ -95,6 +96,10 @@ function bridgeCardAction(event) {
   if (value.action === 'task_link_mode') {
     if (!['default', 'plan'].includes(value.mode)) return null;
     result.mode = value.mode;
+  }
+  if (value.action === 'task_link_implement_plan') {
+    if (!/^[a-f0-9]{20}$/.test(String(value.planRevision || ''))) return null;
+    result.planRevision = String(value.planRevision);
   }
   return result;
 }

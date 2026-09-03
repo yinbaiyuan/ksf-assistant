@@ -11,13 +11,13 @@ const INPUT_CAPTURE_MS = 2 * 60 * 1000;
 const LINK_STATES = new Set(['active', 'released', 'expired']);
 const TURN_STATES = new Set([
   'idle', 'running', 'waiting_input', 'desktop_action_required', 'queued',
-  'completed', 'failed', 'interrupted',
+  'plan_ready', 'completed', 'failed', 'interrupted',
 ]);
 const TURN_OWNERS = new Set(['desktop', 'bridge', 'none']);
 const ACTION_REQUIRED = new Set(['none', 'feishu', 'desktop']);
 const COLLABORATION_MODES = new Set(['default', 'plan']);
 const LEASE_PROTECTED_TURN_STATES = new Set([
-  'running', 'waiting_input', 'desktop_action_required', 'queued',
+  'running', 'waiting_input', 'desktop_action_required', 'queued', 'plan_ready',
 ]);
 
 function defaultTaskLinkPath(home = os.homedir()) {
@@ -82,10 +82,11 @@ function normalizeInputCapture(value) {
 
 function normalizeStoredLink(link) {
   const legacy = legacyTurnProjection(link.state);
+  const turnState = TURN_STATES.has(link.turnState) ? link.turnState : legacy.turnState;
   return {
     ...link,
     linkState: LINK_STATES.has(link.linkState) ? link.linkState : legacy.linkState,
-    turnState: TURN_STATES.has(link.turnState) ? link.turnState : legacy.turnState,
+    turnState,
     turnOwner: TURN_OWNERS.has(link.turnOwner) ? link.turnOwner : legacy.turnOwner,
     actionRequired: ACTION_REQUIRED.has(link.actionRequired) ? link.actionRequired : legacy.actionRequired,
     activeTurnId: String(link.activeTurnId || ''),
@@ -98,6 +99,8 @@ function normalizeStoredLink(link) {
     inputCapture: normalizeInputCapture(link.inputCapture),
     nextTurnMode: COLLABORATION_MODES.has(link.nextTurnMode) ? link.nextTurnMode : 'default',
     activeTurnMode: COLLABORATION_MODES.has(link.activeTurnMode) ? link.activeTurnMode : '',
+    pendingPlanTurnId: turnState === 'plan_ready' ? String(link.pendingPlanTurnId || '') : '',
+    pendingPlanRevision: turnState === 'plan_ready' ? String(link.pendingPlanRevision || '') : '',
   };
 }
 
@@ -218,14 +221,18 @@ function controlsFor(link, now = Date.now()) {
   const active = effectiveLinkState(link, now) === 'active';
   const hasActiveTurn = Boolean(String(link.activeTurnId || '').trim());
   return {
-    canSend: active && ['idle', 'completed', 'failed', 'interrupted'].includes(link.turnState),
+    canSend: active && ['idle', 'plan_ready', 'completed', 'failed', 'interrupted'].includes(link.turnState),
     canSteer: active && link.turnState === 'running' && link.actionRequired === 'none' && hasActiveTurn,
     canInterrupt: active
       && ['running', 'waiting_input', 'desktop_action_required', 'queued'].includes(link.turnState)
       && (link.turnState !== 'running' || hasActiveTurn),
     canAnswer: active && link.turnState === 'waiting_input' && link.actionRequired === 'feishu',
     canRelease: active,
-    canSetMode: active,
+    canSetMode: active && link.turnState !== 'plan_ready',
+    canImplementPlan: active
+      && link.turnState === 'plan_ready'
+      && Boolean(String(link.pendingPlanTurnId || '').trim())
+      && /^[a-f0-9]{20}$/.test(String(link.pendingPlanRevision || '')),
     acceptsAttachments: active && link.actionRequired !== 'desktop',
   };
 }
@@ -274,6 +281,10 @@ function publicLink(link, now = Date.now()) {
       ? Math.max(0, Math.floor((Date.parse(link.expiresAt) - now) / 1000)) : 0,
     nextTurnMode: link.nextTurnMode,
     activeTurnMode: link.activeTurnMode,
+    hasPendingPlanImplementation: link.turnState === 'plan_ready'
+      && Boolean(link.pendingPlanTurnId && link.pendingPlanRevision),
+    planImplementationRevision: link.turnState === 'plan_ready'
+      ? String(link.pendingPlanRevision || '') : '',
     hasPendingMessage: Boolean(link.pendingMessageId),
     detailAvailable: Boolean(link.detailSummary || link.progress?.detail),
     phase: String(link.progress?.phase || ''),
@@ -328,6 +339,8 @@ function normalizeLink(input, now = new Date()) {
     lastDeliveredTurnId: '',
     nextTurnMode: COLLABORATION_MODES.has(input.nextTurnMode) ? input.nextTurnMode : 'default',
     activeTurnMode: COLLABORATION_MODES.has(input.activeTurnMode) ? input.activeTurnMode : '',
+    pendingPlanTurnId: '',
+    pendingPlanRevision: '',
     progress: input.progress || {
       phase: initial.turnState === 'running' ? '运行中' : '已连接',
       detail: initial.turnState === 'running' ? '正在读取当前 Codex 轮次。' : '等待飞书指令',

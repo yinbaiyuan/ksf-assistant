@@ -166,6 +166,48 @@ function desktopConversationTurns(conversationState) {
   ));
 }
 
+function normalizePlanImplementation(value) {
+  const turnId = String(value?.turnId || value?.params?.turnId || '').trim();
+  const planContent = String(value?.planContent || value?.params?.planContent || '').trim();
+  if (!turnId || !planContent) return null;
+  return { turnId, planContent };
+}
+
+function pendingPlanImplementation(conversationState) {
+  const turns = desktopConversationTurns(conversationState);
+  let item = null;
+  const latest = turns.at(-1);
+  const implementation = [...(latest?.items || [])].reverse()
+    .find((candidate) => candidate?.type === 'planImplementation');
+  if (implementation && implementation.isCompleted !== true) {
+    item = normalizePlanImplementation({ ...implementation, turnId: implementation.turnId || latest.id });
+    if (!item) throw new Error('Codex Desktop returned an invalid plan implementation state');
+  }
+
+  const requestCandidates = (Array.isArray(conversationState?.requests)
+    ? conversationState.requests : Object.values(conversationState?.requests || {}))
+    .filter((request) => request?.method === 'item/plan/requestImplementation')
+    .map(normalizePlanImplementation)
+    .filter(Boolean);
+  const uniqueRequests = new Map(requestCandidates.map((request) => (
+    [`${request.turnId}\u0000${request.planContent}`, request]
+  )));
+  if (uniqueRequests.size > 1) {
+    throw new Error('Codex Desktop returned conflicting plan implementation state');
+  }
+  const request = [...uniqueRequests.values()][0] || null;
+  if (implementation?.isCompleted === true) {
+    if (request) throw new Error('Codex Desktop returned conflicting plan implementation state');
+    return null;
+  }
+  if (!item && request && latest && request.turnId !== latest.id) return null;
+  if (item && request
+    && (item.turnId !== request.turnId || item.planContent !== request.planContent)) {
+    throw new Error('Codex Desktop returned conflicting plan implementation state');
+  }
+  return item || request;
+}
+
 function desktopThreadSnapshot(conversationState, expectedThreadId = '') {
   const id = String(conversationState?.id || conversationState?.sessionId || '').trim();
   if (!id || (expectedThreadId && id !== expectedThreadId)) {
@@ -178,6 +220,7 @@ function desktopThreadSnapshot(conversationState, expectedThreadId = '') {
     parentThreadId: String(conversationState?.parentThreadId || '').trim(),
     status: conversationState?.threadRuntimeStatus || conversationState?.status || { type: 'notLoaded' },
     turns: desktopConversationTurns(conversationState),
+    pendingPlanImplementation: pendingPlanImplementation(conversationState),
   };
 }
 
@@ -678,6 +721,7 @@ module.exports = {
   extractTurnId,
   followerRequest,
   matchingDesktopUserInputRequest,
+  pendingPlanImplementation,
   desktopConversationTurns,
   desktopThreadSnapshot,
   normalizeCollaborationMode,
