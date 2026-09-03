@@ -151,7 +151,7 @@ func New() *Service {
 }
 
 func (service *Service) Initialize(ctx context.Context) map[string]any {
-	executable, err := codex.LocateExecutable(service.home)
+	executable, err := configureCodexProcessEnvironment(service.home)
 	if err == nil {
 		service.codex = &codex.Client{Executable: executable, Timeout: 15 * time.Second}
 		_ = service.codex.Start(ctx)
@@ -167,6 +167,17 @@ func (service *Service) Initialize(ctx context.Context) map[string]any {
 			"taskCreation": true, "projectLaunch": true, "feishuTaskLinks": true, "feishuServiceManagement": true,
 		},
 	}
+}
+
+func configureCodexProcessEnvironment(home string) (string, error) {
+	executable, err := codex.LocateExecutable(home)
+	if err != nil {
+		return "", err
+	}
+	if err := os.Setenv("CODEX_BIN", executable); err != nil {
+		return "", fmt.Errorf("unable to configure Codex executable: %w", err)
+	}
+	return executable, nil
 }
 
 func (service *Service) Dashboard(ctx context.Context, request DashboardRequest) domain.DashboardSnapshot {

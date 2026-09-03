@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -222,5 +223,29 @@ func TestFeishuActivationWaitsForReadyBeforeSending(t *testing.T) {
 	send := strings.Index(body, "service.SendFeishuTest(ctx, targetAlias)")
 	if wait < 0 || send <= wait {
 		t.Fatal("activation must wait for the managed bridge before its real test send")
+	}
+}
+
+func TestConfigureCodexProcessEnvironmentDiscoversUserInstallWithoutPATH(t *testing.T) {
+	home := t.TempDir()
+	name := "codex"
+	if runtime.GOOS == "windows" {
+		name = "codex.exe"
+	}
+	executable := filepath.Join(home, ".local", "bin", name)
+	if err := os.MkdirAll(filepath.Dir(executable), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(executable, []byte("test"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", "")
+	t.Setenv("CODEX_BIN", "")
+	resolved, err := configureCodexProcessEnvironment(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != executable || os.Getenv("CODEX_BIN") != executable {
+		t.Fatalf("Codex path was not injected: resolved=%q env=%q", resolved, os.Getenv("CODEX_BIN"))
 	}
 }
