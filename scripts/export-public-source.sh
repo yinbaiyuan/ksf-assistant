@@ -1,5 +1,7 @@
 #!/bin/bash
 set -euo pipefail
+export LC_ALL=C
+export LANG=C
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 target="${1:-}"
