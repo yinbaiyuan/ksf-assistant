@@ -38,7 +38,7 @@ struct TerminalActionLauncher {
         \(shellQuote(action.scriptPath))
         action_status=$?
         echo
-        echo "[Codex Usage Bar] 命令已结束，状态：$action_status"
+        echo "[CodexAssistant] 命令已结束，状态：$action_status"
         exec /bin/zsh -l
         """
     }

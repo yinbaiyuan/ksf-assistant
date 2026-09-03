@@ -38,7 +38,7 @@ Renderers submit identifiers and user intent, not authoritative paths or state. 
 
 No credential material crosses this protocol. Codex login stays managed by Codex, while Feishu identity, IDs, lease state, messages and secrets remain bridge-owned.
 
-KSF Markdown interpretation remains in the KSF-owned Ruby bridge. The Go process supplies a platform-correct per-user support directory and consumes only the versioned catalog/projection JSON. This keeps one Usage Bar business core without creating a second KSF parser.
+KSF Markdown interpretation remains in the KSF-owned Ruby bridge. The Go process supplies a platform-correct per-user support directory and consumes only the versioned catalog/projection JSON. This keeps one CodexAssistant business core without creating a second KSF parser.
 
 ## Protocol
 

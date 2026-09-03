@@ -1,22 +1,27 @@
-# 团队内部发布清单
+# CodexAssistant 公开预览发布清单
 
-## 发布前
+## 源码与安全
 
-- 工作区干净，Go、Swift、Node 完整测试，universal2 构建及 Windows x64/arm64 构建退出码均为 0。
-- `lipo -info` 同时包含 `arm64` 与 `x86_64`。
-- Windows x64 与 arm64 NSIS 安装包均生成，并在对应实机验证托盘、动态高度、Codex 深链、目录选择与卸载。
-- `scripts/check-release-hygiene.sh` 未发现用户名、个人绝对路径、私有证书名、凭据或运行数据。
-- Apple Silicon 与 Intel 实机均完成首次安装和核心功能烟测；缺少 Intel 实测时只能发布 internal 预览版。
-- README、第三方声明、MIT License、版本号和兼容表一致。
+- 工作区变更已经审阅，版本统一为 `0.10.0-preview.1`。
+- Go、Race Detector、Swift、Windows、UI 规范与 239 项 Node 契约测试通过。
+- `scripts/check-release-hygiene.sh`、秘密扫描、依赖许可检查与 SPDX SBOM 生成通过。
+- README、MIT License、贡献指南、安全政策、隐私说明、支持范围、行为准则和第三方声明一致。
+- 公开源码由 `scripts/export-public-source.sh` 导出；快照不包含 `.git`、私有 remote、refs、reflog、对象库或历史提交。
 
-## 产物
+## 构建与产物
 
-运行 `scripts/package-release.sh`，核对 ZIP、源码归档、`SHA256SUMS` 和 `RELEASE.txt`。共享 ZIP 使用 ad-hoc 签名且未公证，禁止描述为 Apple 可信发行版。
+- macOS Universal App 同时包含 arm64/x86_64；Windows x64/arm64 安装包均已生成。
+- 四个平台包都携带匹配架构的 Go 飞书桥和固定 `lark-cli 1.0.92`，普通用户安装后不下载运行组件。
+- 产物包含 SHA-256、来源清单、第三方声明和 SPDX 2.3 SBOM。
+- 未签名或未公证的预览包明确标注 `preview`、系统拦截风险和校验方法，禁止描述为受信任发行版。
 
-在 `Windows` 目录运行 `npm ci && npm run dist:win`，核对两个架构的安装包。未配置 Windows 代码签名时必须明确标注“内部未签名预览”，不得描述为受信任发行版。
+## 真实硬件门槛
 
-## GitLab
+- 当前 macOS arm64：安装、启动、无 KSF 首启、飞书向导、收发、队列恢复、退出和升级通过。
+- macOS x64、Windows x64、Windows arm64：分别完成同一验收。
+- 未完成全部门槛时，Node 仍是生产飞书入口；不得删除回退实现或部分切换 Go。
+- 全部门槛完成后才更新仓库/KSF Skill、删除 Node 专用运行时与后台安装脚本并执行一次性生产切换。
 
-- 推送 `main` 后创建带说明的 `v0.9.0-internal.1` 标签。
-- GitLab Release 附上 universal ZIP、源码归档、校验文件和未公证声明。
-- 发布后在一台全新用户环境复核下载、校验、解压和右键打开路径。
+## 发布授权
+
+本里程碑不创建公开远端、不推送、不发布。未来只有在用户明确确认托管平台与发布动作后，才可从干净导出目录初始化单一首提交、配置公开 remote 和上传资产。

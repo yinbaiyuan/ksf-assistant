@@ -57,7 +57,7 @@ private enum FeishuBridgeStandaloneTestRunner {
 
             try client.sendTest(rootURL: root, targetAlias: "我")
             let body = try String(contentsOf: capturedBody, encoding: .utf8)
-            guard body == "Codex Usage Bar 飞书桥连接测试成功" else {
+            guard body == "CodexAssistant 飞书桥连接测试成功" else {
                 throw TestFailure(description: "test body was not passed over stdin")
             }
 

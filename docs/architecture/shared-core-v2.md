@@ -10,10 +10,10 @@ The bridge source lives at `Services/FeishuBridge`. Packaged releases carry a ch
 
 The product has one visible lifecycle:
 
-1. Starting Usage Bar starts the private Go core.
+1. Starting CodexAssistant starts the private Go core.
 2. The core starts the packaged Feishu Bridge as its child process.
 3. Hiding or closing the panel leaves the product running in the tray or menu bar.
-4. Explicitly quitting Usage Bar sends `shutdown`, stops the bridge process tree, closes Codex clients, then exits the host.
+4. Explicitly quitting CodexAssistant sends `shutdown`, stops the bridge process tree, closes Codex clients, then exits the host.
 
 Legacy LaunchAgent or Windows Scheduled Task definitions are stopped and removed during migration without deleting `~/.config/feishu-bridge`. They are not recreated by v2.
 
@@ -29,7 +29,7 @@ The renderer cannot submit a bridge path. Service controls are restricted to `st
 
 ## Deployment
 
-Windows copies the packaged service and runtime into the Usage Bar user-data directory using `staging -> current`, retains one `previous` release, and checks both Node entry points before switching. A failed staging or post-switch check preserves or restores `current`. macOS carries architecture-specific Node binaries and the service under app Resources; the same release manifest and checksum source are used at build time.
+Windows copies the packaged service and runtime into the CodexAssistant user-data directory using `staging -> current`, retains one `previous` release, and checks both Node entry points before switching. A failed staging or post-switch check preserves or restores `current`. macOS carries architecture-specific Node binaries and the service under app Resources; the same release manifest and checksum source are used at build time.
 
 ## Codex Migration
 

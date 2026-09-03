@@ -36,7 +36,9 @@ esac
 "$build_dir/shared-core-process-tests"
 
 if /usr/bin/xcrun --sdk macosx --show-sdk-platform-path >/dev/null 2>&1; then
-    exec /usr/bin/swift test --package-path "$repo_root"
+    /usr/bin/swift test --package-path "$repo_root"
+    "$repo_root/scripts/build-app.sh"
+    exit 0
 fi
 
 echo "Command Line Tools cannot provide SDK PlatformPath; using the Swift 5.8 direct-compile test fallback."

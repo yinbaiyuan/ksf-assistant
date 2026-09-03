@@ -1,6 +1,9 @@
-# Codex Usage Bar for Windows
+# CodexAssistant for Windows
 
-Windows 10/11 system-tray host for the shared Codex Usage Bar core.
+Windows 10/11 system-tray host for the shared CodexAssistant core.
+
+This page is for source contributors. Packaged-app users follow the repository
+README and configure everything in the application.
 
 ## Architecture
 
@@ -12,15 +15,19 @@ Windows 10/11 system-tray host for the shared Codex Usage Bar core.
 
 The renderer cannot spawn processes or read files. Project task creation and launch accept only a project ID; the core resolves current catalog data and validates paths again before returning an action.
 
-## Runtime requirements
+## Packaged runtime
 
 - Windows 10/11 on x64 or arm64.
-- Codex CLI/Desktop. Set `CODEX_BIN` when `codex.exe` is not on `PATH` or in a standard install location.
-- Ruby 3.2+ on `PATH` for the KSF-owned catalog/projection bridge.
-- Node.js for Feishu Bridge operations; the Usage Bar UI and core themselves do not require a system Node.js after packaging.
-- A compatible KSF root and, for Feishu control, a local `feishu-bot-bridge` checkout.
+- Codex CLI/Desktop installed and signed in.
+- No system Node.js, Go, Ruby, local bridge checkout, environment variable or
+  configuration-file edit is required.
+- KSF and Feishu are optional integrations. Their absence does not block quota,
+  Token history or the rest of the application.
 
 ## Development
+
+Development requires Node.js 20+ and Go 1.23+. Ruby 3.2+ is needed only when a
+contributor exercises the optional KSF adapter.
 
 ```powershell
 npm ci
@@ -40,8 +47,14 @@ npm run build:core
 npm run dist:win
 ```
 
-This creates per-user NSIS installers for x64 and arm64. Internal builds are unsigned unless signing is configured outside the repository.
+This creates per-user NSIS installers for x64 and arm64. Preview builds are unsigned unless signing is configured outside the repository.
 
 Project launch follows one explicit Windows convention: `<projectDirectory>\start.ps1`. The core accepts only a regular, non-symlink file at that exact location. The host opens it in a visible PowerShell window; no command guessing or hidden execution is allowed.
 
-Live task state and automatic first-turn submission require the compatible Codex Desktop named pipe. This preview intentionally does not guess a private endpoint; set `CODEX_DESKTOP_IPC_PATH` to the current-user pipe exposed by a compatible Codex Desktop build. Without that pipe, quota, Token history, KSF projects and Feishu bridge health continue independently; desktop-owned live state and direct task submission report their own unavailable status.
+Live task state and automatic first-turn submission require a compatible Codex
+Desktop named pipe. A packaged build accepts only a host-managed current-user
+pipe and never asks an end user to locate or type its path. Contributors testing
+against a private compatible Desktop build may inject `CODEX_DESKTOP_IPC_PATH`.
+Without that integration, desktop-owned live state and direct task submission
+report their own unavailable status while quota, Token history, KSF projects and
+Feishu bridge health continue independently.

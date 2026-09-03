@@ -1,5 +1,39 @@
 # Third-party notices
 
+The generated SPDX 2.3 SBOM is the machine-readable dependency inventory. This file highlights packages distributed with or linked into preview artifacts; upstream license files remain authoritative.
+
+## Lark/Feishu Go SDK
+
+Source: [larksuite/oapi-sdk-go](https://github.com/larksuite/oapi-sdk-go)
+
+Bundled version: 3.11.0
+License: MIT
+
+The Go Feishu Bridge uses the official SDK for the single inbound WebSocket and fixed event dispatch.
+
+## lark-cli
+
+Source: [larksuite/cli](https://github.com/larksuite/cli)
+
+Bundled version: 1.0.92
+License: MIT
+
+Platform binaries are downloaded only during packaging from the upstream release and verified against the SHA-256 values in `runtime/lark-cli-runtime.json`.
+
+## Go runtime dependencies
+
+- `golang.org/x/sys` 0.10.0 — BSD-3-Clause
+- `github.com/gorilla/websocket` 1.5.0 — BSD-2-Clause
+- `github.com/gogo/protobuf` 1.3.2 — BSD-3-Clause
+
+These packages are linked into Go binaries. Their source repositories and license texts are identified by the generated SBOM and Go module metadata.
+
+## Node compatibility runtime
+
+Node.js 24.20.0 is temporarily bundled for the pre-cutover Feishu compatibility implementation. Node.js is distributed under the MIT License with bundled third-party components under their respective licenses. The runtime archive and SHA-256 values are pinned in `runtime/node-runtime.json`.
+
+The compatibility bridge currently includes `@larksuiteoapi/node-sdk` 1.73.0 and `@larksuite/cli` 1.0.92 under their upstream licenses. This runtime is removed only after all Go production-cutover hardware gates pass.
+
 ## go-winio
 
 Source: [Microsoft/go-winio](https://github.com/microsoft/go-winio)
@@ -73,7 +107,7 @@ Source: [Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin)
 Referenced version: 2.4.6  
 Retrieved: 2026-08-30
 
-Codex Usage Bar's native Swift iLink adapter is an independent implementation informed by the public protocol and behavior of Tencent's `openclaw-weixin` project. The upstream project is distributed under the MIT License.
+CodexAssistant's native Swift iLink adapter is an independent implementation informed by the public protocol and behavior of Tencent's `openclaw-weixin` project. The upstream project is distributed under the MIT License.
 
 ```text
 Copyright (C) 2026 Tencent. All rights reserved.

@@ -1,5 +1,8 @@
 # 飞书桥配置说明
 
+> 迁移期维护者参考：本文记录 Node 兼容实现的底层配置，不是
+> CodexAssistant 普通用户操作。普通用户只使用软件内飞书向导。
+
 更新日期：2026-09-02
 
 本文是同事复刻飞书桥时的配置入口。真实配置统一写入项目根目录 `.env.local`，该文件已被 `.gitignore` 忽略，不应提交到仓库。
@@ -68,7 +71,7 @@ FEISHU_DIRECT_ALLOWED_OPEN_IDS=ou_xxx
 - `FEISHU_INBOUND_MAX_BYTES`：单条授权单聊的附件总暂存上限，默认 25 MiB。临时文件权限为 `0600`，Codex 处理结束后清理。
 - `FEISHU_BRIDGE_LOG_DIR`：本地 JSONL 日志目录。
 - `FEISHU_DIRECT_ALLOWED_OPEN_IDS`：允许单聊访问机器人的用户 open_id 列表，多个值用英文逗号分隔。
-- Usage Bar 的任务连接目标必须同时是 `open_id` 消息目标别名和 `FEISHU_DIRECT_ALLOWED_OPEN_IDS` 成员；`targets list` 只把满足两者的别名标为任务连接可用。桥不会因为主动出站配置而扩大入站操控权限。连接账本固定使用 `~/.config/feishu-bridge/task-links-v1.json`，schema v2 将连接/轮次状态分开并使用 24 小时闲置租约，无需新增环境变量。
+- CodexAssistant 的任务连接目标必须同时是 `open_id` 消息目标别名和 `FEISHU_DIRECT_ALLOWED_OPEN_IDS` 成员；`targets list` 只把满足两者的别名标为任务连接可用。桥不会因为主动出站配置而扩大入站操控权限。连接账本固定使用 `~/.config/feishu-bridge/task-links-v1.json`，schema v2 将连接/轮次状态分开并使用 24 小时闲置租约，无需新增环境变量。
 
 默认不启用群聊和主动出站，避免 clone 后误发消息。
 

@@ -20,7 +20,7 @@ let quitting = false;
 let shutdownStarted = false;
 let dashboardPromise = null;
 
-app.setAppUserModelId('com.ksf.codexusagebar');
+app.setAppUserModelId('com.codexassistant.desktop');
 
 function coreExecutablePath() {
   if (app.isPackaged) {
@@ -76,7 +76,7 @@ function createTray() {
   tray = new Tray(icon);
   updateTrayStatus(null);
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '打开 Usage Bar', click: () => showWindow() },
+    { label: '打开 CodexAssistant', click: () => showWindow() },
     { type: 'separator' },
     { label: '退出', click: () => { quitting = true; app.quit(); } },
   ]));
@@ -305,8 +305,19 @@ function allowedLocalPath(targetPath) {
   return target;
 }
 
+function migrateLegacySettings(currentSettingsPath) {
+  if (fs.existsSync(currentSettingsPath)) return;
+  const legacyProductName = ['Codex', ' Usage', ' Bar'].join('');
+  const legacySettings = path.join(app.getPath('appData'), legacyProductName, 'settings.json');
+  if (!fs.existsSync(legacySettings)) return;
+  fs.mkdirSync(path.dirname(currentSettingsPath), { recursive: true });
+  fs.copyFileSync(legacySettings, currentSettingsPath, fs.constants.COPYFILE_EXCL);
+}
+
 app.whenReady().then(async () => {
-  store = new ConfigStore(path.join(app.getPath('userData'), 'settings.json'));
+  const settingsPath = path.join(app.getPath('userData'), 'settings.json');
+  migrateLegacySettings(settingsPath);
+  store = new ConfigStore(settingsPath);
   const runtime = feishuRuntime();
   core = new CoreClient({
     executablePath: coreExecutablePath(),

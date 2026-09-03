@@ -1676,7 +1676,7 @@ async function handleTaskLink(args, flags) {
     text: JSON.stringify(card), source: 'codex-usage-bar',
     explicitAuthorization: true,
     dryRun: parseBool(flags.dryRun),
-    reason: '用户在 Codex Usage Bar 中主动连接指定任务到飞书',
+    reason: '用户在 CodexAssistant 中主动连接指定任务到飞书',
     trace: { system: 'codex-usage-bar', code: link.taskKey }, createdAt: new Date().toISOString(),
   };
   const result = await submitQueueRequest({

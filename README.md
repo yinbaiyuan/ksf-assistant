@@ -1,95 +1,52 @@
-# Codex Usage Bar
+# CodexAssistant
 
-A cross-platform tray instrument for KSF teams. It shows remaining Codex quota, live top-level task activity, a compact KSF project workbench, and an explicit full-control link from one Codex task to the local Feishu Bridge. macOS uses SwiftUI/AppKit; Windows uses an isolated Electron renderer; both consume the same native Go core.
+CodexAssistant 是一个 macOS 菜单栏与 Windows 系统托盘应用，用来查看 Codex 额度、Token 活动和任务状态。它也可以在软件内接入飞书；KSF 项目工作台是可选增强能力。
 
-Prepared team preview: `0.9.0-internal.1`. The app is MIT-licensed; internal macOS builds are ad-hoc signed and not notarized, while Windows installers are internal and unsigned unless a signing identity is supplied separately.
+当前版本：`0.10.0-preview.1`。这是公开预览版源码，尚未正式发布。
 
-Private source repository: `git@gitlab.houzzkit.com:costudyteam/codex-usage-bar.git`.
+CodexAssistant 是社区开源项目，不是 OpenAI 官方产品，也不代表 OpenAI
+背书。“Codex”和“OpenAI”及其相关商标归各自权利人所有。
 
-Protocol source: [OpenAI Codex App Server — rate limits](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt).
+## 普通用户快速开始
 
-## Product promise
+1. 从未来公开 Release 页面下载与你的电脑匹配的安装包。
+2. 安装并打开 CodexAssistant。
+3. 保持 Codex 已登录。额度、Token 和任务状态会自动出现。
+4. 如需飞书，在“设置 → 飞书”中按向导完成创建新应用或接入已有应用。
+5. 如需 KSF 项目工作台，在“设置 → KSF 知识库”中选择目录；软件会自动验证。
 
-- The menu bar percentage is remaining capacity for the general `codex` bucket: `100 - usedPercent`, using the most constrained general window.
-- The popover intentionally omits model-specific buckets; they never change the headline value.
-- Token activity is historical activity, not an exact remaining-token balance. The account metric shows the latest server-published daily bucket as today, yesterday, or an older date; this Mac's previous- and current-day totals plus today's ordinary-input, cached-input, and output split are derived independently from active and archived local Codex session counter events. Parent and sub-agent logs in the same task lineage are merged before natural-day deltas are calculated, so a task-wide cumulative counter mirrored across agents is counted once. The Token heading opens a 30-day overlay trend: server-published account totals form the base bars and this device's monotonic local history forms the foreground bars. Selecting a date shows both exact totals and the direct, unclamped local/server percentage; absent server dates remain `未同步` because server publication can lag.
-- Local text Token can also be valued against a selected API pricing plan. The shared Go core ships seven read-only OpenAI API and DeepSeek API presets, validates up to 20 device-local custom plans, and calculates integer micro-dollar estimates for ordinary input, cached input, output, each visible day, and the known 30-day subtotal. The default is `OpenAI API · GPT-5.6 Sol`. Prices are versioned with the application and are not fetched at runtime; every amount is explicitly an API estimate rather than a bill.
-- While at least one top-level task is confirmed running, this Mac's current-day Token total refreshes immediately and then every 10 seconds. The local-only timer stops when running reaches zero or task state becomes unavailable; popover-open, wake, and the existing 30-minute account refresh remain unchanged.
-- The app reuses Codex's managed login through `codex app-server`; it never reads or copies credential files.
-- The menu bar renders `Codex 图标 N% N.NM [play.fill]N [person.fill.questionmark]N`. `N.NM` is this Mac's current-date usage and always stays in one-decimal million units, including below one million and above one billion; running and waiting counts remain present, including zero.
-- Task activity covers top-level local and remote Codex tasks managed by the desktop app, across projects. Waiting tasks are excluded from the running count; ChatGPT conversations, standalone CLI sessions, and sub-agents are excluded.
-- The 336pt Simplified Chinese popover puts general quota and Token activity first, then shows pinned projects and unpinned projects with running or waiting tasks. Visible project Cells retain completed tasks, but completed tasks alone do not keep an unpinned project on the home surface. Running/waiting/completed states use blue/orange/green; KSF category, job, ability, and Skill use restrained indigo, purple, teal, and blue accents with explicit text and symbols. Clicking a task body opens that exact Codex task; `info.circle` opens a grouped secondary page with full KSF route details plus Codex and Feishu actions. The home row has no disclosure arrow or inline route expansion. Pinned projects stay above active unpinned projects, project order survives restarts, and task order stays stable for the app session.
-- KSF project assignment is conservative: a task needs a verified local KSF projection or an exact engineering-root `cwd` match. Non-project tasks remain outside project totals.
-- Project Token accounting starts at verified binding time, follows child agents, and splits later increments when one task changes projects. Remote or missing local logs are reported as incomplete instead of zero.
-- Project launch recognizes only an executable `start.sh` directly inside the KSF project directory. It never guesses commands from Git roots, `package.json`, Makefiles, or other project files.
-- Each project Cell has an explicit new-task shortcut. It creates the task with the configured KSF root as `cwd`, so Codex Desktop places it in the saved KSF project. Every declared Git mapping is passed only as business context. The first turn reads the KSF entry, project memory card, and minimum required context, then waits for the user's next instruction without beginning implementation.
-- Feishu Bridge is shipped inside Codex Usage Bar and is never selected from an external checkout. The Go core starts and supervises the bridge; explicitly quitting Usage Bar stops the core, bridge, and their child processes together. After an explicit task-row action, protocol v2 links that exact top-level Codex task to one authorized direct-message alias for a 24-hour inactivity lease. Credentials, real Feishu IDs, task authority, redaction, leases and audit remain bridge-owned.
+普通用户不需要安装 Node.js、Go、Git 或 Ruby，不需要运行 Terminal/PowerShell，不需要启动后台服务，也不需要编辑 `.env`、JSON 或其他配置文件。飞书租户管理员必须完成的官方授权和应用发布确认会由软件打开对应飞书页面，并在返回后自动检查。
 
-## Requirements
+预览包可能尚未签名或公证。安装前请核对发布页提供的 SHA-256；macOS 或 Windows 可能显示系统安全提醒。项目不会要求用户通过关闭系统安全能力来安装。
 
-- macOS 13 or newer on Apple silicon or Intel, or Windows 10/11 on x64 or arm64
-- Swift 5.8 or newer Command Line Tools for macOS source builds
-- Go 1.23+, Node.js 20+ and Ruby 3.2+ for source builds
-- A Codex CLI build that supports `account/rateLimits/read` and `account/usage/read`
-- ChatGPT-backed Codex authentication
-- Codex desktop app for live task counts; when it is not running, the counts are `0 / 0`
-- A compatible KSF root containing `AGENTS.md` and the standard panel bridge
-- No separately installed Node.js or second bridge checkout is required by packaged applications
+## 功能与边界
 
-Ruby runs the KSF-owned catalog/projection bridge on both platforms; the shared core injects a platform-correct per-user support directory. `CODEX_BIN` may point to the Codex executable when it is not discoverable from `PATH` or the standard install locations. The Windows preview does not guess a private Codex Desktop endpoint: live task ownership and direct first-turn delivery require a compatible current-user named pipe explicitly configured through `CODEX_DESKTOP_IPC_PATH`.
+- 显示 Codex 通用额度及重置时间。
+- 汇总本机普通输入、缓存输入、输出和 30 天 Token 历史，并提供可选 API 价格估算。
+- 显示 Codex Desktop 顶层任务的运行、等待与完成状态。
+- 可选连接 KSF 项目目录；KSF 不可用时不影响额度、Token、任务状态或飞书。
+- CodexAssistant 自动管理 Shared Core 与飞书桥的完整生命周期。关闭面板或最小化到托盘不会停止服务；明确退出应用才会关闭进程树。
+- 飞书 App Secret、OAuth token 和其他凭据只进入当前用户的 Keychain 或 DPAPI 安全存储，不返回界面、不进入日志或命令行。
+- 飞书真实用户 ID、消息正文和队列内容不进入 CodexAssistant 的渲染层。
 
-See [compatibility](docs/COMPATIBILITY.md) for protocol requirements and independent failure boundaries.
+## 平台支持
 
-## First launch
+- macOS 13 或更新版本：Apple Silicon 与 Intel
+- Windows 10/11：x64 与 arm64
 
-The first-run page suggests `~/Documents/KSF` only when it exists. The user must confirm or choose the KSF root, then the app validates `AGENTS.md`, the panel bridge, and the catalog protocol before enabling the project workbench and v2 Token history. Login launch and quota-reset notifications are off until the user explicitly enables them. Feishu is configured later in Settings and remains independent from onboarding.
+Go 飞书桥已可作为预览组件构建并随包携带。完成 macOS Intel、Windows x64 和 Windows arm64 的真实硬件验收前，发布构建仍保留 Node 兼容入口，不会进行不完整的生产切换。
 
-## Build and install
+## 开源与贡献
 
-Shared core and macOS:
+本项目采用 [MIT License](LICENSE)。安全、隐私、支持与贡献规则见：
 
-```bash
-scripts/run-tests.sh
-scripts/live-smoke-test.sh
-scripts/build-app.sh
-scripts/install-local.sh
-open "$HOME/Applications/Codex Usage Bar.app"
-```
+- [贡献指南](CONTRIBUTING.md)
+- [安全政策](SECURITY.md)
+- [隐私说明](PRIVACY.md)
+- [支持范围](SUPPORT.md)
+- [行为准则](CODE_OF_CONDUCT.md)
+- [架构说明](docs/ARCHITECTURE.md)
+- [开发者构建说明](docs/CONTRIBUTING_BUILD.md)
+- [第三方依赖声明](THIRD_PARTY_NOTICES.md)
 
-Windows, from the `Windows` directory:
-
-```powershell
-npm ci
-npm test
-npm run dist:win
-```
-
-The Windows build produces per-user NSIS installers for x64 and arm64. The tray panel uses content-driven height, Windows-native typography and controls, and keeps Node APIs outside the renderer. See [Windows/README.md](Windows/README.md).
-
-The build produces a universal2 app for Apple Silicon and Intel. `scripts/install-local.sh` installs to `$HOME/Applications` by default; override with `INSTALL_ROOT=/explicit/path`. If that folder contains the old personal Bundle ID, the script preserves it and installs the team build as `Codex Usage Bar Team.app`. `INSTALL_APP_NAME` can explicitly select another single filename. The app has no Dock icon and does not register as a login item until the user opts in.
-
-`SIGNING_MODE=adhoc` is the default and is used for the internal ZIP. To use a local certificate-backed identity, run `SIGNING_MODE=identity SIGNING_IDENTITY="Your Identity" scripts/build-app.sh`. No private certificate name or Keychain path is stored in the repository.
-
-The shared ZIP is not notarized. Verify `SHA256SUMS`, unzip it, then use Finder's **Open** context-menu action if Gatekeeper blocks the first launch. Team members must understand that macOS can ask again after an update. Do not remove quarantine attributes with broad recursive commands.
-
-On a current Command Line Tools installation, the test command uses Swift Package Manager and XCTest. A direct-compile fallback covers older Command Line Tools. No Xcode project is required.
-
-To prepare a clean release after committing all reviewed changes, run `scripts/package-release.sh`. It creates the universal ZIP, source archive, checksums, and an explicit non-notarized release notice. Follow the [release checklist](docs/RELEASE_CHECKLIST.md).
-
-## KSF project bridge
-
-KSF owns project-card interpretation and exports `ksf-panel-catalog-v1`; the app does not parse arbitrary Chinese Markdown. After an ordinary `verified-route-projection-v6` succeeds with exactly one project-memory root card, the wrapper can publish a display-only `ksf-task-project-projection-v1`. Raw task IDs are HMACed with a local 0600 key before any filename or projection is written. A missing bridge, an incompatible protocol, or an unavailable KSF directory only disables the project region; quota and the global task counter continue independently.
-
-Project launch is a fixed convention: macOS uses `<projectDirectory>/start.sh`; Windows uses `<projectDirectory>\start.ps1`. The core revalidates the exact platform script before returning it to the native host. macOS additionally requires current-user ownership, owner execution permission and no group/other write access. Windows accepts only a regular, non-symlink file. A missing or unsafe script never falls back to another command or Git engineering root.
-
-The project's `plus.bubble` shortcut first creates an idle task through Codex App Server `thread/start` and assigns the explicit name `项目名 · 新任务` through `thread/name/set`. It then opens that exact task, waits for the visible Codex Desktop window to report that it is following the task, and submits the bootstrap input directly to that same window through desktop `thread-follower-start-turn` v2. A fresh window can report following just before it finishes becoming the stream owner, so the adapter retries only the unambiguous `no-client-found` response for up to 10 seconds. It does not retry timeouts or other errors, and it does not run a second owner-discovery round trip. The independent App Server never starts the first turn, so the prompt and live reply belong to the foreground page. `thread/start.cwd` and the submitted turn `cwd` are both the configured KSF root, which is the Codex Desktop project root. The compact bootstrap input identifies the project and its memory card, asks KSF to load the normal base context, forbids concrete work/file changes/implementation plans, and waits for the user's next instruction. KSF's own rules remain responsible for context loading, while the user's existing thread settings remain unchanged.
-
-## Privacy and scope
-
-Quota and Token activity use the documented Codex App Server account endpoints. Live task state uses a separate desktop IPC adapter because an independent App Server process cannot observe other desktop-managed processes in real time. The read-only thread catalog and conservative KSF assignment produce an in-memory set of local, top-level project candidates; the adapter actively discovers their desktop owners so a task remains observable while it runs behind another Codex page. Window `following` broadcasts remain a fast discovery hint, but losing the last window follower no longer proves that the task stopped. The adapter connects only to `~/.codex/ipc/ipc.sock`, requires a current-user-owned Unix Socket with no group/other permissions, and currently supports `thread-owner-discovery` v1, `thread-stream-following-changed` v1, `thread-stream-state-changed` v11, plus the narrowly scoped `thread-follower-start-turn` v2 used only after the user presses a project's new-task button. A desktop update can make this private protocol temporarily incompatible; that failure is isolated from quota reads.
-
-The app stores normalized quota snapshots and per-project Token totals under `~/Library/Application Support/com.ksf.codexusagebar`. The full-Mac daily Token cache is stored at `.agents/runtime-data/codex-usage-bar/token-history-v2.json` inside the configured KSF root, is ignored by Git, and contains only dates, aggregate Token counts, composition, and observation timestamps. Live task identity, original names, state, project task arrays, first-seen task order, new-task bootstrap prompts, and returned raw thread IDs remain memory-only and are never written to UserDefaults or app logs. A bootstrap prompt is retained inside the user-created Codex task itself, as expected for its first turn. The KSF projection stores an HMAC task key, relative project card, compact route names/IDs, binding timestamps, and a receipt hash; it excludes raw task IDs, task titles, conversation content, full receipts, and governance evidence. Project Token inspection selects only session identity/parent metadata, timestamps, and `token_count` cumulative counters from local JSONL and never caches raw events. The app excludes raw Codex protocol payloads, Codex account identity, Codex authentication tokens, credential paths, and reset-credit identifiers. The team preview does not take over Codex login, redeem credits, modify account or KSF project state beyond that scoped local cache, expose a public server, automatically connect tasks, accept group control, relay secrets, or publish telemetry. Remote commands are accepted only inside an explicitly linked task and authorized direct-message identity.
-
-The app stores only one sanitized target alias in host settings. The bridge service and pinned Node 24 LTS runtime are package-managed; mutable configuration, credentials, queues and audit remain under `~/.config/feishu-bridge`. Task-link payloads travel over private process pipes, and all inbound authorization, redaction, serialization, lease expiry, and wake assertions remain bridge-owned. Feishu Bridge failures are isolated from Codex and KSF functions.
-
-See `docs/prd/v0.6.md` for the cross-platform core and Windows acceptance rules, `docs/prd/v0.5.md` for the Feishu-control baseline, `PRODUCT.md` for the product brief, and `DESIGN.md` for visual rules.
+本轮只准备源码与预览资产，不创建公开远端、不推送或发布。未来公开仓库将从审计通过的工作树导出干净快照并创建单一首提交，不携带当前私有 Git 历史、remote、refs、reflog 或对象库。

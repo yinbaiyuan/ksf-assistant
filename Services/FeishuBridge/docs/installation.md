@@ -1,6 +1,9 @@
 # 飞书桥与 Codex Skill 完整安装指南
 
-本文是本仓库唯一的端到端安装入口，适用于新的 macOS 或 Windows 11 机器。安装完成后，飞书桥在本机常驻运行；项目内 Codex 自动发现 REPO Skill，也可复制为当前用户的 USER Skill，在其他项目调用。
+> 迁移期维护者参考：本文保留独立 Node 桥的历史部署与回退步骤，不是
+> CodexAssistant 普通用户安装入口，也不得作为公开预览包的用户指引。
+
+本文仅适用于维护者验证生产回退实现。CodexAssistant 普通用户无需独立安装或常驻飞书桥。
 
 ## 1. 安装结果与安全模型
 
@@ -120,7 +123,7 @@ node scripts/install-requirements.js events --format lines
 
 ## 5. 初始化 lark-cli 安全凭据
 
-默认复用既有飞书应用，不自动创建新的 CLI 应用。扫码 OAuth 只能授权一个已经配置到本机的应用，不能让飞书平台把既有应用的 App Secret 透露给本机；因此复用“尹超Codex”这类既有机器人时，必须先通过安全渠道让当前机器拥有该应用的 `lark-cli` profile、Agent 绑定凭据，或一次性本机安全导入。
+扫码 OAuth 只能授权一个已经配置到本机的应用，不能让飞书平台把既有应用的 App Secret 透露给本机。普通用户由 CodexAssistant 软件内向导创建专用应用或安全接入已有应用；本页保留的命令仅供迁移期开发和故障定位。
 
 本机安全导入使用 stdin 或私有 JSON 文件，Secret 不进入聊天、命令行、`.env.local`、Skill 或版本化文件：
 

@@ -33,8 +33,8 @@ private enum UsageViewModelStandaloneTestRunner {
             }
 
             try await MainActor.run {
-                guard AppConfiguration.bundleIdentifier == "com.ksf.codexusagebar",
-                      AppConfiguration.applicationSupportDirectory().lastPathComponent == "com.ksf.codexusagebar"
+                guard AppConfiguration.bundleIdentifier == "com.codexassistant.desktop",
+                      AppConfiguration.applicationSupportDirectory().lastPathComponent == "com.codexassistant.desktop"
                 else {
                     throw TestFailure(description: "team application identity is not isolated from the personal build")
                 }

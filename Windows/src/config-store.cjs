@@ -1,7 +1,6 @@
 'use strict';
 
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 
 const DEFAULTS = Object.freeze({
@@ -46,12 +45,7 @@ class ConfigStore {
     try {
       return sanitize(JSON.parse(fs.readFileSync(this.filePath, 'utf8')));
     } catch {
-      const home = os.homedir();
-      const suggestedKSF = path.join(home, 'Documents', 'KSF');
-      return sanitize({
-        ...DEFAULTS,
-        ksfRoot: fs.existsSync(path.join(suggestedKSF, 'AGENTS.md')) ? suggestedKSF : '',
-      });
+      return sanitize(DEFAULTS);
     }
   }
 }

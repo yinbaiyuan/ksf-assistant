@@ -1,9 +1,9 @@
 {
-  "name": "codex-usage-bar-windows",
+  "name": "codexassistant-windows",
   "version": "0.10.0-preview.1",
   "private": true,
-  "description": "Windows system-tray host for Codex Usage Bar",
-  "author": "KSF Team",
+  "description": "Windows system-tray host for CodexAssistant",
+  "author": "CodexAssistant contributors",
   "license": "MIT",
   "main": "src/main.cjs",
   "scripts": {
@@ -11,16 +11,17 @@
     "test": "node --test test/*.test.cjs",
     "build:core": "node scripts/build-core.mjs",
     "prepare:feishu": "node ../scripts/prepare-feishu-runtime.mjs --platform windows --arch x64 --arch arm64",
-    "pack:win": "npm run build:core && npm run prepare:feishu && electron-builder --win --dir --x64 && electron-builder --win --dir --arm64",
-    "dist:win": "npm run build:core && npm run prepare:feishu && electron-builder --win nsis --x64 && electron-builder --win nsis --arm64"
+    "sbom": "node ../scripts/generate-sbom.mjs",
+    "pack:win": "npm run build:core && npm run prepare:feishu && npm run sbom && electron-builder --win --dir --x64 && electron-builder --win --dir --arm64",
+    "dist:win": "npm run build:core && npm run prepare:feishu && npm run sbom && electron-builder --win nsis --x64 && electron-builder --win nsis --arm64"
   },
   "devDependencies": {
     "electron": "44.1.1",
     "electron-builder": "26.15.3"
   },
   "build": {
-    "appId": "com.ksf.codexusagebar",
-    "productName": "Codex Usage Bar",
+    "appId": "com.codexassistant.desktop",
+    "productName": "CodexAssistant",
     "asar": true,
     "files": [
       "src/**/*",
@@ -65,12 +66,16 @@
       {
         "from": "../THIRD_PARTY_NOTICES.md",
         "to": "THIRD_PARTY_NOTICES.md"
+      },
+      {
+        "from": "../dist/sbom/CodexAssistant.spdx.json",
+        "to": "CodexAssistant.spdx.json"
       }
     ],
     "win": {
       "icon": "assets/app-icon.png",
       "target": "nsis",
-      "artifactName": "Codex-Usage-Bar-${version}-Windows-${arch}.${ext}"
+      "artifactName": "CodexAssistant-${version}-Windows-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -78,7 +83,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": false,
       "createStartMenuShortcut": true,
-      "shortcutName": "Codex Usage Bar",
+      "shortcutName": "CodexAssistant",
       "deleteAppDataOnUninstall": false
     }
   }

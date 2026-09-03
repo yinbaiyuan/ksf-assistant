@@ -36,9 +36,11 @@ test('repository skill is discoverable, portable, and free of private paths', ()
   assert.match(skill, /scripts\/bridge\.js/);
   assert.equal(fs.existsSync(path.join(skillRoot, 'agents', 'openai.yaml')), true);
   assert.equal(fs.existsSync(path.join(skillRoot, 'installation.json')), false);
+  const privateUser = ['la', 'wis'].join('');
   for (const filePath of skillFiles(skillRoot)) {
     const content = fs.readFileSync(filePath, 'utf8');
-    assert.doesNotMatch(content, /\/Users\/lawis|Documents\/KSF|ksf-feishu-bridge/);
+    assert.equal(content.includes(`/Users/${privateUser}`), false);
+    assert.doesNotMatch(content, /Documents\/KSF|ksf-feishu-bridge/);
   }
 });
 

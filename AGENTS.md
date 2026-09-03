@@ -1,11 +1,8 @@
-# Codex Usage Bar engineering guide
+# CodexAssistant engineering guide
 
-## KSF context
+## Optional KSF context
 
-When work changes the product goal, scope, or long-lived product decisions, read:
-
-- `$HOME/Documents/KSF/AGENTS.md`
-- `$HOME/Documents/KSF/10项目/Codex Usage Bar/项目记忆卡.md`
+Contributors may use their own KSF workspace for project context, but KSF is never required to build, test, run, or contribute to this repository. Do not commit personal KSF paths or content.
 
 Code, architecture, build, test, packaging, and release facts belong to this repository.
 
@@ -20,4 +17,4 @@ Code, architecture, build, test, packaging, and release facts belong to this rep
 - Keep project assignment conservative and project actions structured, user-initiated, path-contained, and visible in Terminal.
 - Build macOS with Swift Package Manager or the documented direct compiler fallback. Build Windows with Go, npm and electron-builder; do not require Xcode or Visual Studio projects.
 - Run Go tests, `swift test`, Windows Node tests, both core cross-compiles, and the relevant platform package build after code changes.
-- Do not create remotes, commit, push, notarize, or publish without explicit authorization.
+- Do not create remotes, push, notarize, or publish without explicit authorization.

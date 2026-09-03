@@ -58,82 +58,6 @@ struct UsagePopoverView: View {
         }
     }
 
-    private var onboardingPage: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "menubar.rectangle")
-                    .font(.title2)
-                    .foregroundStyle(.blue)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("设置 Codex Usage Bar")
-                        .font(.headline)
-                    Text("连接团队 KSF 后即可使用项目工作台和本机 Token 历史。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("KSF 根目录").font(.caption.weight(.medium))
-                        Text(viewModel.ksfRootPath.isEmpty ? "尚未选择" : viewModel.ksfRootPath)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                            .truncationMode(.middle)
-                    }
-                    Spacer()
-                    Button("选择…") { viewModel.chooseKSFRoot() }
-                        .controlSize(.small)
-                }
-                .padding(.vertical, 8)
-                Divider()
-                settingRow(
-                    title: "登录时启动",
-                    status: viewModel.launchAtLoginEnabled ? "将开启" : "暂不开启",
-                    isOn: Binding(
-                        get: { viewModel.launchAtLoginEnabled },
-                        set: { viewModel.setLaunchAtLogin($0) }
-                    )
-                )
-                Divider()
-                settingRow(
-                    title: "通用额度重置通知",
-                    status: viewModel.resetNotificationsEnabled ? "将请求系统授权" : "暂不开启",
-                    isOn: Binding(
-                        get: { viewModel.resetNotificationsEnabled },
-                        set: { viewModel.setResetNotifications($0) }
-                    )
-                )
-            }
-            .padding(.horizontal, 10)
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-
-            if let error = viewModel.onboardingError {
-                compactStatus(error, color: .orange, symbol: "exclamationmark.triangle.fill")
-            }
-
-            Button {
-                viewModel.completeOnboarding()
-            } label: {
-                HStack(spacing: 6) {
-                    if viewModel.onboardingInProgress {
-                        ProgressView().controlSize(.small)
-                    }
-                    Text(viewModel.onboardingInProgress ? "正在验证 KSF…" : "验证并开始使用")
-                        .frame(maxWidth: .infinity)
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(viewModel.onboardingInProgress || viewModel.ksfRootPath.isEmpty)
-
-            Text("额度和实时任务读取独立于 KSF；飞书消息通过本机飞书桥发送。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-    }
-
     private var homePage: some View {
         VStack(alignment: .leading, spacing: 8) {
             homeHeader
@@ -1507,7 +1431,7 @@ struct UsagePopoverView: View {
             .buttonStyle(.plain)
             .foregroundStyle(.red)
             .padding(.horizontal, 10)
-            .accessibilityLabel("退出 Codex Usage Bar")
+            .accessibilityLabel("退出 CodexAssistant")
         }
     }
 
@@ -1714,7 +1638,7 @@ struct UsagePopoverView: View {
                 Text("\(feishuSetupStageText) · \(feishuStatusDetail)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                Text("退出 Usage Bar 将停止 Shared Core、飞书桥及其子进程。")
+                Text("退出 CodexAssistant 将停止 Shared Core、飞书桥及其子进程。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
 
@@ -1744,7 +1668,7 @@ struct UsagePopoverView: View {
         case "not_started":
             VStack(alignment: .leading, spacing: 8) {
                 Text("选择接入方式").font(.caption.weight(.semibold))
-                Text("整个过程都在 Usage Bar 内发起；需要管理员确认时会直接打开飞书官方页面。")
+                Text("整个过程都在 CodexAssistant 内发起；需要管理员确认时会直接打开飞书官方页面。")
                     .font(.caption2).foregroundStyle(.secondary)
                 Button("创建专用飞书应用") { viewModel.beginFeishuSetup(mode: "new") }
                     .buttonStyle(.borderedProminent)
@@ -1777,7 +1701,7 @@ struct UsagePopoverView: View {
         case "platform_pending", "failed":
             VStack(alignment: .leading, spacing: 8) {
                 Text("检查飞书后台设置").font(.caption.weight(.semibold))
-                Text("请确认机器人、精确权限、23 类事件、长连接和应用版本发布。Usage Bar 会自动核验结果。")
+                Text("请确认机器人、精确权限、23 类事件、长连接和应用版本发布。CodexAssistant 会自动核验结果。")
                     .font(.caption2).foregroundStyle(.secondary)
                 if viewModel.feishuSetup.verificationURL != nil {
                     Button("在飞书中继续") { viewModel.openFeishuSetupURL() }.controlSize(.small)

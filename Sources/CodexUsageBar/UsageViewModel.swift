@@ -107,6 +107,7 @@ final class UsageViewModel: ObservableObject {
     private var wakeObserver: WorkspaceWakeObserver?
 
     init(autoStart: Bool = true, cleanupLegacyWeChatData: Bool = true) {
+        Self.migrateLegacyDefaultsIfNeeded(in: UserDefaults.standard)
         let socketURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex/ipc/ipc.sock")
         taskActivityProvider = CodexDesktopTaskActivityClient(
@@ -161,6 +162,23 @@ final class UsageViewModel: ObservableObject {
                 await self?.start()
             }
         }
+    }
+
+    private static func migrateLegacyDefaultsIfNeeded(in defaults: UserDefaults) {
+        guard !defaults.bool(forKey: "didMigrateCodexAssistantDefaults") else { return }
+        let legacyIdentifier = ["com", "ksf", "codexusagebar"].joined(separator: ".")
+        guard let legacy = defaults.persistentDomain(forName: legacyIdentifier) else {
+            defaults.set(true, forKey: "didMigrateCodexAssistantDefaults")
+            return
+        }
+        for key in [
+            "launchAtLoginEnabled", "resetNotificationsEnabled", "onboardingComplete",
+            "ksfRootPath", "selectedFeishuTargetAlias", "selectedPricingPlanID",
+            "customPricingPlansV1", "pinnedProjectIDs", "projectListOrder",
+        ] where defaults.object(forKey: key) == nil {
+            defaults.set(legacy[key], forKey: key)
+        }
+        defaults.set(true, forKey: "didMigrateCodexAssistantDefaults")
     }
 
     deinit {

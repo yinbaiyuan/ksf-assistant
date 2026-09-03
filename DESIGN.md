@@ -59,7 +59,7 @@ components:
     width: 336px
 ---
 
-# Codex Usage Bar visual system
+# CodexAssistant visual system
 
 ## Overview
 

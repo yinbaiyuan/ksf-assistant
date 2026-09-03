@@ -168,7 +168,7 @@ struct FeishuBridgeClient {
             throw FeishuBridgeClientError.commandFailed("请先选择飞书目标。")
         }
         let clientURL = try validatedClient(rootURL: rootURL)
-        let body = Data("Codex Usage Bar 飞书桥连接测试成功".utf8)
+        let body = Data("CodexAssistant 飞书桥连接测试成功".utf8)
         _ = try run(
             clientURL: clientURL,
             arguments: [
@@ -177,7 +177,7 @@ struct FeishuBridgeClient {
                 "--format", "text",
                 "--content-file", "-",
                 "--source", "codex-usage-bar",
-                "--reason", "用户在 Codex Usage Bar 中手动发送连接测试消息",
+                "--reason", "用户在 CodexAssistant 中手动发送连接测试消息",
             ],
             input: body
         )

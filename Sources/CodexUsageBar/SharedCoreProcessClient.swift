@@ -12,11 +12,11 @@ enum SharedCoreError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .executableMissing:
-            return "未找到 Codex Usage Bar 共享核心。"
+            return "未找到 CodexAssistant 共享核心。"
         case .processStopped:
-            return "Codex Usage Bar 共享核心已停止。"
+            return "CodexAssistant 共享核心已停止。"
         case let .pipeReadFailed(message):
-            return "读取 Codex Usage Bar 共享核心失败：\(message)"
+            return "读取 CodexAssistant 共享核心失败：\(message)"
         case .invalidResponse:
             return "共享核心返回了无法识别的数据。"
         case let .remote(message):
@@ -164,7 +164,7 @@ actor SharedCoreProcessClient {
             _ = try requestData(method: "initialize", params: [
                 "clientInfo": [
                     "name": "codex_usage_bar_macos",
-                    "title": "Codex Usage Bar for macOS",
+                    "title": "CodexAssistant for macOS",
                     "version": "0.10.0-preview.1",
                 ],
             ])

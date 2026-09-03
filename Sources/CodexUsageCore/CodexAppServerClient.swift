@@ -212,8 +212,8 @@ public actor CodexAppServerClient: CodexUsageProviding {
             params: [
                 "clientInfo": [
                     "name": "codex_usage_bar",
-                    "title": "Codex Usage Bar",
-                    "version": "0.2.0",
+                    "title": "CodexAssistant",
+                    "version": "0.10.0-preview.1",
                 ],
             ]
         )

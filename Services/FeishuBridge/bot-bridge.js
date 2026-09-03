@@ -4418,7 +4418,7 @@ async function executeTaskLink(link, command, context) {
   if (latestInput) taskLinkLatestInputs.set(fresh.id, latestInput);
   if (taskLinkEffectiveState(fresh) !== 'active') {
     cleanupContextInbound(context);
-    await replyText(context.message.message_id, context.message.chat_id, '该任务连接已失效，请回到 Codex Usage Bar 重新连接。', { phase: `task-link-inactive:${fresh.taskKey}` });
+    await replyText(context.message.message_id, context.message.chat_id, '该任务连接已失效，请回到 CodexAssistant 重新连接。', { phase: `task-link-inactive:${fresh.taskKey}` });
     return;
   }
   if (await answerTaskLinkFromText(link.threadId, command)) {
@@ -5162,7 +5162,7 @@ async function handleFeishuMessage(data) {
       }
       if (taskLinkEffectiveState(taskLink) !== 'active') {
         cleanupContextInbound(context);
-        await replyText(message.message_id, message.chat_id, '该任务连接已过期，请回到 Codex Usage Bar 重新连接。', { phase: `task-link-expired:${taskLink.taskKey}` });
+        await replyText(message.message_id, message.chat_id, '该任务连接已过期，请回到 CodexAssistant 重新连接。', { phase: `task-link-expired:${taskLink.taskKey}` });
         return;
       }
       logAccepted(context, 'task_link_continue');

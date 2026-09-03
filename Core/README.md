@@ -1,6 +1,6 @@
 # Codex Usage Core
 
-`codex-usage-core` is the platform-neutral source of truth for Codex Usage Bar.
+`codex-usage-core` is the platform-neutral source of truth for CodexAssistant.
 It owns Codex App Server access, local token accounting, KSF project projection,
 task-state classification, Feishu task-link orchestration, and the public
 dashboard snapshot consumed by both platform hosts.

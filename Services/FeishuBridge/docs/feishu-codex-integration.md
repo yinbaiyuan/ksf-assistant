@@ -1,5 +1,8 @@
 # 飞书 x Codex 对接说明（AI 接手版）
 
+> 迁移期维护者参考：本文描述 Node 兼容实现，不是 CodexAssistant
+> 普通用户配置说明；用户配置只在软件内完成。
+
 ## 目标
 
 把 Codex 接入飞书，使其具备三类能力：
@@ -421,7 +424,7 @@ ws client ready
   -> 回复飞书
 ```
 
-Usage Bar 显式连接的既有 Desktop 任务采用分离链路：App Server proxy 只执行 `thread/read`、历史和内容补读；`start / steer / interrupt` 通过 `~/.codex/ipc/ipc.sock` 定向交给目标任务的 Desktop 所有者。桥以标准本地 rollout 中的 `task_started / task_complete / turn_aborted` 作为 Desktop 轮次生命周期证据，避免把独立 App Server 对未完成轮次的临时 `interrupted` 投影误报为失败。这样不会由第二个 app-server `thread/resume` 已加载任务，也不会创建替代 thread。目标任务暂时没有所有者时，桥打开准确任务并等待 Desktop 接管后再提交。
+CodexAssistant 显式连接的既有 Desktop 任务采用分离链路：App Server proxy 只执行 `thread/read`、历史和内容补读；`start / steer / interrupt` 通过 `~/.codex/ipc/ipc.sock` 定向交给目标任务的 Desktop 所有者。桥以标准本地 rollout 中的 `task_started / task_complete / turn_aborted` 作为 Desktop 轮次生命周期证据，避免把独立 App Server 对未完成轮次的临时 `interrupted` 投影误报为失败。这样不会由第二个 app-server `thread/resume` 已加载任务，也不会创建替代 thread。目标任务暂时没有所有者时，桥打开准确任务并等待 Desktop 接管后再提交。
 
 效果：
 

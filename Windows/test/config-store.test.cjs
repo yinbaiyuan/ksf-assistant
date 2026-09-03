@@ -2,13 +2,22 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { sanitize } = require('../src/config-store.cjs');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { ConfigStore, sanitize } = require('../src/config-store.cjs');
+
+test('first launch keeps KSF optional instead of guessing a directory', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codexassistant-settings-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  assert.equal(new ConfigStore(path.join(root, 'settings.json')).get().ksfRoot, '');
+});
 
 test('settings keep only bounded platform-neutral fields', () => {
   assert.deepEqual(sanitize({
     ksfRoot: ' C:\\KSF ',
     feishuBridgeRoot: 'C:\\legacy-bridge-that-must-be-ignored',
-    selectedFeishuTargetAlias: '超哥',
+    selectedFeishuTargetAlias: '测试用户',
     pinnedProjectIds: ['a', 'a', '', 'b'],
     launchAtLogin: true,
     selectedPricingPlanId: 'custom:team',
@@ -16,7 +25,7 @@ test('settings keep only bounded platform-neutral fields', () => {
     secret: 'must-not-persist',
   }), {
     ksfRoot: 'C:\\KSF',
-    selectedFeishuTargetAlias: '超哥',
+    selectedFeishuTargetAlias: '测试用户',
     pinnedProjectIds: ['a', 'b'],
     launchAtLogin: true,
     selectedPricingPlanId: 'custom:team',

@@ -7,11 +7,11 @@
     <key>CFBundleExecutable</key>
     <string>CodexUsageBarPreview</string>
     <key>CFBundleIdentifier</key>
-    <string>com.ksf.codexusagebar.preview</string>
+    <string>com.codexassistant.desktop.preview</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Codex Usage Bar Preview</string>
+    <string>CodexAssistant Preview</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

@@ -127,7 +127,7 @@ func (runtime FeishuClient) SendTest(ctx context.Context, root, targetAlias stri
 	if err != nil {
 		return err
 	}
-	_, err = run(ctx, root, node, []string{client, "send", "--target", targetAlias, "--format", "text", "--content-file", "-", "--source", "codex-usage-bar", "--reason", "用户在 Codex Usage Bar 中手动发送连接测试消息"}, []byte("Codex Usage Bar 飞书桥连接测试成功"))
+	_, err = run(ctx, root, node, []string{client, "send", "--target", targetAlias, "--format", "text", "--content-file", "-", "--source", "codex-usage-bar", "--reason", "用户在 CodexAssistant 中手动发送连接测试消息"}, []byte("CodexAssistant 飞书桥连接测试成功"))
 	return err
 }
 

@@ -1,12 +1,12 @@
-# Codex Usage Bar product brief
+# CodexAssistant product brief
 
 ## Product
 
-Codex Usage Bar is a private macOS menu-bar and Windows system-tray instrument for KSF team members. It combines account capacity, live task attention, and each user's KSF project system in one glanceable surface.
+CodexAssistant is an open-source macOS menu-bar and Windows system-tray instrument for Codex users. It combines account capacity and live task attention in one glanceable surface, with optional KSF and Feishu integrations.
 
 ## Current release
 
-The prepared `0.9.0-internal.1` team preview makes Codex Usage Bar the single product and repository for the UI, shared Go core, and Feishu Bridge service. The package carries Node 24 LTS; the Go core supervises the bridge, and explicit UI exit stops the full product process tree.
+The prepared `0.10.0-preview.1` public preview keeps the platform UI, shared Go core, and supervised Feishu Bridge in one product. Ordinary users configure integrations entirely inside the software and do not install runtimes or operate background services.
 
 ## Confirmed hierarchy
 
@@ -31,7 +31,7 @@ The prepared `0.9.0-internal.1` team preview makes Codex Usage Bar the single pr
 - Opening the panel, waking the device, and existing timers refresh data; platform shells may expose an explicit refresh control when that matches native conventions.
 - New tasks always use the configured KSF root as their Codex Desktop project root and receive the explicit name `项目名 · 新任务`. The exact task opens first; its visible Codex Desktop window then submits the compact KSF context-preparation turn and immediately shows the native active-reply state. Engineering-folder actions still use a menu when multiple roots exist.
 - Project launch is a direct user action and only recognizes `start.sh` on macOS or `start.ps1` on Windows in the KSF project directory. It opens a visible Terminal or PowerShell window in that directory and executes the script; Git mappings and action manifests do not participate.
-- Settings owns a secondary Feishu Bridge page for engineering-root selection, factual bridge status, sanitized target-alias selection, and explicit test delivery. It never displays real target IDs, credentials, command contents, or chat history.
+- Settings owns a resumable Feishu setup page with new-app and existing-app paths, factual bridge status, sanitized target-alias selection, and explicit test delivery. It never displays real target IDs, credentials, command contents, or chat history.
 - The daily Token page uses the server-published account bucket as the full bar and overlays this device's independently reconstructed local usage. Selecting a date shows both exact totals and the unclamped local/server percentage. A missing server date remains `未同步`, never zero; the page states that server publication can lag and retains the local input/cache/output composition.
 
 ## Trust boundaries
@@ -43,9 +43,9 @@ The prepared `0.9.0-internal.1` team preview makes Codex Usage Bar the single pr
 - Raw task IDs are HMAC-addressed on disk. Task titles, conversation content, complete receipts, and governance evidence are never persisted.
 - Project Token totals begin at verified binding time, include child agents by inheritance, split on later project bindings, and report incomplete local coverage instead of showing a false zero.
 - Quota and the global task counter remain available when the KSF bridge fails.
-- Usage Bar does not implement Feishu transport or inbound handling. It may request or release a v2 task link for an exact local thread and display its sanitized control state. The bridge derives authoritative task state, enforces the exact direct-message operator, observes/steers/interrupts Codex turns, handles ordinary attachments and non-secret input, and owns the 24-hour inactivity lease, redaction and wake assertion.
+- CodexAssistant owns the isolated Feishu Bridge process but not its authority. The bridge implements transport and inbound handling, derives authoritative task state, enforces the exact direct-message operator, observes/steers/interrupts Codex turns, handles ordinary attachments and non-secret input, and owns the 24-hour inactivity lease, redaction and wake assertion.
 - The bot token and queue encryption key stay in Keychain; the bounded command queue and protocol cursor are encrypted at rest.
 
-## Not in v0.8
+## Not in this preview
 
-Other script discovery, background launch actions, launch arguments or environment injection, project mutation, remote Token reconstruction, historical project attribution, long-range analytics dashboards, public distribution, KSF-wide bulk edits, automatic global task linking, group control, arbitrary target IDs, secret relay, or native Codex remote-pairing transport.
+Automatic updates, other script discovery, background launch actions, launch arguments or user environment injection, project mutation, remote Token reconstruction, historical project attribution, long-range analytics dashboards, KSF-wide bulk edits, automatic global task linking, group control, arbitrary target IDs, secret relay, or native Codex remote-pairing transport.

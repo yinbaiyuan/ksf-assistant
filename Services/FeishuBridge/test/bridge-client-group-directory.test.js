@@ -163,7 +163,7 @@ test('explicit, person-name, and group-name target flags are mutually exclusive'
     /mutually exclusive/,
   );
   await assert.rejects(
-    handleSend({ targetName: '尹超', targetGroupName: 'codex测试群', textFile: 'unused' }),
+    handleSend({ targetName: '测试用户', targetGroupName: 'codex测试群', textFile: 'unused' }),
     /mutually exclusive/,
   );
 });

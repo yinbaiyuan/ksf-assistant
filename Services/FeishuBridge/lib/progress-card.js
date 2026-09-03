@@ -351,7 +351,7 @@ function taskLinkContent(taskLink, status, detail, progress, hasQuestion) {
   const linkState = String(taskLink.linkState || 'active');
   const turnState = String(taskLink.turnState || status || 'idle');
   if (linkState === 'released') return { title: '连接状态', body: '任务连接已解除。当前 Codex 轮次不会因此停止。' };
-  if (linkState === 'expired') return { title: '连接状态', body: '任务连接已过期，请回到 Usage Bar 重新连接。' };
+  if (linkState === 'expired') return { title: '连接状态', body: '任务连接已过期，请回到 CodexAssistant 重新连接。' };
   if (hasQuestion && turnState === 'waiting_input') return null;
 
   const preferredDetail = String(detail || '').trim();
@@ -590,7 +590,7 @@ function progressCard({
     queued: { title: '消息已排队', template: 'orange', detail: '当前轮完成后自动执行。' },
     interrupted: { title: 'Codex 本轮已停止', template: 'grey', detail: '任务连接仍然有效。' },
     idle: { title: 'Codex 任务已连接', template: 'turquoise', detail: '回复本消息继续任务。' },
-    expired: { title: '任务连接已过期', template: 'grey', detail: '请回到 Usage Bar 重新连接。' },
+    expired: { title: '任务连接已过期', template: 'grey', detail: '请回到 CodexAssistant 重新连接。' },
   };
   const state = states[status] || states.status;
   if (taskLink) {
