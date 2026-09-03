@@ -122,6 +122,65 @@ function matchingDesktopUserInputRequest(conversationState, { turnId, questions 
   return candidates[0];
 }
 
+function desktopTurnTimestamp(turn) {
+  const milliseconds = Number(turn?.turnStartedAtMs);
+  if (Number.isFinite(milliseconds) && milliseconds > 0) return milliseconds;
+  return Date.parse(turn?.startedAt || turn?.createdAt || '') || 0;
+}
+
+function normalizeDesktopTurn(turn) {
+  const id = String(turn?.id || turn?.turnId || '').trim();
+  if (!id) return null;
+  const startedAtMs = desktopTurnTimestamp(turn);
+  const durationMs = Number(turn?.durationMs);
+  const hasDuration = turn?.durationMs !== null
+    && turn?.durationMs !== undefined
+    && Number.isFinite(durationMs)
+    && durationMs >= 0;
+  const status = turn?.status || { type: 'unknown' };
+  return {
+    ...turn,
+    id,
+    status,
+    startedAt: startedAtMs > 0 ? new Date(startedAtMs).toISOString() : String(turn?.startedAt || ''),
+    completedAt: hasDuration && startedAtMs > 0
+      ? new Date(startedAtMs + durationMs).toISOString()
+      : String(turn?.completedAt || ''),
+    items: Array.isArray(turn?.items) ? turn.items : [],
+  };
+}
+
+function desktopConversationTurns(conversationState) {
+  const candidates = Array.isArray(conversationState?.turns) ? [...conversationState.turns] : [];
+  const history = conversationState?.turnHistory?.history;
+  if (history?.entitiesByKey && typeof history.entitiesByKey === 'object') {
+    candidates.push(...Object.values(history.entitiesByKey));
+  }
+  const unique = new Map();
+  for (const candidate of candidates) {
+    const turn = normalizeDesktopTurn(candidate);
+    if (turn) unique.set(turn.id, turn);
+  }
+  return [...unique.values()].sort((left, right) => (
+    desktopTurnTimestamp(left) - desktopTurnTimestamp(right)
+  ));
+}
+
+function desktopThreadSnapshot(conversationState, expectedThreadId = '') {
+  const id = String(conversationState?.id || conversationState?.sessionId || '').trim();
+  if (!id || (expectedThreadId && id !== expectedThreadId)) {
+    throw new Error('Codex Desktop returned a different task');
+  }
+  return {
+    id,
+    cwd: String(conversationState?.cwd || '').trim(),
+    name: String(conversationState?.title || conversationState?.name || '').trim(),
+    parentThreadId: String(conversationState?.parentThreadId || '').trim(),
+    status: conversationState?.threadRuntimeStatus || conversationState?.status || { type: 'notLoaded' },
+    turns: desktopConversationTurns(conversationState),
+  };
+}
+
 function validateDesktopEndpoint(socketPath, platform = process.platform) {
   if (!socketPath) throw new Error('Codex Desktop IPC endpoint is not configured');
   if (platform === 'win32') {
@@ -474,6 +533,22 @@ class CodexDesktopTaskController {
     return this.withSession((session) => session.discoverOwner(threadId));
   }
 
+  async readThreadSnapshot(threadId, { openIfNeeded = true } = {}) {
+    return this.withSession(async (session) => {
+      const ownerClientId = openIfNeeded
+        ? await session.ensureOwner({
+            threadId,
+            openTask: this.openTask,
+            ownerAttempts: this.ownerAttempts,
+            ownerRetryMs: this.ownerRetryMs,
+          })
+        : await session.discoverOwner(threadId);
+      if (!ownerClientId) throw new Error('Codex Desktop does not currently own the linked task');
+      const conversationState = await session.loadConversationState({ threadId, ownerClientId });
+      return desktopThreadSnapshot(conversationState, threadId);
+    });
+  }
+
   async startTurn({ threadId, cwd, input, collaborationMode = null }) {
     return this.withSession(async (session) => {
       const normalizedMode = normalizeCollaborationMode(collaborationMode);
@@ -603,6 +678,8 @@ module.exports = {
   extractTurnId,
   followerRequest,
   matchingDesktopUserInputRequest,
+  desktopConversationTurns,
+  desktopThreadSnapshot,
   normalizeCollaborationMode,
   normalizeDesktopInput,
   defaultOpenTask,

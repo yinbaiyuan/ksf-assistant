@@ -1456,68 +1456,18 @@ async function handleSend(flags) {
   }, config);
 }
 
-function codexRequestWithMode(runtime, mode, method, params, timeoutMs = 15000) {
-  return new Promise((resolve, reject) => {
-    const codex = runtime.env.CODEX_BIN || 'codex';
-    const args = mode === 'proxy' ? ['app-server', 'proxy'] : ['app-server'];
-    const proc = spawn(codex, args, {
-      cwd: runtime.projectRoot,
-      env: runtime.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    let stderr = '';
-    let settled = false;
-    const finish = (error, result) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      rl.close();
-      if (proc.exitCode === null && !proc.killed) proc.kill();
-      if (error) reject(error); else resolve(result);
-    };
-    const timer = setTimeout(() => finish(new Error(`Codex app-server timed out: ${method}`)), timeoutMs);
-    proc.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk.toString()}`.slice(-2000); });
-    proc.on('error', (error) => finish(error));
-    proc.on('exit', (code, signal) => {
-      if (!settled) finish(new Error(`Codex app-server ${mode} exited with ${signal || code}: ${stderr.trim()}`));
-    });
-    const rl = require('node:readline').createInterface({ input: proc.stdout });
-    rl.on('line', (line) => {
-      let message;
-      try { message = JSON.parse(line); } catch { return; }
-      if (message.id === 1) {
-        if (message.error) return finish(new Error(message.error.message || 'Codex initialize failed'));
-        proc.stdin.write(`${JSON.stringify({ method: 'initialized', params: {} })}\n`);
-        proc.stdin.write(`${JSON.stringify({ id: 2, method, params })}\n`);
-      } else if (message.id === 2) {
-        if (message.error) finish(new Error(message.error.message || `Codex request failed: ${method}`));
-        else finish(null, message.result);
-      } else if (message.id !== undefined && message.method) {
-        proc.stdin.write(`${JSON.stringify({ id: message.id, error: { code: -32601, message: 'Unsupported during read-only task inspection' } })}\n`);
-      }
-    });
-    proc.stdin.write(`${JSON.stringify({
-      id: 1,
-      method: 'initialize',
-      params: {
-        clientInfo: { name: 'feishu_bridge_client', title: 'Feishu Bridge Client', version: '1.0.0' },
-        capabilities: { experimentalApi: true },
-      },
-    })}\n`);
-  });
-}
-
-async function codexRequest(runtime, method, params, timeoutMs = 15000) {
-  let lastError;
-  for (const mode of ['proxy', 'app-server']) {
-    try { return await codexRequestWithMode(runtime, mode, method, params, timeoutMs); } catch (error) { lastError = error; }
-  }
-  throw lastError || new Error(`Codex request failed: ${method}`);
-}
-
 async function authoritativeTaskThread(runtime, threadId) {
-  const result = await codexRequest(runtime, 'thread/read', { threadId, includeTurns: true });
-  const thread = validateAuthoritativeThread(result);
+  const controller = new CodexDesktopTaskController({
+    socketPath: defaultDesktopIPCPath({
+      platform: runtime.platform,
+      env: runtime.env,
+      homeDir: os.homedir(),
+    }),
+    requestTimeoutMs: parseNumber(runtime.env.CODEX_DESKTOP_REQUEST_TIMEOUT_MS, 20000),
+    platform: runtime.platform,
+    projectRoot: runtime.projectRoot,
+  });
+  const thread = validateAuthoritativeThread(await controller.readThreadSnapshot(threadId));
   if (thread.id !== threadId) throw new Error('Codex returned a different thread');
   const cwd = fs.realpathSync(thread.cwd);
   if (!fs.statSync(cwd).isDirectory()) throw new Error('Codex thread working directory is not available');

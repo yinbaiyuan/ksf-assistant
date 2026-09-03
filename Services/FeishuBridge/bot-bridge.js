@@ -105,7 +105,6 @@ const {
   taskLinkProgressForTurn,
   taskLinkSnapshotRequiresSync,
   taskInput,
-  turnsFromResult,
   validateAuthoritativeThread,
 } = require('./lib/codex-task-control');
 const { CodexDesktopTaskController } = require('./lib/codex-desktop-ipc');
@@ -1444,10 +1443,7 @@ class CodexAppServer {
     input, sessionId, logPath, timeoutMs, cwd, collaborationMode,
     onProgress, onInputRequest, onTurnStarted,
   }) {
-    const before = projectDesktopTaskSnapshot(
-      await this.readThreadSnapshot(sessionId),
-      codexDesktopTurnJournal.snapshot(sessionId),
-    );
+    const before = await readTaskLinkSnapshot(sessionId);
     const beforeTurnId = before.turnId || '';
     if (logPath && fs.existsSync(logPath)) chmodPrivate(logPath, 0o600);
     const logStream = logPath ? fs.createWriteStream(logPath, { flags: 'a', mode: 0o600 }) : null;
@@ -1479,10 +1475,7 @@ class CodexAppServer {
         const currentWaitingMs = waitingStartedAt ? now - waitingStartedAt : 0;
         if (now - startedAt - waitingDurationMs - currentWaitingMs >= timeoutMs) break;
         await new Promise((resolve) => setTimeout(resolve, 500));
-        const snapshot = projectDesktopTaskSnapshot(
-          await this.readThreadSnapshot(sessionId),
-          codexDesktopTurnJournal.snapshot(sessionId),
-        );
+        const snapshot = await readTaskLinkSnapshot(sessionId);
         if (logStream) {
           logStream.write(`${JSON.stringify({
             method: 'desktop/thread/read',
@@ -1693,22 +1686,6 @@ class CodexAppServer {
     return true;
   }
 
-  async readThreadSnapshot(threadId) {
-    const result = await this.request('thread/read', { threadId, includeTurns: true }, 10000);
-    const thread = validateAuthoritativeThread(result);
-    let turns = Array.isArray(thread.turns) ? thread.turns : [];
-    if (!turns.length || !Array.isArray(latestTurn(thread, turns)?.items)) {
-      const listed = await this.request('thread/turns/list', {
-        threadId,
-        limit: 10,
-        itemsView: 'full',
-      }, 10000).catch(() => null);
-      turns = turnsFromResult(listed);
-    }
-    const turn = latestTurn(thread, turns);
-    return { thread, turn, publicState: publicTurnState(thread, turn) };
-  }
-
   async steer(threadId, turnId, input) {
     const result = await this.request('turn/steer', {
       threadId,
@@ -1726,9 +1703,15 @@ class CodexAppServer {
 
 const codexAppServer = new CodexAppServer();
 
-async function readTaskLinkSnapshot(threadId) {
-  const snapshot = await codexAppServer.readThreadSnapshot(threadId);
-  return projectDesktopTaskSnapshot(snapshot, codexDesktopTurnJournal.snapshot(threadId));
+async function readTaskLinkSnapshot(threadId, { openIfNeeded = true } = {}) {
+  const thread = validateAuthoritativeThread(
+    await codexDesktopTaskController.readThreadSnapshot(threadId, { openIfNeeded }),
+  );
+  const turn = latestTurn(thread);
+  return projectDesktopTaskSnapshot(
+    { thread, turn, publicState: publicTurnState(thread, turn) },
+    codexDesktopTurnJournal.snapshot(threadId),
+  );
 }
 
 function latestTasks() {
@@ -4792,7 +4775,7 @@ async function processQueuedTaskLinks() {
   for (const link of links) {
     if (link.turnState !== 'queued' || !link.pendingMessageId || taskLinkExecutions.has(link.threadId)) continue;
     try {
-      const snapshot = await readTaskLinkSnapshot(link.threadId);
+      const snapshot = await readTaskLinkSnapshot(link.threadId, { openIfNeeded: false });
       if (['running', 'waiting_input', 'desktop_action_required'].includes(snapshot.publicState.turnState)) continue;
     } catch { continue; }
     const queued = taskLinkQueuedContexts.get(link.threadId);
@@ -4825,7 +4808,7 @@ async function refreshTaskLinks(onlyLinkId = '') {
     if (taskLinkRefreshes.has(link.id)) continue;
     taskLinkRefreshes.add(link.id);
     try {
-      const snapshot = await readTaskLinkSnapshot(link.threadId);
+      const snapshot = await readTaskLinkSnapshot(link.threadId, { openIfNeeded: false });
       const pendingInput = trackDesktopTaskLinkInput(link.threadId, snapshot.journalTurn);
       if (!pendingInput && taskLinkInputRequests.get(link.threadId)?.owner === 'desktop') {
         taskLinkInputRequests.delete(link.threadId);

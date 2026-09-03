@@ -8,6 +8,8 @@ const {
   encodeFrame,
   extractTurnId,
   matchingDesktopUserInputRequest,
+  desktopConversationTurns,
+  desktopThreadSnapshot,
   normalizeCollaborationMode,
   normalizeDesktopInput,
   defaultOpenTask,
@@ -135,6 +137,90 @@ test('Desktop snapshots map a rollout question to the live server request id', (
       params: { turnId: 'turn-1', questions: [{ id: 'different' }] },
     }],
   }, { turnId: 'turn-1', questions: expected }), null);
+});
+
+test('Desktop paginated history projects an authoritative task thread', () => {
+  const snapshot = desktopThreadSnapshot({
+    id: 'thread-1',
+    cwd: '/project',
+    title: '任务标题',
+    threadRuntimeStatus: { type: 'active', activeFlags: [] },
+    turnHistory: {
+      history: {
+        entitiesByKey: {
+          'turn:old': {
+            turnId: 'turn-old', status: 'completed', turnStartedAtMs: 1000, durationMs: 500,
+          },
+          'tail:active': {
+            turnId: 'turn-active', status: 'inProgress', turnStartedAtMs: 2000,
+            items: [{ type: 'agentMessage', text: '处理中' }],
+          },
+        },
+      },
+    },
+  }, 'thread-1');
+
+  assert.equal(snapshot.id, 'thread-1');
+  assert.equal(snapshot.cwd, '/project');
+  assert.equal(snapshot.name, '任务标题');
+  assert.deepEqual(snapshot.status, { type: 'active', activeFlags: [] });
+  assert.deepEqual(snapshot.turns.map((turn) => turn.id), ['turn-old', 'turn-active']);
+  assert.equal(snapshot.turns[0].completedAt, '1970-01-01T00:00:01.500Z');
+  assert.equal(snapshot.turns[1].status, 'inProgress');
+  assert.equal(snapshot.turns[1].completedAt, '');
+  assert.throws(() => desktopThreadSnapshot({ id: 'other' }, 'thread-1'), /different task/);
+});
+
+test('Desktop controller reads the thread through its live owner', async () => {
+  const calls = [];
+  let closed = false;
+  const session = {
+    async connect() {},
+    async ensureOwner(input) {
+      calls.push(['owner', input.threadId]);
+      return 'desktop-owner-1';
+    },
+    async loadConversationState(input) {
+      calls.push(['snapshot', input.threadId, input.ownerClientId]);
+      return { id: 'thread-1', cwd: '/project', title: '任务标题' };
+    },
+    close() { closed = true; },
+  };
+  const controller = new CodexDesktopTaskController({
+    socketPath: '/private/socket',
+    sessionFactory: () => session,
+    openTask() {},
+  });
+
+  const snapshot = await controller.readThreadSnapshot('thread-1');
+  assert.equal(snapshot.id, 'thread-1');
+  assert.deepEqual(calls, [
+    ['owner', 'thread-1'],
+    ['snapshot', 'thread-1', 'desktop-owner-1'],
+  ]);
+  assert.equal(closed, true);
+});
+
+test('Background task refresh does not open an unowned Desktop task', async () => {
+  let opened = false;
+  let closed = false;
+  const session = {
+    async connect() {},
+    async discoverOwner() { return ''; },
+    close() { closed = true; },
+  };
+  const controller = new CodexDesktopTaskController({
+    socketPath: '/private/socket',
+    sessionFactory: () => session,
+    openTask() { opened = true; },
+  });
+
+  await assert.rejects(
+    controller.readThreadSnapshot('thread-1', { openIfNeeded: false }),
+    /does not currently own/,
+  );
+  assert.equal(opened, false);
+  assert.equal(closed, true);
 });
 
 test('Feishu starts the linked task through its Desktop owner with full access', async () => {
