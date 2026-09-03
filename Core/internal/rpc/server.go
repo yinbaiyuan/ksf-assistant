@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	managedfeishu "codexusagebar/core/internal/feishu"
 	"codexusagebar/core/internal/service"
 )
 
@@ -187,6 +188,34 @@ func (server *Server) dispatch(ctx context.Context, method string, params json.R
 		return map[string]bool{"authenticated": true}, nil
 	case "feishu/permissions/read":
 		return server.service.FeishuPermissions(ctx)
+	case "feishu/setup/read":
+		return server.service.FeishuSetup()
+	case "feishu/setup/begin":
+		var input struct {
+			Mode      string `json:"mode"`
+			AppID     string `json:"appId"`
+			AppSecret string `json:"appSecret"`
+		}
+		if err := decodeParams(params, &input); err != nil {
+			return nil, err
+		}
+		return server.service.BeginFeishuSetup(ctx, input.Mode, input.AppID, input.AppSecret)
+	case "feishu/setup/continue":
+		return server.service.ContinueFeishuSetup(ctx)
+	case "feishu/setup/verify":
+		return server.service.VerifyFeishuSetup(ctx)
+	case "feishu/setup/cancel":
+		return server.service.CancelFeishuSetup()
+	case "feishu/settings/read":
+		return server.service.FeishuSettings()
+	case "feishu/settings/update":
+		var input managedfeishu.Settings
+		if err := decodeParams(params, &input); err != nil {
+			return nil, err
+		}
+		return server.service.UpdateFeishuSettings(input)
+	case "feishu/supervisor/restart":
+		return server.service.ControlFeishuService(ctx, "restart")
 	case "feishu/profile/set":
 		var input struct {
 			Profile string `json:"profile"`

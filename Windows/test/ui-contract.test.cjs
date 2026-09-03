@@ -71,11 +71,23 @@ test('explicit app exit waits for the shared core to stop the full server tree',
 
 test('Feishu settings use the packaged service and keep secrets out of persisted settings', () => {
   assert.doesNotMatch(app, /choose-feishu|feishuBridgeRoot/);
-  assert.match(app, /生成 OAuth 二维码/);
+  assert.match(app, /function renderFeishuPage/);
+  assert.match(app, /创建专用飞书应用/);
+  assert.match(app, /接入已有应用/);
   assert.match(app, /data-field="feishu-profile"/);
   assert.match(app, /运行组件/);
   assert.match(app, /feishuComponentStatusText/);
   assert.match(app, /value\.processRunning/);
-  assert.match(preload, /feishu:auth-configure/);
+  assert.match(preload, /feishu:setup-read/);
+  assert.match(preload, /feishu:setup-begin/);
+  assert.match(preload, /feishu:setup-continue/);
+  assert.match(preload, /feishu:setup-verify/);
+  assert.doesNotMatch(app, /data-action="feishu-start"/);
   assert.doesNotMatch(main, /settings\.update\([^)]*appSecret/s);
+});
+
+test('KSF is an optional integration and preview version is explicit', () => {
+  assert.match(app, /KSF 是可选增强能力/);
+  assert.match(app, /0\.10\.0-preview\.1/);
+  assert.doesNotMatch(app, /请先选择 KSF/);
 });

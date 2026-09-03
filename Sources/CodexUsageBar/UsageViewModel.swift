@@ -53,6 +53,8 @@ final class UsageViewModel: ObservableObject {
     @Published private(set) var feishuAuthQRCode: String?
     @Published private(set) var feishuAuthUserCode: String?
     @Published private(set) var feishuPermissionStatus = "尚未检查"
+    @Published private(set) var feishuSetup = FeishuSetupState.notStarted
+    @Published private(set) var feishuSetupQRCode: String?
     @Published private(set) var feishuTaskLinks: [String: FeishuTaskLinkSnapshot] = [:]
     @Published private(set) var feishuTaskLinkActions: Set<String> = []
     @Published private(set) var feishuTaskLinkErrors: [String: String] = [:]
@@ -130,8 +132,7 @@ final class UsageViewModel: ObservableObject {
         status = cached?.headlineRemainingPercent == nil ? .loading : .stale
         launchAtLoginEnabled = defaults.bool(forKey: "launchAtLoginEnabled")
         resetNotificationsEnabled = defaults.bool(forKey: "resetNotificationsEnabled")
-        ksfRootPath = defaults.string(forKey: "ksfRootPath")
-            ?? AppConfiguration.suggestedKSFRoot()
+        ksfRootPath = defaults.string(forKey: "ksfRootPath") ?? ""
         defaults.removeObject(forKey: "feishuBridgeRootPath")
         selectedFeishuTargetAlias = defaults.string(forKey: "selectedFeishuTargetAlias") ?? ""
         selectedPricingPlanID = defaults.string(forKey: "selectedPricingPlanID") ?? Self.defaultPricingPlanID
@@ -809,17 +810,7 @@ final class UsageViewModel: ObservableObject {
         tokenHistoryComparison = TokenHistoryComparison()
         localTokenHistoryError = nil
         onboardingError = nil
-        if isOnboardingComplete {
-            Task { [weak self] in
-                guard let self else { return }
-                if self.sharedCoreEnabled {
-                    await self.refreshSharedDashboard()
-                } else {
-                    await self.refreshProjects()
-                }
-            }
-            refreshLocalTokenHistory()
-        }
+        completeOnboarding()
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
@@ -940,6 +931,113 @@ final class UsageViewModel: ObservableObject {
                 self.feishuPermissionStatus = error.localizedDescription
             }
         }
+    }
+
+    func refreshFeishuSetup() async {
+        guard sharedCoreEnabled else {
+            feishuSetup = .notStarted
+            return
+        }
+        do {
+            feishuSetup = try await sharedCore.feishuSetup()
+        } catch {
+            feishuFeedback = error.localizedDescription
+        }
+    }
+
+    func beginFeishuSetup(mode: String, appID: String = "", appSecret: String = "") {
+        guard sharedCoreEnabled, ["new", "existing"].contains(mode) else { return }
+        feishuActionInProgress = true
+        feishuFeedback = nil
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.feishuActionInProgress = false }
+            do {
+                let result = try await self.sharedCore.beginFeishuSetup(mode: mode, appID: appID, appSecret: appSecret)
+                self.applyFeishuSetup(result)
+            } catch {
+                self.feishuFeedback = error.localizedDescription
+                await self.refreshFeishuSetup()
+            }
+        }
+    }
+
+    func continueFeishuSetup() {
+        guard sharedCoreEnabled else { return }
+        feishuActionInProgress = true
+        feishuFeedback = nil
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.feishuActionInProgress = false }
+            do {
+                self.applyFeishuSetup(try await self.sharedCore.continueFeishuSetup())
+            } catch {
+                self.feishuFeedback = error.localizedDescription
+                await self.refreshFeishuSetup()
+            }
+        }
+    }
+
+    func verifyFeishuSetup() {
+        guard sharedCoreEnabled else { return }
+        feishuActionInProgress = true
+        feishuFeedback = nil
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.feishuActionInProgress = false }
+            do {
+                self.applyFeishuSetup(try await self.sharedCore.verifyFeishuSetup())
+                await self.refreshSharedDashboard()
+            } catch {
+                self.feishuFeedback = error.localizedDescription
+                await self.refreshFeishuSetup()
+            }
+        }
+    }
+
+    func cancelFeishuSetup() {
+        guard sharedCoreEnabled else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                self.feishuSetup = try await self.sharedCore.cancelFeishuSetup()
+                self.feishuSetupQRCode = nil
+                self.feishuFeedback = nil
+            } catch {
+                self.feishuFeedback = error.localizedDescription
+            }
+        }
+    }
+
+    func restartFeishuSupervisor() {
+        guard sharedCoreEnabled else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.sharedCore.restartFeishuSupervisor()
+                await self.refreshSharedDashboard()
+            } catch {
+                self.feishuFeedback = error.localizedDescription
+            }
+        }
+    }
+
+    func openFeishuSetupURL() {
+        guard let value = feishuSetup.verificationURL,
+              let url = URL(string: value), url.scheme == "https",
+              let host = url.host?.lowercased(),
+              ["feishu.cn", "larksuite.com", "larkoffice.com"].contains(where: { host == $0 || host.hasSuffix(".\($0)") })
+        else {
+            feishuFeedback = "飞书官方链接无效。"
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func applyFeishuSetup(_ result: SharedCoreFeishuSetupResult) {
+        feishuSetup = result.setup
+        feishuSetupQRCode = result.qrDataURL
+        feishuFeedback = nil
     }
 
     func refreshFeishuBridge(showProgress: Bool = true) async {
@@ -1087,6 +1185,7 @@ final class UsageViewModel: ObservableObject {
                 pinnedProjectIDs: pinnedProjectIDs,
                 pricingSelection: pricingSelection
             )
+            await refreshFeishuSetup()
             snapshot = dashboard.usage
             store.save(dashboard.usage)
             switch dashboard.usageStatus {
@@ -1350,7 +1449,6 @@ final class UsageViewModel: ObservableObject {
             }.value
             bridgeEnabledAt = bridgeResult.0
             projectCatalog = bridgeResult.1.projects
-            configureSuggestedFeishuBridgeRoot(from: projectCatalog)
         } catch {
             await taskActivityProvider.reconcileLocalTaskCandidates([])
             projectDashboard = ProjectDashboardSnapshot(

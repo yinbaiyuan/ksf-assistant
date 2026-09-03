@@ -57,7 +57,12 @@ private enum UILayoutTestRunner {
             ).count - 1
             try expect(archiveButtonCallCount == 1, "archive control is not scoped to the project catalog")
             try expect(source.contains("private var feishuPage"), "Feishu Bridge settings page is missing")
-            try expect(source.contains("测试正文：Codex Usage Bar 飞书桥连接测试成功"), "explicit test body is not visible")
+            try expect(source.contains("创建专用飞书应用"), "new Feishu app setup path is missing")
+            try expect(source.contains("接入已有应用"), "existing Feishu app setup path is missing")
+            try expect(source.contains("feishuSetupContent"), "resumable Feishu setup state is missing")
+            try expect(!source.contains("Button(\"启动\")"), "Feishu exposes a lifecycle-conflicting start button")
+            try expect(source.contains("KSF 是可选增强能力"), "KSF is not described as optional")
+            try expect(!source.contains("if !viewModel.isOnboardingComplete"), "KSF still blocks the whole application")
             try expect(source.contains("viewModel.feishuBridge.targetAliases"), "target picker is not alias-only")
             try expect(!source.contains("private var weChatPage"), "legacy WeChat page is still present")
             try expect(source.contains("case .taskDetail:"), "task detail page is not routed")

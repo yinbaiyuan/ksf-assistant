@@ -142,7 +142,7 @@ func (client *Client) Start(ctx context.Context) error {
 	go io.Copy(io.Discard, stderr)
 	go client.readLoop(stdout, command)
 	client.stateMu.Unlock()
-	_, initErr := client.callStarted(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "codex_usage_core", "title": "Codex Usage Core", "version": "0.9.0"}})
+	_, initErr := client.callStarted(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "codex_usage_core", "title": "Codex Usage Core", "version": "0.10.0-preview.1"}})
 	if initErr == nil {
 		initErr = client.notify("initialized", map[string]any{})
 	}

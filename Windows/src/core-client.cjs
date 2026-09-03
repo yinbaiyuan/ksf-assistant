@@ -39,7 +39,7 @@ class CoreClient {
     child.once('exit', (_code, signal) => this.#failAll(new Error(`共享核心已停止${signal ? `（${signal}）` : ''}`)));
     child.once('error', (error) => this.#failAll(error));
     await this.request('initialize', {
-      clientInfo: { name: 'codex_usage_bar_windows', title: 'Codex Usage Bar for Windows', version: '0.9.0' },
+      clientInfo: { name: 'codex_usage_bar_windows', title: 'Codex Usage Bar for Windows', version: '0.10.0-preview.1' },
     }, { skipStart: true });
   }
 

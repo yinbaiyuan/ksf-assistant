@@ -20,6 +20,11 @@ struct FeishuBridgeSnapshot: Equatable {
     let profileValid: Bool
     let inboundConnection: Bool
     let processRunning: Bool
+    let processState: String
+    let configured: Bool
+    let processPID: Int?
+    let restartCount: Int
+    let lastError: String?
 
     init(
         availability: FeishuBridgeAvailability,
@@ -30,7 +35,12 @@ struct FeishuBridgeSnapshot: Equatable {
         profile: String = "",
         profileValid: Bool = false,
         inboundConnection: Bool = false,
-        processRunning: Bool = false
+        processRunning: Bool = false,
+        processState: String = "stopped",
+        configured: Bool = false,
+        processPID: Int? = nil,
+        restartCount: Int = 0,
+        lastError: String? = nil
     ) {
         self.availability = availability
         self.targetAliases = targetAliases
@@ -41,6 +51,11 @@ struct FeishuBridgeSnapshot: Equatable {
         self.profileValid = profileValid
         self.inboundConnection = inboundConnection
         self.processRunning = processRunning
+        self.processState = processState
+        self.configured = configured
+        self.processPID = processPID
+        self.restartCount = restartCount
+        self.lastError = lastError
     }
 
     static let notConfigured = FeishuBridgeSnapshot(

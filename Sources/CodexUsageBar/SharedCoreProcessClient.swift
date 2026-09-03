@@ -39,6 +39,27 @@ struct SharedCoreFeishuAuth: Decodable {
     let qrDataURL: String
 }
 
+struct FeishuSetupState: Codable, Equatable {
+    let version: Int
+    let stage: String
+    let mode: String?
+    let verificationURL: String?
+    let userCode: String?
+    let lastError: String?
+
+    static let notStarted = FeishuSetupState(
+        version: 1, stage: "not_started", mode: nil,
+        verificationURL: nil, userCode: nil, lastError: nil
+    )
+}
+
+struct SharedCoreFeishuSetupResult: Decodable {
+    let setup: FeishuSetupState
+    let qrDataURL: String?
+    let verificationUrl: String?
+    let userCode: String?
+}
+
 struct SharedCoreFeishuPermissions: Decodable {
     struct PermissionSet: Decodable {
         let missing: [String]
@@ -137,7 +158,7 @@ actor SharedCoreProcessClient {
                 "clientInfo": [
                     "name": "codex_usage_bar_macos",
                     "title": "Codex Usage Bar for macOS",
-                    "version": "0.9.0",
+                    "version": "0.10.0-preview.1",
                 ],
             ])
         } catch {
@@ -350,6 +371,32 @@ actor SharedCoreProcessClient {
 
     func feishuPermissions() throws -> SharedCoreFeishuPermissions {
         try decode(method: "feishu/permissions/read", params: [:])
+    }
+
+    func feishuSetup() throws -> FeishuSetupState {
+        try decode(method: "feishu/setup/read", params: [:])
+    }
+
+    func beginFeishuSetup(mode: String, appID: String = "", appSecret: String = "") throws -> SharedCoreFeishuSetupResult {
+        try decode(method: "feishu/setup/begin", params: [
+            "mode": mode, "appId": appID, "appSecret": appSecret,
+        ])
+    }
+
+    func continueFeishuSetup() throws -> SharedCoreFeishuSetupResult {
+        try decode(method: "feishu/setup/continue", params: [:])
+    }
+
+    func verifyFeishuSetup() throws -> SharedCoreFeishuSetupResult {
+        try decode(method: "feishu/setup/verify", params: [:])
+    }
+
+    func cancelFeishuSetup() throws -> FeishuSetupState {
+        try decode(method: "feishu/setup/cancel", params: [:])
+    }
+
+    func restartFeishuSupervisor() throws {
+        _ = try requestData(method: "feishu/supervisor/restart", params: [:])
     }
 
     private static func locateFeishuRuntime() -> (service: URL, node: URL?)? {
@@ -617,6 +664,11 @@ private struct FeishuDTO: Decodable {
     let profileValid: Bool?
     let inboundConnection: Bool?
     let processRunning: Bool?
+    let processState: String?
+    let configured: Bool?
+    let processPid: Int?
+    let restartCount: Int?
+    let lastError: String?
     let targetAliases: [String]
     let taskLinkProtocolVersion: Int
     let taskLinkReady: Bool
@@ -633,7 +685,12 @@ private struct FeishuDTO: Decodable {
             profile: profile ?? "",
             profileValid: profileValid ?? false,
             inboundConnection: inboundConnection ?? false,
-            processRunning: processRunning ?? false
+            processRunning: processRunning ?? false,
+            processState: processState ?? "stopped",
+            configured: configured ?? false,
+            processPID: processPid,
+            restartCount: restartCount ?? 0,
+            lastError: lastError
         )
     }
 

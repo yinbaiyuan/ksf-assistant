@@ -251,11 +251,17 @@ function registerIPC() {
   ipcMain.handle('feishu:task-link-interrupt', (_event, payload) => core.request('feishu/taskLink/interrupt', payload));
   ipcMain.handle('feishu:test', (_event, targetAlias) => core.request('feishu/test', { targetAlias }));
   ipcMain.handle('feishu:profile-set', (_event, profile) => core.request('feishu/profile/set', { profile }));
-  ipcMain.handle('feishu:service-control', (_event, action) => core.request('feishu/service/control', { action }));
-  ipcMain.handle('feishu:auth-configure', (_event, credential) => core.request('feishu/auth/configure', credential));
-  ipcMain.handle('feishu:auth-start', () => core.request('feishu/auth/start'));
-  ipcMain.handle('feishu:auth-finish', () => core.request('feishu/auth/finish'));
-  ipcMain.handle('feishu:permissions-read', () => core.request('feishu/permissions/read'));
+  ipcMain.handle('feishu:setup-read', () => core.request('feishu/setup/read'));
+  ipcMain.handle('feishu:setup-begin', (_event, payload) => core.request('feishu/setup/begin', payload));
+  ipcMain.handle('feishu:setup-continue', () => core.request('feishu/setup/continue'));
+  ipcMain.handle('feishu:setup-verify', () => core.request('feishu/setup/verify'));
+  ipcMain.handle('feishu:setup-cancel', () => core.request('feishu/setup/cancel'));
+  ipcMain.handle('feishu:supervisor-restart', () => core.request('feishu/supervisor/restart'));
+  ipcMain.handle('feishu:open-external', async (_event, value) => {
+    const target = allowedFeishuURL(value);
+    await shell.openExternal(target);
+    return true;
+  });
   ipcMain.on('window:resize', (_event, requestedHeight) => {
     if (!window || !Number.isFinite(requestedHeight)) return;
     const display = screen.getDisplayMatching(window.getBounds());
@@ -267,6 +273,18 @@ function registerIPC() {
   });
   ipcMain.on('window:hide', () => window?.hide());
   ipcMain.on('app:quit', () => { quitting = true; app.quit(); });
+}
+
+function allowedFeishuURL(value) {
+  if (typeof value !== 'string' || value.length > 4096) throw new Error('飞书链接无效');
+  let target;
+  try { target = new URL(value); } catch { throw new Error('飞书链接无效'); }
+  const host = target.hostname.toLowerCase();
+  const allowed = ['feishu.cn', 'larksuite.com', 'larkoffice.com'];
+  if (target.protocol !== 'https:' || !allowed.some((domain) => host === domain || host.endsWith(`.${domain}`))) throw new Error('飞书链接不在允许范围内');
+  target.username = '';
+  target.password = '';
+  return target.toString();
 }
 
 function allowedLocalPath(targetPath) {

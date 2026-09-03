@@ -20,28 +20,25 @@ struct UsagePopoverView: View {
     @State private var pricingFormError: String?
     @State private var feishuAppID = ""
     @State private var feishuAppSecret = ""
+    @State private var showExistingFeishuApp = false
 
     var body: some View {
         Group {
-            if !viewModel.isOnboardingComplete {
-                onboardingPage
-            } else {
-                switch page {
-                case .home:
-                    homePage
-                case .tokenHistory:
-                    tokenHistoryPage
-                case .projectLibrary:
-                    projectLibraryPage
-                case .taskDetail:
-                    taskDetailPage
-                case .settings:
-                    settingsPage
-                case .pricing:
-                    pricingPage
-                case .feishu:
-                    feishuPage
-                }
+            switch page {
+            case .home:
+                homePage
+            case .tokenHistory:
+                tokenHistoryPage
+            case .projectLibrary:
+                projectLibraryPage
+            case .taskDetail:
+                taskDetailPage
+            case .settings:
+                settingsPage
+            case .pricing:
+                pricingPage
+            case .feishu:
+                feishuPage
             }
         }
         .padding(12)
@@ -148,15 +145,16 @@ struct UsagePopoverView: View {
             }
             tokenActivity
 
-            Divider()
-            projectSectionHeader
-
-            if let message = viewModel.projectDashboard.message {
-                compactStatus(message, color: .orange, symbol: "exclamationmark.triangle.fill")
-            }
-            projectWorksetList
-            if let actionError = viewModel.projectActionError {
-                compactStatus(actionError, color: .red, symbol: "exclamationmark.circle.fill")
+            if viewModel.isOnboardingComplete {
+                Divider()
+                projectSectionHeader
+                if let message = viewModel.projectDashboard.message {
+                    compactStatus(message, color: .orange, symbol: "exclamationmark.triangle.fill")
+                }
+                projectWorksetList
+                if let actionError = viewModel.projectActionError {
+                    compactStatus(actionError, color: .red, symbol: "exclamationmark.circle.fill")
+                }
             }
         }
     }
@@ -1425,15 +1423,15 @@ struct UsagePopoverView: View {
             VStack(spacing: 0) {
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("KSF 目录")
+                        Text("KSF 知识库（可选）")
                             .font(.caption)
-                        Text(ksfDirectoryStatus)
+                        Text(viewModel.isOnboardingComplete ? ksfDirectoryStatus : "KSF 是可选增强能力；不影响额度、Token、任务状态和飞书。")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
                     Spacer()
-                    Button("重新选择") { viewModel.chooseKSFRoot() }
+                    Button(viewModel.isOnboardingComplete ? "更换" : "选择目录") { viewModel.chooseKSFRoot() }
                         .controlSize(.small)
                 }
                 .padding(.vertical, 7)
@@ -1705,7 +1703,7 @@ struct UsagePopoverView: View {
 
     private var feishuPage: some View {
         VStack(alignment: .leading, spacing: 10) {
-            secondaryHeader(title: "飞书桥", backLabel: "返回设置") { page = .settings }
+            secondaryHeader(title: "飞书配置", backLabel: "返回设置") { page = .settings }
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("运行组件")
@@ -1713,122 +1711,137 @@ struct UsagePopoverView: View {
                 componentStatusRow(name: "Shared Core", status: viewModel.sharedCoreStatusText, color: viewModel.sharedCoreStatusText == "运行中" ? .green : .red)
                 componentStatusRow(name: "飞书桥", status: feishuProcessStatusText, color: viewModel.feishuBridge.processRunning ? .green : feishuStatusColor)
                 componentStatusRow(name: "本机事件", status: feishuProfileText, color: .secondary)
-                Text(feishuStatusDetail)
+                Text("\(feishuSetupStageText) · \(feishuStatusDetail)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Text("退出 Usage Bar 将停止 Shared Core、飞书桥及其子进程。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
 
+                if viewModel.feishuBridge.processState == "degraded" {
+                    Button("重新启动") { viewModel.restartFeishuSupervisor() }
+                        .controlSize(.small)
+                }
+
                 if viewModel.feishuActionInProgress {
                     ProgressView().controlSize(.small)
-                }
-
-                Picker("本机事件角色", selection: Binding(
-                    get: { viewModel.feishuBridge.profile.isEmpty ? "manual-only" : viewModel.feishuBridge.profile },
-                    set: { viewModel.setFeishuProfile($0) }
-                )) {
-                    Text("主设备").tag("primary")
-                    Text("仅手动能力").tag("manual-only")
-                }
-                .font(.caption)
-                .disabled(viewModel.feishuActionInProgress || !viewModel.feishuBridge.profileValid)
-
-                TextField("App ID", text: $feishuAppID)
-                    .textFieldStyle(.roundedBorder)
-                SecureField("App Secret", text: $feishuAppSecret)
-                    .textFieldStyle(.roundedBorder)
-                HStack(spacing: 8) {
-                    Button("写入安全凭据库") {
-                        viewModel.configureFeishu(appID: feishuAppID, appSecret: feishuAppSecret)
-                        feishuAppSecret = ""
-                    }
-                    .controlSize(.small)
-                    .disabled(feishuAppID.isEmpty || feishuAppSecret.isEmpty || viewModel.feishuActionInProgress)
-                    Button("生成 OAuth 二维码") { viewModel.startFeishuAuth() }
-                        .controlSize(.small)
-                }
-
-                if let dataURL = viewModel.feishuAuthQRCode,
-                   let image = feishuQRCode(dataURL) {
-                    VStack(spacing: 7) {
-                        Image(nsImage: image)
-                            .interpolation(.none)
-                            .resizable()
-                            .frame(width: 200, height: 200)
-                        Text("验证码 \(viewModel.feishuAuthUserCode ?? "—")")
-                            .font(.caption2)
-                        Button("已扫码，完成认证") { viewModel.finishFeishuAuth() }
-                            .controlSize(.small)
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-
-                if !viewModel.feishuBridge.targetAliases.isEmpty {
-                    Picker("授权单聊", selection: Binding(
-                        get: { viewModel.selectedFeishuTargetAlias },
-                        set: { viewModel.setFeishuTargetAlias($0) }
-                    )) {
-                        Text("请选择").tag("")
-                        ForEach(viewModel.feishuBridge.targetAliases, id: \.self) { alias in
-                            Text(alias).tag(alias)
-                        }
-                    }
-                    .font(.caption)
-                } else if viewModel.feishuBridge.availability != .notConfigured {
-                    Text("飞书桥尚未配置可控制任务的授权单聊别名。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                Text("测试正文：Codex Usage Bar 飞书桥连接测试成功")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-
-                if let feedback = viewModel.feishuFeedback {
-                    Text(feedback)
-                        .font(.caption2)
-                        .foregroundStyle(feedback.contains("成功") || feedback.contains("已发送") ? .green : .secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                HStack(spacing: 8) {
-                    Button("启动") { viewModel.controlFeishuService("start") }
-                        .controlSize(.small)
-                    Button("重启") { viewModel.controlFeishuService("restart") }
-                        .controlSize(.small)
-                    Button("刷新状态") {
-                        Task { await viewModel.refreshFeishuBridge() }
-                    }
-                    .controlSize(.small)
-                    .disabled(viewModel.feishuActionInProgress)
-                    Spacer()
-                    Button("发送测试消息") { viewModel.sendFeishuTestMessage() }
-                        .controlSize(.small)
-                        .disabled(
-                            viewModel.feishuActionInProgress
-                                || viewModel.selectedFeishuTargetAlias.isEmpty
-                                || viewModel.feishuBridge.availability != .ready
-                        )
-                }
-
-                HStack(spacing: 8) {
-                    Text(viewModel.feishuPermissionStatus)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("检查权限") { viewModel.refreshFeishuPermissions() }
-                        .controlSize(.small)
                 }
             }
             .padding(10)
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
 
-            Text("Usage Bar 不保存飞书凭据或真实目标 ID。连接后，指定单聊可在 24 小时闲置租约内以全权限控制所选 Codex 任务；身份校验、附件、脱敏和审计均由飞书桥负责。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            feishuSetupContent
+
+            if let feedback = viewModel.feishuFeedback {
+                compactStatus(feedback, color: .orange, symbol: "exclamationmark.triangle.fill")
+            }
         }
+    }
+
+    @ViewBuilder
+    private var feishuSetupContent: some View {
+        switch viewModel.feishuSetup.stage {
+        case "not_started":
+            VStack(alignment: .leading, spacing: 8) {
+                Text("选择接入方式").font(.caption.weight(.semibold))
+                Text("整个过程都在 Usage Bar 内发起；需要管理员确认时会直接打开飞书官方页面。")
+                    .font(.caption2).foregroundStyle(.secondary)
+                Button("创建专用飞书应用") { viewModel.beginFeishuSetup(mode: "new") }
+                    .buttonStyle(.borderedProminent)
+                Button("接入已有应用") { showExistingFeishuApp.toggle() }
+                    .controlSize(.small)
+                if showExistingFeishuApp {
+                    TextField("App ID", text: $feishuAppID).textFieldStyle(.roundedBorder)
+                    SecureField("App Secret", text: $feishuAppSecret).textFieldStyle(.roundedBorder)
+                    Button("安全保存并继续") {
+                        viewModel.beginFeishuSetup(mode: "existing", appID: feishuAppID, appSecret: feishuAppSecret)
+                        feishuAppSecret = ""
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(feishuAppID.isEmpty || feishuAppSecret.isEmpty)
+                }
+            }
+            .padding(10)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+        case "app_pending":
+            feishuPendingStep(title: "在飞书中创建应用", actionTitle: "我已完成，继续")
+        case "app_configured":
+            VStack(alignment: .leading, spacing: 8) {
+                Text("应用凭据已安全保存").font(.caption.weight(.semibold))
+                Text("下一步将申请固定能力注册表中的精确权限并发起 OAuth。")
+                    .font(.caption2).foregroundStyle(.secondary)
+                Button("开始授权") { viewModel.continueFeishuSetup() }.buttonStyle(.borderedProminent)
+            }
+        case "authorization_pending":
+            feishuPendingStep(title: "完成用户授权", actionTitle: "我已授权，继续")
+        case "platform_pending", "failed":
+            VStack(alignment: .leading, spacing: 8) {
+                Text("检查飞书后台设置").font(.caption.weight(.semibold))
+                Text("请确认机器人、精确权限、23 类事件、长连接和应用版本发布。Usage Bar 会自动核验结果。")
+                    .font(.caption2).foregroundStyle(.secondary)
+                if viewModel.feishuSetup.verificationURL != nil {
+                    Button("在飞书中继续") { viewModel.openFeishuSetupURL() }.controlSize(.small)
+                }
+                HStack {
+                    Button("重新检查") { viewModel.verifyFeishuSetup() }.buttonStyle(.borderedProminent)
+                    Button("重新配置") { viewModel.cancelFeishuSetup() }.controlSize(.small)
+                }
+            }
+        case "verifying":
+            ProgressView("正在核验飞书配置…").controlSize(.small)
+        default:
+            feishuReadySettings
+        }
+    }
+
+    private func feishuPendingStep(title: String, actionTitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.caption.weight(.semibold))
+            if let dataURL = viewModel.feishuSetupQRCode, let image = feishuQRCode(dataURL) {
+                Image(nsImage: image).interpolation(.none).resizable().frame(width: 180, height: 180)
+                    .frame(maxWidth: .infinity)
+            }
+            if let code = viewModel.feishuSetup.userCode { Text("验证码 \(code)").font(.caption2) }
+            HStack {
+                if viewModel.feishuSetup.verificationURL != nil {
+                    Button("在飞书中继续") { viewModel.openFeishuSetupURL() }.controlSize(.small)
+                }
+                Button(actionTitle) { viewModel.continueFeishuSetup() }.buttonStyle(.borderedProminent)
+                Button("取消") { viewModel.cancelFeishuSetup() }.controlSize(.small)
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var feishuReadySettings: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("飞书已就绪").font(.caption.weight(.semibold))
+            Picker("本机事件角色", selection: Binding(
+                get: { viewModel.feishuBridge.profile.isEmpty ? "manual-only" : viewModel.feishuBridge.profile },
+                set: { viewModel.setFeishuProfile($0) }
+            )) {
+                Text("主设备").tag("primary")
+                Text("仅手动能力").tag("manual-only")
+            }
+            if !viewModel.feishuBridge.targetAliases.isEmpty {
+                Picker("测试目标", selection: Binding(
+                    get: { viewModel.selectedFeishuTargetAlias },
+                    set: { viewModel.setFeishuTargetAlias($0) }
+                )) {
+                    Text("请选择").tag("")
+                    ForEach(viewModel.feishuBridge.targetAliases, id: \.self) { Text($0).tag($0) }
+                }
+            }
+            Button("确认发送测试消息") { viewModel.sendFeishuTestMessage() }
+                .disabled(viewModel.selectedFeishuTargetAlias.isEmpty)
+            Divider()
+            Text("高级功能").font(.caption.weight(.semibold))
+            Text("群聊、通讯录和队列能力在这里通过表单与开关管理，不需要编辑配置文件。")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private func feishuQRCode(_ dataURL: String) -> NSImage? {
@@ -1856,6 +1869,19 @@ struct UsagePopoverView: View {
         case "primary": return "主设备"
         case "manual-only": return "仅手动能力"
         default: return "未配置"
+        }
+    }
+
+    private var feishuSetupStageText: String {
+        switch viewModel.feishuSetup.stage {
+        case "app_pending": return "等待创建应用"
+        case "app_configured": return "应用已配置"
+        case "authorization_pending": return "等待用户授权"
+        case "platform_pending": return "等待后台确认"
+        case "verifying": return "正在核验"
+        case "ready": return "已就绪"
+        case "failed": return "需要处理"
+        default: return "尚未配置"
         }
     }
 

@@ -1,6 +1,6 @@
 {
   "name": "codex-usage-bar-windows",
-  "version": "0.9.0-internal.1",
+  "version": "0.10.0-preview.1",
   "private": true,
   "description": "Windows system-tray host for Codex Usage Bar",
   "author": "KSF Team",

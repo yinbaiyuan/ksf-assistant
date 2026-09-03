@@ -155,22 +155,36 @@ func (client FeishuClient) ConfigureExisting(ctx context.Context, root, appID, a
 	return err
 }
 
+func (client FeishuClient) StartConfig(ctx context.Context, root string) (map[string]any, error) {
+	result, err := client.command(ctx, root, []string{"auth", "start-config", "--create-new"}, nil)
+	if err != nil {
+		return nil, err
+	}
+	return attachPrivateQR(result)
+}
+
 func (client FeishuClient) StartUserAuth(ctx context.Context, root string) (map[string]any, error) {
 	result, err := client.command(ctx, root, []string{"auth", "start-user", "--scope", "required"}, nil)
 	if err != nil {
 		return nil, err
 	}
+	return attachPrivateQR(result)
+}
+
+func attachPrivateQR(result map[string]any) (map[string]any, error) {
 	qrPath, _ := result["qrPath"].(string)
 	qrData, err := readPrivateQR(qrPath)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{
-		"status":    "pending",
-		"flow":      "user-oauth",
-		"userCode":  result["userCode"],
-		"qrDataURL": "data:image/png;base64," + base64.StdEncoding.EncodeToString(qrData),
-	}, nil
+	public := map[string]any{}
+	for _, key := range []string{"status", "flow", "profile", "verificationUrl", "userCode", "next"} {
+		if value, ok := result[key]; ok {
+			public[key] = value
+		}
+	}
+	public["qrDataURL"] = "data:image/png;base64," + base64.StdEncoding.EncodeToString(qrData)
+	return public, nil
 }
 
 func (client FeishuClient) FinishUserAuth(ctx context.Context, root string) error {

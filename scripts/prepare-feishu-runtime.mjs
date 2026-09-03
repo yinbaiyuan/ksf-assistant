@@ -85,7 +85,7 @@ function stageService() {
     run('npm', npmArgs, { cwd: target });
   }
   writeFileSync(path.join(target, 'usage-bar-service.json'), `${JSON.stringify({
-    productVersion: '0.9.0-internal.1',
+    productVersion: '0.10.0-preview.1',
     serviceVersion: JSON.parse(readFileSync(path.join(source, 'package.json'), 'utf8')).version,
     nodeVersion: manifest.version,
   }, null, 2)}\n`);

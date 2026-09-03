@@ -67,3 +67,32 @@ func TestServerRejectsUnknownMethods(t *testing.T) {
 		t.Fatalf("unexpected output: %s", output.String())
 	}
 }
+
+func TestServerReadsAndUpdatesPrivateFeishuSettingsWithoutSecrets(t *testing.T) {
+	t.Setenv("FEISHU_BRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("CODEX_USAGE_BAR_FEISHU_SERVICE_ROOT", "")
+	input := strings.NewReader(`{"jsonrpc":"2.0","id":4,"method":"feishu/settings/update","params":{"version":1,"profile":"primary","group":{"enabled":false},"outbound":{"enabled":true,"dryRun":true},"directory":{"enabled":false},"groupDirectory":{"enabled":false},"docbox":{"enabled":false,"dryRun":true},"actionbox":{"enabled":false,"dryRun":true},"codex":{"defaultThreadTitle":"飞书默认对话"}}}` + "\n")
+	var output bytes.Buffer
+	if err := New(service.New(), input, &output).Serve(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(output.String()), "appsecret") || strings.Contains(strings.ToLower(output.String()), "access_token") {
+		t.Fatalf("settings response leaked a secret field: %s", output.String())
+	}
+	var response struct {
+		Result struct {
+			Version  int    `json:"version"`
+			Profile  string `json:"profile"`
+			Outbound struct {
+				Enabled bool `json:"enabled"`
+				DryRun  bool `json:"dryRun"`
+			} `json:"outbound"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Result.Version != 1 || response.Result.Profile != "primary" || !response.Result.Outbound.Enabled || !response.Result.Outbound.DryRun {
+		t.Fatalf("unexpected settings response: %#v", response.Result)
+	}
+}

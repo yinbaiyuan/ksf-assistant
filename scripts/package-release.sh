@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-version="${RELEASE_VERSION:-0.7.0-internal.1}"
+version="${RELEASE_VERSION:-0.10.0-preview.1}"
 release_root="$repo_root/dist/release-$version"
 app_path="$repo_root/dist/Codex Usage Bar.app"
 zip_path="$release_root/Codex-Usage-Bar-$version-universal.zip"
@@ -27,7 +27,7 @@ Bundle ID: com.ksf.codexusagebar
 Architectures: arm64, x86_64
 Signing: ${SIGNING_MODE:-adhoc}
 Notarized: no
-Distribution: private team internal preview
+Distribution: public cross-platform preview
 
 This build is not notarized. Verify SHA256SUMS before installation and follow README.md for Gatekeeper instructions.
 EOF

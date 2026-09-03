@@ -59,6 +59,22 @@ func TestNormalizedHistoryDayCountUsesBoundedDefault(t *testing.T) {
 	}
 }
 
+func TestPermissionsReadyRequiresVerifiedUserWithNoMissingScopes(t *testing.T) {
+	ready := map[string]any{"permissions": map[string]any{
+		"verified": true,
+		"identities": map[string]any{"user": map[string]any{
+			"ready": true, "missing": []any{},
+		}},
+	}}
+	if !permissionsReady(ready) {
+		t.Fatal("expected complete permissions to be ready")
+	}
+	ready["permissions"].(map[string]any)["verified"] = false
+	if permissionsReady(ready) {
+		t.Fatal("unverified permissions must not be ready")
+	}
+}
+
 func TestCompareTokenHistoryAlignsServerAndLocalDays(t *testing.T) {
 	breakdown := &domain.TokenUsageBreakdown{RegularInputTokens: 20, CachedInputTokens: 60, OutputTokens: 20}
 	days := compareTokenHistory(
