@@ -20,7 +20,7 @@ import (
 	"codexusagebar/core/internal/tokens"
 )
 
-const Version = "0.8.0"
+const Version = "0.9.0"
 
 const (
 	rateRefreshInterval      = 5 * time.Minute
@@ -34,7 +34,6 @@ const (
 
 type DashboardRequest struct {
 	KSFRoot          string                  `json:"ksfRoot"`
-	FeishuBridgeRoot string                  `json:"feishuBridgeRoot"`
 	PinnedProjectIDs []string                `json:"pinnedProjectIds"`
 	PricingSelection domain.PricingSelection `json:"pricingSelection,omitempty"`
 }
@@ -46,11 +45,10 @@ type CreateTaskRequest struct {
 }
 
 type TaskLinkRequest struct {
-	FeishuBridgeRoot string `json:"feishuBridgeRoot"`
-	ThreadID         string `json:"threadId"`
-	Title            string `json:"title"`
-	ProjectName      string `json:"projectName"`
-	TargetAlias      string `json:"targetAlias"`
+	ThreadID    string `json:"threadId"`
+	Title       string `json:"title"`
+	ProjectName string `json:"projectName"`
+	TargetAlias string `json:"targetAlias"`
 }
 
 type SubmitTaskRequest struct {
@@ -89,6 +87,8 @@ type Service struct {
 	lastLocalTokenAttempt time.Time
 	lastThreadAttempt     time.Time
 	projectSources        map[string]projectSourceCache
+	feishuRoot            string
+	feishuSupervisor      *bridge.FeishuSupervisor
 	lastFeishuRoot        string
 	lastFeishuAt          time.Time
 	lastFeishu            domain.FeishuSnapshot
@@ -112,12 +112,17 @@ type projectSourceCache struct {
 
 func New() *Service {
 	home, _ := os.UserHomeDir()
+	feishuRoot := os.Getenv("CODEX_USAGE_BAR_FEISHU_SERVICE_ROOT")
+	feishuNode := os.Getenv("CODEX_USAGE_BAR_NODE")
 	return &Service{
-		home:           home,
-		desktop:        desktop.New(desktop.DefaultEndpoint(home)),
-		trackingAt:     map[string]time.Time{},
-		projectSources: map[string]projectSourceCache{},
-		lastUsage:      domain.UsageSnapshot{Buckets: []domain.RateLimitBucket{}, DailyUsageBuckets: []domain.DailyUsageBucket{}, Status: "loading"},
+		home:             home,
+		feishu:           bridge.FeishuClient{Node: feishuNode},
+		feishuRoot:       feishuRoot,
+		feishuSupervisor: bridge.NewFeishuSupervisor(feishuRoot, feishuNode),
+		desktop:          desktop.New(desktop.DefaultEndpoint(home)),
+		trackingAt:       map[string]time.Time{},
+		projectSources:   map[string]projectSourceCache{},
+		lastUsage:        domain.UsageSnapshot{Buckets: []domain.RateLimitBucket{}, DailyUsageBuckets: []domain.DailyUsageBucket{}, Status: "loading"},
 	}
 }
 
@@ -128,13 +133,14 @@ func (service *Service) Initialize(ctx context.Context) map[string]any {
 		_ = service.codex.Start(ctx)
 	}
 	_ = service.desktop.Start(ctx)
+	_ = service.feishuSupervisor.Start()
 	return map[string]any{
 		"protocol": domain.Protocol,
 		"version":  Version,
 		"platform": runtime.GOOS,
 		"capabilities": map[string]bool{
 			"usage": true, "localTokens": true, "tokenHistory": true, "tokenHistoryComparison": true, "tokenCostEstimate": true, "projects": true, "taskActivity": true,
-			"taskCreation": true, "projectLaunch": true, "feishuTaskLinks": true,
+			"taskCreation": true, "projectLaunch": true, "feishuTaskLinks": true, "feishuServiceManagement": true,
 		},
 	}
 }
@@ -160,8 +166,8 @@ func (service *Service) Dashboard(ctx context.Context, request DashboardRequest)
 	}
 	projects := service.readProjects(ctx, request, threads, observations, now)
 	feishu := domain.FeishuSnapshot{Availability: "notConfigured", TargetAliases: []string{}, Links: []domain.FeishuTaskLink{}}
-	if strings.TrimSpace(request.FeishuBridgeRoot) != "" {
-		feishu = service.readFeishu(ctx, request.FeishuBridgeRoot, now)
+	if strings.TrimSpace(service.feishuRoot) != "" {
+		feishu = service.readFeishu(ctx, service.feishuRoot, now)
 	}
 	return domain.DashboardSnapshot{Protocol: domain.Protocol, CoreVersion: Version, Platform: runtime.GOOS, ObservedAt: now, Usage: usage, Activity: activity, Projects: projects, Feishu: feishu}
 }
@@ -202,19 +208,64 @@ func (service *Service) SubmitTask(ctx context.Context, request SubmitTaskReques
 }
 
 func (service *Service) CreateTaskLink(ctx context.Context, request TaskLinkRequest) (domain.FeishuTaskLink, error) {
-	return service.feishu.CreateTaskLink(ctx, request.FeishuBridgeRoot, request.ThreadID, request.Title, request.ProjectName, request.TargetAlias)
+	return service.feishu.CreateTaskLink(ctx, service.feishuRoot, request.ThreadID, request.Title, request.ProjectName, request.TargetAlias)
 }
 
 func (service *Service) ReleaseTaskLink(ctx context.Context, request TaskLinkRequest) (domain.FeishuTaskLink, error) {
-	return service.feishu.ReleaseTaskLink(ctx, request.FeishuBridgeRoot, request.ThreadID)
+	return service.feishu.ReleaseTaskLink(ctx, service.feishuRoot, request.ThreadID)
 }
 
 func (service *Service) InterruptTaskLink(ctx context.Context, request TaskLinkRequest) (domain.FeishuTaskLink, error) {
-	return service.feishu.InterruptTaskLink(ctx, request.FeishuBridgeRoot, request.ThreadID)
+	return service.feishu.InterruptTaskLink(ctx, service.feishuRoot, request.ThreadID)
 }
 
-func (service *Service) SendFeishuTest(ctx context.Context, root, target string) error {
-	return service.feishu.SendTest(ctx, root, target)
+func (service *Service) SendFeishuTest(ctx context.Context, target string) error {
+	return service.feishu.SendTest(ctx, service.feishuRoot, target)
+}
+
+func (service *Service) FeishuProfile(ctx context.Context) (map[string]any, error) {
+	return service.feishu.Profile(ctx, service.feishuRoot)
+}
+
+func (service *Service) ConfigureFeishu(ctx context.Context, appID, appSecret string) error {
+	return service.feishu.ConfigureExisting(ctx, service.feishuRoot, appID, appSecret)
+}
+
+func (service *Service) StartFeishuAuth(ctx context.Context) (map[string]any, error) {
+	return service.feishu.StartUserAuth(ctx, service.feishuRoot)
+}
+
+func (service *Service) FinishFeishuAuth(ctx context.Context) error {
+	return service.feishu.FinishUserAuth(ctx, service.feishuRoot)
+}
+
+func (service *Service) FeishuPermissions(ctx context.Context) (map[string]any, error) {
+	return service.feishu.Permissions(ctx, service.feishuRoot)
+}
+
+func (service *Service) SetFeishuProfile(ctx context.Context, profile string) (map[string]any, error) {
+	result, err := service.feishu.SetProfile(ctx, service.feishuRoot, profile)
+	service.clearFeishuCache()
+	return result, err
+}
+
+func (service *Service) ControlFeishuService(ctx context.Context, action string) (map[string]any, error) {
+	var err error
+	if action == "start" {
+		err = service.feishuSupervisor.Start()
+	} else if action == "restart" {
+		err = service.feishuSupervisor.Restart()
+	} else {
+		err = errors.New("不支持的飞书服务动作")
+	}
+	service.clearFeishuCache()
+	return service.feishuSupervisor.Status(), err
+}
+
+func (service *Service) clearFeishuCache() {
+	service.mu.Lock()
+	service.lastFeishuAt = time.Time{}
+	service.mu.Unlock()
 }
 
 func (service *Service) TokenHistory(_ context.Context, request TokenHistoryRequest) ([]domain.DailyUsageBucket, error) {
@@ -326,6 +377,9 @@ func (service *Service) PrepareProjectLaunch(ctx context.Context, request Prepar
 }
 
 func (service *Service) Close() {
+	stopContext, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	_ = service.feishuSupervisor.Stop(stopContext)
 	if service.codex != nil {
 		_ = service.codex.Close()
 	}

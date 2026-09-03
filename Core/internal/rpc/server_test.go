@@ -27,7 +27,7 @@ func TestServerPublishesVersionedInitializeContract(t *testing.T) {
 	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Result.Protocol != "codex-usage-core-v1" || response.Result.Version == "" {
+	if response.Result.Protocol != "codex-usage-core-v2" || response.Result.Version == "" {
 		t.Fatalf("unexpected contract: %#v", response.Result)
 	}
 	if !response.Result.Capabilities["tokenHistory"] || !response.Result.Capabilities["tokenHistoryComparison"] || !response.Result.Capabilities["tokenCostEstimate"] || !response.Result.Capabilities["feishuTaskLinks"] {

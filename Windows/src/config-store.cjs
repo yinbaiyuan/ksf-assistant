@@ -6,7 +6,6 @@ const path = require('node:path');
 
 const DEFAULTS = Object.freeze({
   ksfRoot: '',
-  feishuBridgeRoot: '',
   selectedFeishuTargetAlias: '',
   pinnedProjectIds: [],
   launchAtLogin: false,
@@ -49,11 +48,9 @@ class ConfigStore {
     } catch {
       const home = os.homedir();
       const suggestedKSF = path.join(home, 'Documents', 'KSF');
-      const suggestedFeishu = path.join(home, 'GitProject', 'feishu-bot-bridge');
       return sanitize({
         ...DEFAULTS,
         ksfRoot: fs.existsSync(path.join(suggestedKSF, 'AGENTS.md')) ? suggestedKSF : '',
-        feishuBridgeRoot: fs.existsSync(path.join(suggestedFeishu, 'scripts', 'bridge-client.js')) ? suggestedFeishu : '',
       });
     }
   }
@@ -89,7 +86,6 @@ function sanitize(value) {
     : DEFAULTS.selectedPricingPlanId;
   return {
     ksfRoot: string(value.ksfRoot),
-    feishuBridgeRoot: string(value.feishuBridgeRoot),
     selectedFeishuTargetAlias: string(value.selectedFeishuTargetAlias),
     pinnedProjectIds: [...new Set(Array.isArray(value.pinnedProjectIds) ? value.pinnedProjectIds.map(string).filter(Boolean) : [])],
     launchAtLogin: value.launchAtLogin === true,

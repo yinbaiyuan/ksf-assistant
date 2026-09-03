@@ -1,0 +1,25 @@
+{
+  "name": "feishu-bot-bridge",
+  "version": "1.2.0",
+  "description": "Local Feishu/Lark bot bridge for Codex experiments",
+  "main": "bot-bridge.js",
+  "scripts": {
+    "start": "node bot-bridge.js",
+    "start:awake": "node scripts/start-bridge.js",
+    "bridge": "node scripts/bridge-client.js",
+    "install:requirements": "node scripts/install-requirements.js",
+    "skill:install": "node scripts/install-codex-skill.js install",
+    "skill:check": "node scripts/install-codex-skill.js check",
+    "skill:uninstall": "node scripts/install-codex-skill.js uninstall",
+    "windows:install": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File windows/Install-FeishuBridge.ps1",
+    "windows:uninstall": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File windows/Uninstall-FeishuBridge.ps1",
+    "test": "node --test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@larksuite/cli": "1.0.92",
+    "@larksuiteoapi/node-sdk": "1.73.0"
+  }
+}

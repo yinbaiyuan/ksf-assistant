@@ -193,7 +193,15 @@ button { color: inherit; }
 .setting-copy { flex: 1; min-width: 0; }
 .setting-title { font-weight: 630; }
 .setting-description { margin-top: 2px; color: var(--text-secondary); font-size: 11px; line-height: 1.45; }
+.component-status-list { display: grid; gap: 5px; margin-top: 9px; }
+.component-status { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 12px; color: var(--text-secondary); font-size: 12px; }
+.component-status strong { color: var(--text); font-weight: 630; }
 .setting-path { margin-top: 7px; padding: 7px 8px; border-radius: 6px; background: var(--surface-subtle); color: var(--text-secondary); font: 11px/1.4 Consolas, "SFMono-Regular", monospace; overflow-wrap: anywhere; user-select: text; }
+.feishu-credentials { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; margin-top: 9px; }
+.feishu-credentials input { width: 100%; min-height: 32px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); outline: none; user-select: text; }
+.feishu-credentials input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent); }
+.feishu-auth { display: grid; justify-items: center; gap: 8px; margin-top: 10px; }
+.feishu-auth img { width: 220px; height: 220px; image-rendering: pixelated; background: white; }
 .pricing-current { margin-bottom: 10px; }
 .pricing-list { overflow: hidden; }
 .pricing-row { display: flex; align-items: center; gap: 8px; padding: 9px 11px; }

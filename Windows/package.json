@@ -1,6 +1,6 @@
 {
   "name": "codex-usage-bar-windows",
-  "version": "0.8.0-internal.1",
+  "version": "0.9.0-internal.1",
   "private": true,
   "description": "Windows system-tray host for Codex Usage Bar",
   "author": "KSF Team",
@@ -10,8 +10,9 @@
     "start": "electron .",
     "test": "node --test test/*.test.cjs",
     "build:core": "node scripts/build-core.mjs",
-    "pack:win": "npm run build:core && electron-builder --win --dir --x64 && electron-builder --win --dir --arm64",
-    "dist:win": "npm run build:core && electron-builder --win nsis --x64 && electron-builder --win nsis --arm64"
+    "prepare:feishu": "node ../scripts/prepare-feishu-runtime.mjs --platform windows --arch x64 --arch arm64",
+    "pack:win": "npm run build:core && npm run prepare:feishu && electron-builder --win --dir --x64 && electron-builder --win --dir --arm64",
+    "dist:win": "npm run build:core && npm run prepare:feishu && electron-builder --win nsis --x64 && electron-builder --win nsis --arm64"
   },
   "devDependencies": {
     "electron": "44.1.1",
@@ -31,6 +32,21 @@
         "from": "../dist/core/windows-${arch}",
         "to": "core/windows-${arch}",
         "filter": ["codex-usage-core.exe"]
+      },
+      {
+        "from": "../dist/services/feishu-bridge",
+        "to": "services/feishu-bridge",
+        "filter": ["**/*", "!node_modules/**/*"]
+      },
+      {
+        "from": "../dist/services/feishu-bridge/node_modules",
+        "to": "services/feishu-bridge/node_modules",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "../dist/runtime/node/windows-${arch}",
+        "to": "runtime/node/windows-${arch}",
+        "filter": ["node.exe"]
       },
       {
         "from": "../LICENSE",

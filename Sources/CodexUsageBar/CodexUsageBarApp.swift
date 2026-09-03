@@ -16,9 +16,24 @@ struct CodexUsageBarApp: App {
 @MainActor
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusController: StatusItemController?
+    private var terminationInProgress = false
+    private var terminationReady = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusController = StatusItemController()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if terminationReady { return .terminateNow }
+        if terminationInProgress { return .terminateLater }
+        terminationInProgress = true
+        Task { [weak self] in
+            await self?.statusController?.shutdown()
+            guard let self else { return }
+            terminationReady = true
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 }
 
@@ -71,6 +86,10 @@ private final class StatusItemController: NSObject, NSPopoverDelegate {
 
     func popoverDidClose(_ notification: Notification) {
         viewModel.popoverDidClose()
+    }
+
+    func shutdown() async {
+        await viewModel.shutdown()
     }
 
     private func updateStatusItem() {

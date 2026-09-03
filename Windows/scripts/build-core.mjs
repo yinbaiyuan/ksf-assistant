@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,11 +7,23 @@ const windowsRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const repoRoot = path.resolve(windowsRoot, '..');
 const coreRoot = path.join(repoRoot, 'Core');
 
+function locateGo() {
+  if (process.env.CODEX_USAGE_BAR_GO) return process.env.CODEX_USAGE_BAR_GO;
+  if (process.platform === 'win32') {
+    const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
+    const standardInstall = path.join(programFiles, 'Go', 'bin', 'go.exe');
+    if (existsSync(standardInstall)) return standardInstall;
+  }
+  return 'go';
+}
+
+const go = locateGo();
+
 for (const arch of ['amd64', 'arm64']) {
   const outputArch = arch === 'amd64' ? 'windows-x64' : 'windows-arm64';
   const outputDir = path.join(repoRoot, 'dist', 'core', outputArch);
   mkdirSync(outputDir, { recursive: true });
-  const result = spawnSync('go', [
+  const result = spawnSync(go, [
     'build', '-trimpath', '-ldflags=-s -w',
     '-o', path.join(outputDir, 'codex-usage-core.exe'),
     './cmd/codex-usage-core',
@@ -20,5 +32,13 @@ for (const arch of ['amd64', 'arm64']) {
     stdio: 'inherit',
     env: { ...process.env, GOOS: 'windows', GOARCH: arch },
   });
+  if (result.error) {
+    if (result.error.code === 'ENOENT') {
+      console.error('Go toolchain not found: install Go 1.23+ and ensure go is available on PATH.');
+    } else {
+      console.error(`Failed to start Go toolchain: ${result.error.message}`);
+    }
+    process.exit(1);
+  }
   if (result.status !== 0) process.exit(result.status ?? 1);
 }

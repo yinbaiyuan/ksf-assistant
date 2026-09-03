@@ -1,0 +1,11 @@
+{
+  "protocol": "codex-control-v1",
+  "requestId": "request_fixture_001",
+  "operation": "turn.interrupt",
+  "taskKey": "task_0123456789abcdef",
+  "payload": {},
+  "authorization": {
+    "source": "feishu-bridge",
+    "explicit": true
+  }
+}

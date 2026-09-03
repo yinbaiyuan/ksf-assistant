@@ -48,9 +48,11 @@ final class UsageViewModel: ObservableObject {
     @Published private(set) var notificationPermission: NotificationPermissionState = .unknown
     @Published private(set) var loginItemState: LoginItemState = .disabled
     @Published private(set) var feishuBridge = FeishuBridgeSnapshot.notConfigured
-    @Published private(set) var feishuBridgeRootPath: String
     @Published private(set) var feishuActionInProgress = false
     @Published private(set) var feishuFeedback: String?
+    @Published private(set) var feishuAuthQRCode: String?
+    @Published private(set) var feishuAuthUserCode: String?
+    @Published private(set) var feishuPermissionStatus = "尚未检查"
     @Published private(set) var feishuTaskLinks: [String: FeishuTaskLinkSnapshot] = [:]
     @Published private(set) var feishuTaskLinkActions: Set<String> = []
     @Published private(set) var feishuTaskLinkErrors: [String: String] = [:]
@@ -69,10 +71,10 @@ final class UsageViewModel: ObservableObject {
     private let actionLauncher = TerminalActionLauncher()
     private let taskOpener: CodexTaskOpening = WorkspaceCodexTaskOpener()
     private let taskSubmissionClient: CodexDesktopTaskSubmissionClient
-    private let feishuClient = FeishuBridgeClient()
     private let sharedCore = SharedCoreProcessClient()
     private var client: CodexAppServerClient?
     private var sharedCoreEnabled = false
+    private var shutdownStarted = false
     private var refreshingSharedCore = false
     private var started = false
     private var refreshingRateLimits = false
@@ -88,7 +90,6 @@ final class UsageViewModel: ObservableObject {
     private var projectRefreshTask: Task<Void, Never>?
     private var feishuTaskLinkTimerTask: Task<Void, Never>?
     private var sharedCorePollTask: Task<Void, Never>?
-    private var refreshingFeishuBridge = false
     private var popoverIsOpen = false
     private var refreshingProjects = false
     private var bridgeEnabledAt: Date?
@@ -131,7 +132,7 @@ final class UsageViewModel: ObservableObject {
         resetNotificationsEnabled = defaults.bool(forKey: "resetNotificationsEnabled")
         ksfRootPath = defaults.string(forKey: "ksfRootPath")
             ?? AppConfiguration.suggestedKSFRoot()
-        feishuBridgeRootPath = defaults.string(forKey: "feishuBridgeRootPath") ?? ""
+        defaults.removeObject(forKey: "feishuBridgeRootPath")
         selectedFeishuTargetAlias = defaults.string(forKey: "selectedFeishuTargetAlias") ?? ""
         selectedPricingPlanID = defaults.string(forKey: "selectedPricingPlanID") ?? Self.defaultPricingPlanID
         if let data = defaults.data(forKey: "customPricingPlansV1"),
@@ -837,39 +838,108 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    func chooseFeishuBridgeRoot() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "选择"
-        panel.message = "选择 feishu-bot-bridge 工程目录"
-        if !feishuBridgeRootPath.isEmpty {
-            panel.directoryURL = URL(fileURLWithPath: feishuBridgeRootPath, isDirectory: true)
-        }
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        let path = url.standardizedFileURL.path
-        do {
-            try feishuClient.validate(rootURL: URL(fileURLWithPath: path, isDirectory: true))
-            feishuBridgeRootPath = path
-            defaults.set(path, forKey: "feishuBridgeRootPath")
-            feishuFeedback = nil
-            Task { [weak self] in
-                guard let self else { return }
-                if self.sharedCoreEnabled {
-                    await self.refreshSharedDashboard()
-                } else {
-                    await self.refreshFeishuBridge()
-                }
-            }
-        } catch {
-            feishuFeedback = error.localizedDescription
-        }
-    }
-
     func setFeishuTargetAlias(_ alias: String) {
         selectedFeishuTargetAlias = alias
         defaults.set(alias, forKey: "selectedFeishuTargetAlias")
+    }
+
+    func setFeishuProfile(_ profile: String) {
+        guard sharedCoreEnabled, ["primary", "manual-only"].contains(profile) else { return }
+        feishuActionInProgress = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.feishuActionInProgress = false }
+            do {
+                try await self.sharedCore.setFeishuProfile(profile)
+                await self.refreshSharedDashboard()
+            } catch {
+                self.feishuFeedback = error.localizedDescription
+            }
+        }
+    }
+
+    func controlFeishuService(_ action: String) {
+        guard sharedCoreEnabled, ["start", "restart"].contains(action) else { return }
+        feishuActionInProgress = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.feishuActionInProgress = false }
+            do {
+                try await self.sharedCore.controlFeishuService(action)
+                await self.refreshSharedDashboard()
+            } catch {
+                self.feishuFeedback = error.localizedDescription
+            }
+        }
+    }
+
+    func configureFeishu(appID: String, appSecret: String) {
+        guard sharedCoreEnabled, !appID.isEmpty, !appSecret.isEmpty else { return }
+        feishuActionInProgress = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.feishuActionInProgress = false }
+            do {
+                try await self.sharedCore.configureFeishu(appID: appID, appSecret: appSecret)
+                self.feishuFeedback = "已有机器人凭据已写入安全存储。"
+            } catch {
+                self.feishuFeedback = error.localizedDescription
+            }
+        }
+    }
+
+    func startFeishuAuth() {
+        guard sharedCoreEnabled else { return }
+        feishuActionInProgress = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.feishuActionInProgress = false }
+            do {
+                let auth = try await self.sharedCore.startFeishuAuth()
+                self.feishuAuthQRCode = auth.qrDataURL
+                self.feishuAuthUserCode = auth.userCode
+                self.feishuFeedback = nil
+            } catch {
+                self.feishuFeedback = error.localizedDescription
+            }
+        }
+    }
+
+    func finishFeishuAuth() {
+        guard sharedCoreEnabled else { return }
+        feishuActionInProgress = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.feishuActionInProgress = false }
+            do {
+                try await self.sharedCore.finishFeishuAuth()
+                self.feishuAuthQRCode = nil
+                self.feishuAuthUserCode = nil
+                self.feishuFeedback = "飞书 OAuth 认证完成。"
+                await self.refreshSharedDashboard()
+            } catch {
+                self.feishuFeedback = error.localizedDescription
+            }
+        }
+    }
+
+    func refreshFeishuPermissions() {
+        guard sharedCoreEnabled else { return }
+        feishuActionInProgress = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.feishuActionInProgress = false }
+            do {
+                let result = try await self.sharedCore.feishuPermissions()
+                let user = result.permissions.identities.user
+                let missing = Set((user.application?.missing ?? []) + user.oauth.missing)
+                self.feishuPermissionStatus = result.permissions.verified && user.ready && missing.isEmpty
+                    ? "应用与用户权限完整"
+                    : "缺少 \(missing.count) 项用户权限"
+            } catch {
+                self.feishuPermissionStatus = error.localizedDescription
+            }
+        }
     }
 
     func refreshFeishuBridge(showProgress: Bool = true) async {
@@ -877,45 +947,8 @@ final class UsageViewModel: ObservableObject {
             await refreshSharedDashboard()
             return
         }
-        guard !feishuBridgeRootPath.isEmpty else {
-            feishuBridge = .notConfigured
-            return
-        }
-        guard !refreshingFeishuBridge else { return }
-        refreshingFeishuBridge = true
-        if showProgress { feishuActionInProgress = true }
-        defer {
-            refreshingFeishuBridge = false
-            if showProgress { feishuActionInProgress = false }
-        }
-        do {
-            let client = feishuClient
-            let root = URL(fileURLWithPath: feishuBridgeRootPath, isDirectory: true)
-            let snapshot = try await Task.detached(priority: .utility) {
-                try client.inspect(rootURL: root)
-            }.value
-            feishuBridge = snapshot
-            if snapshot.availability == .ready, snapshot.taskLinkReady {
-                let links = try client.listTaskLinks(rootURL: root)
-                feishuTaskLinks = Dictionary(uniqueKeysWithValues: links.map { ($0.taskKey, $0) })
-            } else {
-                feishuTaskLinks = [:]
-            }
-            if !snapshot.targetAliases.contains(selectedFeishuTargetAlias) {
-                setFeishuTargetAlias(snapshot.targetAliases.count == 1 ? snapshot.targetAliases[0] : "")
-            }
-            feishuFeedback = nil
-            startFeishuTaskLinkPollingIfNeeded()
-        } catch {
-            feishuBridge = FeishuBridgeSnapshot(
-                availability: .unavailable(error.localizedDescription),
-                targetAliases: [],
-                taskLinkProtocolVersion: 0,
-                taskLinkReady: false,
-                readinessBlockers: []
-            )
-            feishuFeedback = error.localizedDescription
-        }
+        feishuBridge = .notConfigured
+        feishuFeedback = "共享核心未运行，飞书桥不会单独启动。"
     }
 
     func sendFeishuTestMessage() {
@@ -926,23 +959,10 @@ final class UsageViewModel: ObservableObject {
             guard let self else { return }
             defer { self.feishuActionInProgress = false }
             do {
-                if self.sharedCoreEnabled {
-                    try await self.sharedCore.sendFeishuTest(
-                        feishuBridgeRoot: self.feishuBridgeRootPath,
-                        targetAlias: self.selectedFeishuTargetAlias
-                    )
-                    self.feishuFeedback = "测试消息已发送到“\(self.selectedFeishuTargetAlias)”。"
-                    await self.refreshSharedDashboard()
-                    return
-                }
-                let client = self.feishuClient
-                let root = URL(fileURLWithPath: self.feishuBridgeRootPath, isDirectory: true)
-                let target = self.selectedFeishuTargetAlias
-                try await Task.detached(priority: .userInitiated) {
-                    try client.sendTest(rootURL: root, targetAlias: target)
-                }.value
-                self.feishuFeedback = "测试消息已发送到“\(target)”。"
-                await self.refreshFeishuBridge()
+                guard self.sharedCoreEnabled else { throw SharedCoreError.processStopped }
+                try await self.sharedCore.sendFeishuTest(targetAlias: self.selectedFeishuTargetAlias)
+                self.feishuFeedback = "测试消息已发送到“\(self.selectedFeishuTargetAlias)”。"
+                await self.refreshSharedDashboard()
             } catch {
                 self.feishuFeedback = error.localizedDescription
             }
@@ -961,50 +981,34 @@ final class UsageViewModel: ObservableObject {
 
     func toggleFeishuTaskLink(_ task: ProjectTaskItem) {
         guard !feishuActionInProgress,
+              sharedCoreEnabled,
               feishuBridge.availability == .ready,
               !selectedFeishuTargetAlias.isEmpty,
-              !feishuBridgeRootPath.isEmpty,
               !feishuTaskLinkActions.contains(task.id)
         else { return }
         feishuTaskLinkActions.insert(task.id)
         feishuTaskLinkErrors.removeValue(forKey: task.id)
         feishuFeedback = nil
         let existing = feishuTaskLink(for: task)
-        let root = URL(fileURLWithPath: feishuBridgeRootPath, isDirectory: true)
         let projectName = projectDashboard.projects.first(where: { $0.id == task.projectID })?.project?.name ?? "未分配项目"
         let title = task.name?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? task.name! : "未命名任务"
         let target = selectedFeishuTargetAlias
-        let client = feishuClient
         Task { [weak self] in
             guard let self else { return }
             defer { self.feishuTaskLinkActions.remove(task.id) }
             do {
                 let link: FeishuTaskLinkSnapshot
-                if self.sharedCoreEnabled {
-                    if existing != nil {
-                        link = try await self.sharedCore.releaseTaskLink(
-                            feishuBridgeRoot: self.feishuBridgeRootPath,
-                            threadID: task.threadID
-                        )
-                    } else {
-                        link = try await self.sharedCore.createTaskLink(
-                            feishuBridgeRoot: self.feishuBridgeRootPath,
-                            threadID: task.threadID,
-                            title: title,
-                            projectName: projectName,
-                            targetAlias: target
-                        )
-                    }
+                if existing != nil {
+                    link = try await self.sharedCore.releaseTaskLink(
+                        threadID: task.threadID
+                    )
                 } else {
-                    link = try await Task.detached(priority: .userInitiated) {
-                        if existing != nil {
-                            return try client.releaseTaskLink(rootURL: root, threadID: task.threadID)
-                        }
-                        return try client.createTaskLink(
-                            rootURL: root, threadID: task.threadID,
-                            title: title, projectName: projectName, targetAlias: target
-                        )
-                    }.value
+                    link = try await self.sharedCore.createTaskLink(
+                        threadID: task.threadID,
+                        title: title,
+                        projectName: projectName,
+                        targetAlias: target
+                    )
                 }
                 self.feishuTaskLinks[link.taskKey] = link
                 self.feishuTaskLinkErrors.removeValue(forKey: task.id)
@@ -1018,23 +1022,13 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    private func configureSuggestedFeishuBridgeRoot(from catalog: [KSFProject]) {
-        guard feishuBridgeRootPath.isEmpty,
-              let project = catalog.first(where: { $0.name == "飞书桥" }),
-              let mapping = project.engineeringMappings.first(where: {
-                  FileManager.default.fileExists(atPath: $0.rootPath)
-              }) else { return }
-        do {
-            let root = URL(fileURLWithPath: mapping.rootPath, isDirectory: true).standardizedFileURL
-            try feishuClient.validate(rootURL: root)
-            feishuBridgeRootPath = root.path
-            defaults.set(root.path, forKey: "feishuBridgeRootPath")
-        } catch {
-            feishuFeedback = error.localizedDescription
-        }
+    var sharedCoreStatusText: String {
+        sharedCoreEnabled ? "运行中" : "不可用"
     }
 
-    func quit() {
+    func shutdown() async {
+        guard !shutdownStarted else { return }
+        shutdownStarted = true
         rateTimerTask?.cancel()
         accountTokenTimerTask?.cancel()
         activeLocalTokenTimerTask?.cancel()
@@ -1044,10 +1038,14 @@ final class UsageViewModel: ObservableObject {
         projectRefreshTask?.cancel()
         feishuTaskLinkTimerTask?.cancel()
         sharedCorePollTask?.cancel()
+        await sharedCore.stop()
+        await client?.stop()
+        await taskActivityProvider.stop()
+    }
+
+    func quit() {
         Task { [weak self] in
-            await self?.sharedCore.stop()
-            await self?.client?.stop()
-            await self?.taskActivityProvider.stop()
+            await self?.shutdown()
             await MainActor.run { NSApplication.shared.terminate(nil) }
         }
     }
@@ -1084,10 +1082,8 @@ final class UsageViewModel: ObservableObject {
         }
         do {
             let activeKSFRoot = isOnboardingComplete ? ksfRootPath : ""
-            let activeFeishuRoot = isOnboardingComplete ? feishuBridgeRootPath : ""
             let dashboard = try await sharedCore.dashboard(
                 ksfRoot: activeKSFRoot,
-                feishuBridgeRoot: activeFeishuRoot,
                 pinnedProjectIDs: pinnedProjectIDs,
                 pricingSelection: pricingSelection
             )
@@ -1105,9 +1101,6 @@ final class UsageViewModel: ObservableObject {
             taskActivity = dashboard.activity
 
             projectCatalog = dashboard.projects.catalog
-            if isOnboardingComplete {
-                configureSuggestedFeishuBridgeRoot(from: projectCatalog)
-            }
             projectUsage = Dictionary(uniqueKeysWithValues: dashboard.projects.projects.compactMap { item in
                 item.usage.map { (item.id, $0) }
             })

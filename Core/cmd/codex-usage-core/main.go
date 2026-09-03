@@ -14,6 +14,10 @@ import (
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	go func() {
+		<-ctx.Done()
+		_ = os.Stdin.Close()
+	}()
 	core := service.New()
 	defer core.Close()
 	if err := rpc.New(core, os.Stdin, os.Stdout).Serve(ctx); err != nil {

@@ -2,7 +2,7 @@
 
 A cross-platform tray instrument for KSF teams. It shows remaining Codex quota, live top-level task activity, a compact KSF project workbench, and an explicit full-control link from one Codex task to the local Feishu Bridge. macOS uses SwiftUI/AppKit; Windows uses an isolated Electron renderer; both consume the same native Go core.
 
-Prepared team preview: `0.8.0-internal.1`. The app is MIT-licensed; internal macOS builds are ad-hoc signed and not notarized, while Windows installers are internal and unsigned unless a signing identity is supplied separately.
+Prepared team preview: `0.9.0-internal.1`. The app is MIT-licensed; internal macOS builds are ad-hoc signed and not notarized, while Windows installers are internal and unsigned unless a signing identity is supplied separately.
 
 Private source repository: `git@gitlab.houzzkit.com:costudyteam/codex-usage-bar.git`.
 
@@ -23,18 +23,18 @@ Protocol source: [OpenAI Codex App Server — rate limits](https://learn.chatgpt
 - Project Token accounting starts at verified binding time, follows child agents, and splits later increments when one task changes projects. Remote or missing local logs are reported as incomplete instead of zero.
 - Project launch recognizes only an executable `start.sh` directly inside the KSF project directory. It never guesses commands from Git roots, `package.json`, Makefiles, or other project files.
 - Each project Cell has an explicit new-task shortcut. It creates the task with the configured KSF root as `cwd`, so Codex Desktop places it in the saved KSF project. Every declared Git mapping is passed only as business context. The first turn reads the KSF entry, project memory card, and minimum required context, then waits for the user's next instruction without beginning implementation.
-- Settings can discover the engineering root of the KSF project named `飞书桥`, or let the user select a compatible `feishu-bot-bridge` checkout. After an explicit task-row action, protocol v2 links that exact top-level Codex task to one authorized direct-message alias for a 24-hour inactivity lease. Feishu can observe and steer the current desktop turn, continue later turns with full local permissions, answer ordinary questions, transfer ordinary attachments and stop the current turn. Secrets stay in Codex Desktop. Credentials, real Feishu IDs, task authority, redaction, leases and audit remain owned by Feishu Bridge.
+- Feishu Bridge is shipped inside Codex Usage Bar and is never selected from an external checkout. The Go core starts and supervises the bridge; explicitly quitting Usage Bar stops the core, bridge, and their child processes together. After an explicit task-row action, protocol v2 links that exact top-level Codex task to one authorized direct-message alias for a 24-hour inactivity lease. Credentials, real Feishu IDs, task authority, redaction, leases and audit remain bridge-owned.
 
 ## Requirements
 
 - macOS 13 or newer on Apple silicon or Intel, or Windows 10/11 on x64 or arm64
 - Swift 5.8 or newer Command Line Tools for macOS source builds
-- Go 1.23+, Node.js 22+ and Ruby 3.2+ for Windows source builds
+- Go 1.23+, Node.js 20+ and Ruby 3.2+ for source builds
 - A Codex CLI build that supports `account/rateLimits/read` and `account/usage/read`
 - ChatGPT-backed Codex authentication
 - Codex desktop app for live task counts; when it is not running, the counts are `0 / 0`
 - A compatible KSF root containing `AGENTS.md` and the standard panel bridge
-- Node.js plus a compatible local `feishu-bot-bridge` checkout when Feishu messaging is needed
+- No separately installed Node.js or second bridge checkout is required by packaged applications
 
 Ruby runs the KSF-owned catalog/projection bridge on both platforms; the shared core injects a platform-correct per-user support directory. `CODEX_BIN` may point to the Codex executable when it is not discoverable from `PATH` or the standard install locations. The Windows preview does not guess a private Codex Desktop endpoint: live task ownership and direct first-turn delivery require a compatible current-user named pipe explicitly configured through `CODEX_DESKTOP_IPC_PATH`.
 
@@ -90,6 +90,6 @@ Quota and Token activity use the documented Codex App Server account endpoints. 
 
 The app stores normalized quota snapshots and per-project Token totals under `~/Library/Application Support/com.ksf.codexusagebar`. The full-Mac daily Token cache is stored at `.agents/runtime-data/codex-usage-bar/token-history-v2.json` inside the configured KSF root, is ignored by Git, and contains only dates, aggregate Token counts, composition, and observation timestamps. Live task identity, original names, state, project task arrays, first-seen task order, new-task bootstrap prompts, and returned raw thread IDs remain memory-only and are never written to UserDefaults or app logs. A bootstrap prompt is retained inside the user-created Codex task itself, as expected for its first turn. The KSF projection stores an HMAC task key, relative project card, compact route names/IDs, binding timestamps, and a receipt hash; it excludes raw task IDs, task titles, conversation content, full receipts, and governance evidence. Project Token inspection selects only session identity/parent metadata, timestamps, and `token_count` cumulative counters from local JSONL and never caches raw events. The app excludes raw Codex protocol payloads, Codex account identity, Codex authentication tokens, credential paths, and reset-credit identifiers. The team preview does not take over Codex login, redeem credits, modify account or KSF project state beyond that scoped local cache, expose a public server, automatically connect tasks, accept group control, relay secrets, or publish telemetry. Remote commands are accepted only inside an explicitly linked task and authorized direct-message identity.
 
-The app stores only the selected Feishu Bridge engineering-root path and one sanitized target alias in UserDefaults. It never reads or stores Feishu credentials, real Feishu identifiers, message history, or inbound commands. Task-link payloads travel over stdin; the bridge privately stores thread/message mappings at `~/.config/feishu-bridge/task-links-v1.json` with mode `0600`. Initial cards use the bridge outbox, and all inbound authorization, redaction, serialization, lease expiry, and wake assertions remain bridge-owned. Feishu Bridge failures are isolated from Codex and KSF functions.
+The app stores only one sanitized target alias in host settings. The bridge service and pinned Node 24 LTS runtime are package-managed; mutable configuration, credentials, queues and audit remain under `~/.config/feishu-bridge`. Task-link payloads travel over private process pipes, and all inbound authorization, redaction, serialization, lease expiry, and wake assertions remain bridge-owned. Feishu Bridge failures are isolated from Codex and KSF functions.
 
 See `docs/prd/v0.6.md` for the cross-platform core and Windows acceptance rules, `docs/prd/v0.5.md` for the Feishu-control baseline, `PRODUCT.md` for the product brief, and `DESIGN.md` for visual rules.

@@ -22,6 +22,8 @@ const state = {
   selectedHistoryDate: null,
   pricingCatalog: { defaultPlanId: 'openai:gpt-5.6-sol', plans: [] },
   pricingDraft: null,
+  feishuAuth: null,
+  feishuPermissions: '',
   timer: null,
 };
 
@@ -387,12 +389,16 @@ function renderSettingsPage() {
   const feishu = state.dashboard?.feishu || { availability: 'notConfigured', targetAliases: [] };
   return `${header('设置')}
     <section class="card settings-list">
+      <div class="setting"><div class="setting-title">运行组件</div><div class="component-status-list"><div class="component-status"><span>Shared Core</span><strong>${state.dashboard?.coreVersion ? '运行中' : '不可用'}</strong></div><div class="component-status"><span>飞书桥</span><strong>${escapeHTML(feishuComponentStatusText(feishu))}</strong></div><div class="component-status"><span>本机事件</span><strong>${escapeHTML(feishuProfileText(feishu.profile))}</strong></div></div><div class="setting-description">退出 Usage Bar 将停止 Shared Core、飞书桥及其子进程。</div></div>
       <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">KSF 知识库</div><div class="setting-description">项目目录、任务投影与上下文入口。</div></div><button class="button" type="button" data-action="choose-ksf">选择</button></div><div class="setting-path">${escapeHTML(settings.ksfRoot || '尚未选择')}</div></div>
-      <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">飞书桥</div><div class="setting-description">${escapeHTML(feishuStatusText(feishu))}</div></div><button class="button" type="button" data-action="choose-feishu">选择</button></div><div class="setting-path">${escapeHTML(settings.feishuBridgeRoot || '尚未选择')}</div></div>
+      <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">飞书桥服务</div><div class="setting-description">${escapeHTML(feishuStatusText(feishu))}</div></div></div><div class="detail-actions"><button class="button" type="button" data-action="feishu-start">启动</button><button class="button" type="button" data-action="feishu-restart">重启</button></div></div>
+      <div class="setting"><div class="setting-head"><div class="setting-copy"><label class="setting-title" for="feishu-profile">本机事件角色</label><div class="setting-description">同一机器人只允许一台设备接收入站事件。</div></div><select id="feishu-profile" data-field="feishu-profile" ${!feishu.profileValid ? 'disabled' : ''}><option value="primary" ${feishu.profile === 'primary' ? 'selected' : ''}>主设备</option><option value="manual-only" ${feishu.profile === 'manual-only' ? 'selected' : ''}>仅手动能力</option></select></div></div>
+      <div class="setting"><div class="setting-title">已有机器人配置</div><div class="feishu-credentials"><input type="text" data-field="feishu-app-id" autocomplete="off" placeholder="App ID" aria-label="飞书 App ID"><input type="password" data-field="feishu-app-secret" autocomplete="new-password" placeholder="App Secret" aria-label="飞书 App Secret"></div><div class="detail-actions"><button class="button" type="button" data-action="feishu-configure">写入安全凭据库</button><button class="button" type="button" data-action="feishu-auth-start">生成 OAuth 二维码</button></div>${state.feishuAuth?.qrDataURL ? `<div class="feishu-auth"><img src="${escapeHTML(state.feishuAuth.qrDataURL)}" alt="飞书 OAuth 二维码"><div class="setting-description">验证码 ${escapeHTML(state.feishuAuth.userCode || '—')}</div><button class="button primary" type="button" data-action="feishu-auth-finish">已扫码，完成认证</button></div>` : ''}</div>
+      <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">权限状态</div><div class="setting-description">${escapeHTML(state.feishuPermissions || '尚未检查')}</div></div><button class="button" type="button" data-action="feishu-permissions">检查</button></div></div>
       <div class="setting"><div class="setting-head"><div class="setting-copy"><label class="setting-title" for="feishu-target">飞书目标</label><div class="setting-description">仅连接已授权的单聊目标。</div></div><select id="feishu-target" data-field="feishu-target" ${!feishu.targetAliases?.length ? 'disabled' : ''}><option value="">请选择</option>${(feishu.targetAliases || []).map((alias) => `<option value="${escapeHTML(alias)}" ${alias === settings.selectedFeishuTargetAlias ? 'selected' : ''}>${escapeHTML(alias)}</option>`).join('')}</select></div>${settings.selectedFeishuTargetAlias ? '<div class="detail-actions"><button class="button" type="button" data-action="feishu-test">发送测试消息</button></div>' : ''}</div>
       <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">API 估算价格</div><div class="setting-description">${escapeHTML(selectedPricingPlan()?.displayName || 'GPT-5.6 Sol')}</div></div><button class="button" type="button" data-action="pricing">管理价格方案</button></div></div>
       <div class="setting"><div class="setting-head"><div class="setting-copy"><label class="setting-title" for="launch-login">登录时启动</label><div class="setting-description">登录 Windows 后在系统托盘中启动。</div></div><input id="launch-login" class="switch" type="checkbox" data-field="launch-login" ${settings.launchAtLogin ? 'checked' : ''}></div></div>
-      <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">版本</div><div class="setting-description">Windows 0.8.0-internal.1 · 共享核心 ${escapeHTML(state.dashboard?.coreVersion || '—')}</div></div></div></div>
+      <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">版本</div><div class="setting-description">Windows 0.9.0-internal.1 · 共享核心 ${escapeHTML(state.dashboard?.coreVersion || '—')}</div></div></div></div>
     </section>
     <div class="detail-actions"><button class="button danger" type="button" data-action="quit">退出 Usage Bar</button></div>`;
 }
@@ -464,7 +470,12 @@ function taskStateIcon(classification) {
 function playIcon() { return '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.8v10.4L13 8 4 2.8Z"/></svg>'; }
 function waitingReasonText(reason) { return ({ approval: '等待审批', planConfirmation: '等待计划确认', userInput: '等待回答', actionRequired: '等待操作' })[reason] || '等待操作'; }
 function turnStateText(value) { return ({ running: '运行中', waiting_input: '等待回答', completed: '已完成', failed: '失败', interrupted: '已停止', queued: '已排队', idle: '空闲' })[value] || value; }
-function feishuStatusText(value) { return ({ ready: '已就绪，可连接并控制任务。', stopped: '服务未运行。', dryRun: '处于演练模式，不会真实发送。', notConfigured: '尚未配置。', unavailable: value.message || '暂不可用。' })[value.availability] || value.message || '状态未知。'; }
+function feishuStatusText(value) { return ({ ready: '产品托管进程已就绪。', stopped: '产品托管进程未运行。', dryRun: '产品托管进程处于演练模式。', notConfigured: '安装包内服务不可用。', unavailable: value.message || '暂不可用。' })[value.availability] || value.message || '状态未知。'; }
+function feishuComponentStatusText(value) {
+  if (value.processRunning) return '运行中';
+  return ({ stopped: '已停止', notConfigured: '不可用', unavailable: '受限' })[value.availability] || '未运行';
+}
+function feishuProfileText(value) { return ({ primary: '主设备', 'manual-only': '仅手动能力' })[value] || '未配置'; }
 function canCreateTaskLink() { return state.dashboard?.feishu?.taskLinkReady && state.settings?.selectedFeishuTargetAlias; }
 
 async function refresh({ quiet = false } = {}) {
@@ -534,8 +545,25 @@ async function handleAction(action, element) {
   else if (action === 'task-detail') { state.selectedTaskId = element.dataset.task; state.page = 'task'; }
   else if (action === 'pin') { await api.setPinned(element.dataset.id, element.dataset.pinned !== 'true'); return refresh({ quiet: true }); }
   else if (action === 'choose-ksf') { if (await api.chooseDirectory('ksfRoot')) return refresh(); }
-  else if (action === 'choose-feishu') { if (await api.chooseDirectory('feishuBridgeRoot')) return refresh(); }
   else if (action === 'feishu-test') { await api.sendFeishuTest(state.settings.selectedFeishuTargetAlias); showToast('测试消息已发送'); }
+  else if (action === 'feishu-start') { await api.controlFeishuService('start'); showToast('飞书桥启动请求已提交'); return refresh({ quiet: true }); }
+  else if (action === 'feishu-restart') { await api.controlFeishuService('restart'); showToast('飞书桥重启请求已提交'); return refresh({ quiet: true }); }
+  else if (action === 'feishu-configure') {
+    const appId = root.querySelector('[data-field="feishu-app-id"]')?.value || '';
+    const appSecret = root.querySelector('[data-field="feishu-app-secret"]')?.value || '';
+    if (!appId.trim() || !appSecret) throw new Error('请填写已有机器人的 App ID 和 App Secret');
+    await api.configureFeishu({ appId: appId.trim(), appSecret });
+    showToast('已有机器人凭据已写入安全存储');
+  }
+  else if (action === 'feishu-auth-start') { state.feishuAuth = await api.startFeishuAuth(); }
+  else if (action === 'feishu-auth-finish') { await api.finishFeishuAuth(); state.feishuAuth = null; showToast('飞书 OAuth 认证完成'); return refresh({ quiet: true }); }
+  else if (action === 'feishu-permissions') {
+    const result = await api.readFeishuPermissions();
+    const permissions = result?.permissions || {};
+    const user = permissions.identities?.user || {};
+    const missing = new Set([...(user.application?.missing || []), ...(user.oauth?.missing || [])]);
+    state.feishuPermissions = permissions.verified && user.ready && missing.size === 0 ? '应用与用户权限完整' : `缺少 ${missing.size} 项用户权限`;
+  }
   else if (action === 'open-task') return api.openTask(element.dataset.thread);
   else if (action.startsWith('open-folder:')) { const project = findProject(action.split(':').slice(1).join(':')); return api.openPath(project.projectDirectory); }
   else if (action.startsWith('launch-project:')) return api.launchProject(action.split(':').slice(1).join(':'));
@@ -610,6 +638,10 @@ root.addEventListener('change', async (event) => {
   try {
     if (event.target.dataset.field === 'feishu-target') {
       state.settings = await api.updateSettings({ selectedFeishuTargetAlias: event.target.value });
+    }
+    if (event.target.dataset.field === 'feishu-profile') {
+      await api.setFeishuProfile(event.target.value);
+      state.dashboard = await api.dashboard();
     }
     if (event.target.dataset.field === 'launch-login') {
       state.settings = await api.updateSettings({ launchAtLogin: event.target.checked });

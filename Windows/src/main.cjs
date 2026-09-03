@@ -8,6 +8,8 @@ const path = require('node:path');
 const { CoreClient } = require('./core-client.cjs');
 const { ConfigStore } = require('./config-store.cjs');
 const { taskURL, clamp, isPathInside } = require('./security.cjs');
+const { buildTrayStatus, trayIconDataURL } = require('./tray-status.cjs');
+const { deployFeishuService, removeLegacyWindowsService } = require('./feishu-service-deployment.cjs');
 
 const APP_WIDTH = 392;
 let window = null;
@@ -15,6 +17,7 @@ let tray = null;
 let core = null;
 let store = null;
 let quitting = false;
+let shutdownStarted = false;
 let dashboardPromise = null;
 
 app.setAppUserModelId('com.ksf.codexusagebar');
@@ -71,13 +74,45 @@ function createTray() {
   const iconPath = path.join(__dirname, '..', 'assets', 'icon.png');
   const icon = nativeImage.createFromPath(iconPath).resize({ width: 20, height: 20 });
   tray = new Tray(icon);
-  tray.setToolTip('Codex Usage Bar');
+  updateTrayStatus(null);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '打开 Usage Bar', click: () => showWindow() },
     { type: 'separator' },
     { label: '退出', click: () => { quitting = true; app.quit(); } },
   ]));
   tray.on('click', () => window?.isVisible() ? window.hide() : showWindow());
+}
+
+function feishuRuntime() {
+  const arch = process.arch === 'arm64' ? 'windows-arm64' : 'windows-x64';
+  const repoRoot = path.resolve(__dirname, '..', '..');
+  const serviceRoot = app.isPackaged
+    ? path.join(process.resourcesPath, 'services', 'feishu-bridge')
+    : path.join(repoRoot, 'Services', 'FeishuBridge');
+  const bundledNode = app.isPackaged
+    ? path.join(process.resourcesPath, 'runtime', 'node', arch, 'node.exe')
+    : path.join(repoRoot, 'dist', 'runtime', 'node', arch, 'node.exe');
+  const packaged = {
+    serviceRoot,
+    node: fs.existsSync(bundledNode) ? bundledNode : (process.env.CODEX_USAGE_BAR_NODE || 'node.exe'),
+  };
+  if (!app.isPackaged) return packaged;
+  const deployed = deployFeishuService({
+    sourceServiceRoot: serviceRoot,
+    sourceNode: bundledNode,
+    dataRoot: app.getPath('userData'),
+    productVersion: app.getVersion(),
+  });
+  removeLegacyWindowsService(deployed);
+  return deployed;
+}
+
+function updateTrayStatus(snapshot) {
+  if (!tray) return;
+  const status = buildTrayStatus(snapshot);
+  const icon = nativeImage.createFromDataURL(trayIconDataURL(status)).resize({ width: 20, height: 20 });
+  if (!icon.isEmpty()) tray.setImage(icon);
+  tray.setToolTip(status.tooltip);
 }
 
 function showWindow() {
@@ -99,7 +134,6 @@ function dashboardParams() {
   const settings = store.get();
   return {
     ksfRoot: settings.ksfRoot,
-    feishuBridgeRoot: settings.feishuBridgeRoot,
     pinnedProjectIds: settings.pinnedProjectIds,
     pricingSelection: {
       planId: settings.selectedPricingPlanId,
@@ -112,9 +146,19 @@ async function readDashboard() {
   if (dashboardPromise) return dashboardPromise;
   dashboardPromise = core.request('dashboard/read', dashboardParams());
   try {
-    return await dashboardPromise;
+    const snapshot = await dashboardPromise;
+    updateTrayStatus(snapshot);
+    return snapshot;
   } finally {
     dashboardPromise = null;
+  }
+}
+
+function showWindowWhenReady() {
+  if (window.webContents.isLoadingMainFrame()) {
+    window.webContents.once('did-finish-load', showWindow);
+  } else {
+    showWindow();
   }
 }
 
@@ -144,7 +188,7 @@ function registerIPC() {
   });
   ipcMain.handle('settings:update', (_event, patch) => {
     const allowed = {};
-    for (const key of ['ksfRoot', 'feishuBridgeRoot', 'selectedFeishuTargetAlias', 'launchAtLogin', 'selectedPricingPlanId', 'customPricingPlans']) {
+    for (const key of ['ksfRoot', 'selectedFeishuTargetAlias', 'launchAtLogin', 'selectedPricingPlanId', 'customPricingPlans']) {
       if (Object.prototype.hasOwnProperty.call(patch || {}, key)) allowed[key] = patch[key];
     }
     const settings = store.update(allowed);
@@ -154,8 +198,8 @@ function registerIPC() {
     return settings;
   });
   ipcMain.handle('directory:choose', async (_event, kind) => {
-    if (!['ksfRoot', 'feishuBridgeRoot'].includes(kind)) throw new Error('不支持的目录类型');
-    const result = await dialog.showOpenDialog(window, { properties: ['openDirectory'], title: kind === 'ksfRoot' ? '选择 KSF 根目录' : '选择飞书桥工程目录' });
+    if (kind !== 'ksfRoot') throw new Error('不支持的目录类型');
+    const result = await dialog.showOpenDialog(window, { properties: ['openDirectory'], title: '选择 KSF 根目录' });
     if (result.canceled || result.filePaths.length !== 1) return null;
     return store.update({ [kind]: result.filePaths[0] });
   });
@@ -202,10 +246,16 @@ function registerIPC() {
     child.unref();
     return true;
   });
-  ipcMain.handle('feishu:task-link-create', (_event, payload) => core.request('feishu/taskLink/create', { ...payload, feishuBridgeRoot: store.get().feishuBridgeRoot }));
-  ipcMain.handle('feishu:task-link-release', (_event, payload) => core.request('feishu/taskLink/release', { ...payload, feishuBridgeRoot: store.get().feishuBridgeRoot }));
-  ipcMain.handle('feishu:task-link-interrupt', (_event, payload) => core.request('feishu/taskLink/interrupt', { ...payload, feishuBridgeRoot: store.get().feishuBridgeRoot }));
-  ipcMain.handle('feishu:test', (_event, targetAlias) => core.request('feishu/test', { feishuBridgeRoot: store.get().feishuBridgeRoot, targetAlias }));
+  ipcMain.handle('feishu:task-link-create', (_event, payload) => core.request('feishu/taskLink/create', payload));
+  ipcMain.handle('feishu:task-link-release', (_event, payload) => core.request('feishu/taskLink/release', payload));
+  ipcMain.handle('feishu:task-link-interrupt', (_event, payload) => core.request('feishu/taskLink/interrupt', payload));
+  ipcMain.handle('feishu:test', (_event, targetAlias) => core.request('feishu/test', { targetAlias }));
+  ipcMain.handle('feishu:profile-set', (_event, profile) => core.request('feishu/profile/set', { profile }));
+  ipcMain.handle('feishu:service-control', (_event, action) => core.request('feishu/service/control', { action }));
+  ipcMain.handle('feishu:auth-configure', (_event, credential) => core.request('feishu/auth/configure', credential));
+  ipcMain.handle('feishu:auth-start', () => core.request('feishu/auth/start'));
+  ipcMain.handle('feishu:auth-finish', () => core.request('feishu/auth/finish'));
+  ipcMain.handle('feishu:permissions-read', () => core.request('feishu/permissions/read'));
   ipcMain.on('window:resize', (_event, requestedHeight) => {
     if (!window || !Number.isFinite(requestedHeight)) return;
     const display = screen.getDisplayMatching(window.getBounds());
@@ -223,7 +273,7 @@ function allowedLocalPath(targetPath) {
   if (typeof targetPath !== 'string' || !path.isAbsolute(targetPath) || /[\u0000-\u001f\u007f]/.test(targetPath)) throw new Error('路径无效');
   const target = path.resolve(targetPath);
   const settings = store.get();
-  const roots = [settings.ksfRoot, settings.feishuBridgeRoot].filter(Boolean).map((value) => path.resolve(value));
+  const roots = [settings.ksfRoot].filter(Boolean).map((value) => path.resolve(value));
   if (!roots.some((root) => isPathInside(target, root))) throw new Error('路径不在已授权目录内');
   if (!fs.existsSync(target)) throw new Error('路径不存在');
   return target;
@@ -231,17 +281,34 @@ function allowedLocalPath(targetPath) {
 
 app.whenReady().then(async () => {
   store = new ConfigStore(path.join(app.getPath('userData'), 'settings.json'));
-  core = new CoreClient({ executablePath: coreExecutablePath() });
+  const runtime = feishuRuntime();
+  core = new CoreClient({
+    executablePath: coreExecutablePath(),
+    env: {
+      CODEX_USAGE_BAR_MANAGED: '1',
+      CODEX_USAGE_BAR_FEISHU_SERVICE_ROOT: runtime.serviceRoot,
+      CODEX_USAGE_BAR_NODE: runtime.node,
+      FEISHU_BRIDGE_DATA_DIR: path.join(os.homedir(), '.config', 'feishu-bridge'),
+    },
+  });
   registerIPC();
   createWindow();
   createTray();
   app.setLoginItemSettings({ openAtLogin: store.get().launchAtLogin, openAsHidden: true });
   await core.start().catch((error) => window.webContents.once('did-finish-load', () => window.webContents.send('usagebar:core-error', error.message)));
   if (!app.isPackaged || process.env.CODEX_USAGE_BAR_SHOW_ON_START === '1') {
-    window.webContents.once('did-finish-load', showWindow);
+    showWindowWhenReady();
   }
 });
 
 app.on('window-all-closed', (event) => event.preventDefault());
-app.on('before-quit', async () => { quitting = true; await core?.close(); });
+app.on('before-quit', (event) => {
+  if (shutdownStarted) return;
+  event.preventDefault();
+  quitting = true;
+  shutdownStarted = true;
+  Promise.resolve(core?.close())
+    .catch(() => {})
+    .finally(() => app.exit(0));
+});
 app.on('activate', showWindow);

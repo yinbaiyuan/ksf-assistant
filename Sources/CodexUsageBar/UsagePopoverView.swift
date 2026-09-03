@@ -18,6 +18,8 @@ struct UsagePopoverView: View {
     @State private var pricingCachedInput = ""
     @State private var pricingOutput = ""
     @State private var pricingFormError: String?
+    @State private var feishuAppID = ""
+    @State private var feishuAppSecret = ""
 
     var body: some View {
         Group {
@@ -1706,33 +1708,60 @@ struct UsagePopoverView: View {
             secondaryHeader(title: "飞书桥", backLabel: "返回设置") { page = .settings }
 
             VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 7) {
-                    Image(systemName: feishuStatusSymbol)
-                        .foregroundStyle(feishuStatusColor)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(viewModel.feishuStatusText)
-                            .font(.caption.weight(.semibold))
-                        Text(feishuStatusDetail)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if viewModel.feishuActionInProgress {
-                        ProgressView().controlSize(.small)
-                    }
+                Text("运行组件")
+                    .font(.caption.weight(.semibold))
+                componentStatusRow(name: "Shared Core", status: viewModel.sharedCoreStatusText, color: viewModel.sharedCoreStatusText == "运行中" ? .green : .red)
+                componentStatusRow(name: "飞书桥", status: feishuProcessStatusText, color: viewModel.feishuBridge.processRunning ? .green : feishuStatusColor)
+                componentStatusRow(name: "本机事件", status: feishuProfileText, color: .secondary)
+                Text(feishuStatusDetail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text("退出 Usage Bar 将停止 Shared Core、飞书桥及其子进程。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                if viewModel.feishuActionInProgress {
+                    ProgressView().controlSize(.small)
                 }
 
+                Picker("本机事件角色", selection: Binding(
+                    get: { viewModel.feishuBridge.profile.isEmpty ? "manual-only" : viewModel.feishuBridge.profile },
+                    set: { viewModel.setFeishuProfile($0) }
+                )) {
+                    Text("主设备").tag("primary")
+                    Text("仅手动能力").tag("manual-only")
+                }
+                .font(.caption)
+                .disabled(viewModel.feishuActionInProgress || !viewModel.feishuBridge.profileValid)
+
+                TextField("App ID", text: $feishuAppID)
+                    .textFieldStyle(.roundedBorder)
+                SecureField("App Secret", text: $feishuAppSecret)
+                    .textFieldStyle(.roundedBorder)
                 HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("桥工程").font(.caption)
-                        Text(viewModel.feishuBridgeRootPath.isEmpty ? "尚未选择" : viewModel.feishuBridgeRootPath)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                    Button("写入安全凭据库") {
+                        viewModel.configureFeishu(appID: feishuAppID, appSecret: feishuAppSecret)
+                        feishuAppSecret = ""
                     }
-                    Spacer()
-                    Button("选择") { viewModel.chooseFeishuBridgeRoot() }
+                    .controlSize(.small)
+                    .disabled(feishuAppID.isEmpty || feishuAppSecret.isEmpty || viewModel.feishuActionInProgress)
+                    Button("生成 OAuth 二维码") { viewModel.startFeishuAuth() }
                         .controlSize(.small)
+                }
+
+                if let dataURL = viewModel.feishuAuthQRCode,
+                   let image = feishuQRCode(dataURL) {
+                    VStack(spacing: 7) {
+                        Image(nsImage: image)
+                            .interpolation(.none)
+                            .resizable()
+                            .frame(width: 200, height: 200)
+                        Text("验证码 \(viewModel.feishuAuthUserCode ?? "—")")
+                            .font(.caption2)
+                        Button("已扫码，完成认证") { viewModel.finishFeishuAuth() }
+                            .controlSize(.small)
+                    }
+                    .frame(maxWidth: .infinity)
                 }
 
                 if !viewModel.feishuBridge.targetAliases.isEmpty {
@@ -1746,7 +1775,7 @@ struct UsagePopoverView: View {
                         }
                     }
                     .font(.caption)
-                } else if !viewModel.feishuBridgeRootPath.isEmpty {
+                } else if viewModel.feishuBridge.availability != .notConfigured {
                     Text("飞书桥尚未配置可控制任务的授权单聊别名。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -1764,11 +1793,15 @@ struct UsagePopoverView: View {
                 }
 
                 HStack(spacing: 8) {
+                    Button("启动") { viewModel.controlFeishuService("start") }
+                        .controlSize(.small)
+                    Button("重启") { viewModel.controlFeishuService("restart") }
+                        .controlSize(.small)
                     Button("刷新状态") {
                         Task { await viewModel.refreshFeishuBridge() }
                     }
                     .controlSize(.small)
-                    .disabled(viewModel.feishuActionInProgress || viewModel.feishuBridgeRootPath.isEmpty)
+                    .disabled(viewModel.feishuActionInProgress)
                     Spacer()
                     Button("发送测试消息") { viewModel.sendFeishuTestMessage() }
                         .controlSize(.small)
@@ -1778,6 +1811,15 @@ struct UsagePopoverView: View {
                                 || viewModel.feishuBridge.availability != .ready
                         )
                 }
+
+                HStack(spacing: 8) {
+                    Text(viewModel.feishuPermissionStatus)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("检查权限") { viewModel.refreshFeishuPermissions() }
+                        .controlSize(.small)
+                }
             }
             .padding(10)
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
@@ -1786,6 +1828,44 @@ struct UsagePopoverView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func feishuQRCode(_ dataURL: String) -> NSImage? {
+        guard let separator = dataURL.firstIndex(of: ","),
+              let data = Data(base64Encoded: String(dataURL[dataURL.index(after: separator)...])) else { return nil }
+        return NSImage(data: data)
+    }
+
+    private func componentStatusRow(name: String, status: String, color: Color) -> some View {
+        HStack(spacing: 7) {
+            Circle()
+                .fill(color)
+                .frame(width: 7, height: 7)
+            Text(name)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(status)
+                .font(.caption.weight(.semibold))
+        }
+    }
+
+    private var feishuProfileText: String {
+        switch viewModel.feishuBridge.profile {
+        case "primary": return "主设备"
+        case "manual-only": return "仅手动能力"
+        default: return "未配置"
+        }
+    }
+
+    private var feishuProcessStatusText: String {
+        if viewModel.feishuBridge.processRunning { return "运行中" }
+        switch viewModel.feishuBridge.availability {
+        case .stopped: return "已停止"
+        case .notConfigured: return "不可用"
+        case .unavailable: return "受限"
+        default: return "未运行"
         }
     }
 
@@ -1809,9 +1889,9 @@ struct UsagePopoverView: View {
 
     private var feishuStatusDetail: String {
         switch viewModel.feishuBridge.availability {
-        case .notConfigured: return "请选择飞书桥工程"
+        case .notConfigured: return "安装包内飞书桥服务不可用"
         case let .unavailable(message): return message
-        case .stopped: return "请先启动本机飞书桥"
+        case .stopped: return "产品托管的飞书桥尚未启动"
         case .dryRun: return "主动出站仍处于 dry-run"
         case .ready: return "单聊收发、卡片回调与 Codex 控制均已就绪"
         }

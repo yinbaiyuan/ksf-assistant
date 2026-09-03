@@ -7,7 +7,7 @@ const { sanitize } = require('../src/config-store.cjs');
 test('settings keep only bounded platform-neutral fields', () => {
   assert.deepEqual(sanitize({
     ksfRoot: ' C:\\KSF ',
-    feishuBridgeRoot: 'C:\\bridge',
+    feishuBridgeRoot: 'C:\\legacy-bridge-that-must-be-ignored',
     selectedFeishuTargetAlias: '超哥',
     pinnedProjectIds: ['a', 'a', '', 'b'],
     launchAtLogin: true,
@@ -16,7 +16,6 @@ test('settings keep only bounded platform-neutral fields', () => {
     secret: 'must-not-persist',
   }), {
     ksfRoot: 'C:\\KSF',
-    feishuBridgeRoot: 'C:\\bridge',
     selectedFeishuTargetAlias: '超哥',
     pinnedProjectIds: ['a', 'b'],
     launchAtLogin: true,

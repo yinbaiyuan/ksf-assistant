@@ -16,6 +16,32 @@ struct FeishuBridgeSnapshot: Equatable {
     let taskLinkProtocolVersion: Int
     let taskLinkReady: Bool
     let readinessBlockers: [String]
+    let profile: String
+    let profileValid: Bool
+    let inboundConnection: Bool
+    let processRunning: Bool
+
+    init(
+        availability: FeishuBridgeAvailability,
+        targetAliases: [String],
+        taskLinkProtocolVersion: Int,
+        taskLinkReady: Bool,
+        readinessBlockers: [String],
+        profile: String = "",
+        profileValid: Bool = false,
+        inboundConnection: Bool = false,
+        processRunning: Bool = false
+    ) {
+        self.availability = availability
+        self.targetAliases = targetAliases
+        self.taskLinkProtocolVersion = taskLinkProtocolVersion
+        self.taskLinkReady = taskLinkReady
+        self.readinessBlockers = readinessBlockers
+        self.profile = profile
+        self.profileValid = profileValid
+        self.inboundConnection = inboundConnection
+        self.processRunning = processRunning
+    }
 
     static let notConfigured = FeishuBridgeSnapshot(
         availability: .notConfigured,

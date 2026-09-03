@@ -24,6 +24,7 @@ test('project workset and dynamic panel height remain explicit', () => {
   assert.match(app, /item\.isPinned \|\| item\.tasks\.some/);
   assert.match(app, /root\.scrollHeight/);
   assert.doesNotMatch(css, /\.project-stack[^}]*overflow-y\s*:\s*(auto|scroll)/s);
+  assert.match(main, /isLoadingMainFrame\(\)/);
 });
 
 test('Token hierarchy matches the six-cell shared product contract', () => {
@@ -57,4 +58,24 @@ test('interactive states and reduced motion are present', () => {
   assert.match(app, /共享核心暂不可用/);
   assert.match(app, /KSF 路由/);
   assert.match(app, /data-action="task-detail"/);
+});
+
+test('explicit app exit waits for the shared core to stop the full server tree', () => {
+  assert.match(main, /event\.preventDefault\(\)/);
+  assert.match(main, /Promise\.resolve\(core\?\.close\(\)\)/);
+  assert.match(main, /finally\(\(\) => app\.exit\(0\)\)/);
+  assert.match(fs.readFileSync(path.join(root, 'src', 'core-client.cjs'), 'utf8'), /taskkill\.exe/);
+  assert.match(app, /退出 Usage Bar 将停止 Shared Core、飞书桥及其子进程/);
+  assert.doesNotMatch(main, /installWindowsService/);
+});
+
+test('Feishu settings use the packaged service and keep secrets out of persisted settings', () => {
+  assert.doesNotMatch(app, /choose-feishu|feishuBridgeRoot/);
+  assert.match(app, /生成 OAuth 二维码/);
+  assert.match(app, /data-field="feishu-profile"/);
+  assert.match(app, /运行组件/);
+  assert.match(app, /feishuComponentStatusText/);
+  assert.match(app, /value\.processRunning/);
+  assert.match(preload, /feishu:auth-configure/);
+  assert.doesNotMatch(main, /settings\.update\([^)]*appSecret/s);
 });

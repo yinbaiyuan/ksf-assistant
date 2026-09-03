@@ -155,16 +155,54 @@ func (server *Server) dispatch(ctx context.Context, method string, params json.R
 		return server.service.InterruptTaskLink(ctx, input)
 	case "feishu/test":
 		var input struct {
-			FeishuBridgeRoot string `json:"feishuBridgeRoot"`
-			TargetAlias      string `json:"targetAlias"`
+			TargetAlias string `json:"targetAlias"`
 		}
 		if err := decodeParams(params, &input); err != nil {
 			return nil, err
 		}
-		if err := server.service.SendFeishuTest(ctx, input.FeishuBridgeRoot, input.TargetAlias); err != nil {
+		if err := server.service.SendFeishuTest(ctx, input.TargetAlias); err != nil {
 			return nil, err
 		}
 		return map[string]bool{"sent": true}, nil
+	case "feishu/profile/read":
+		return server.service.FeishuProfile(ctx)
+	case "feishu/auth/configure":
+		var input struct {
+			AppID     string `json:"appId"`
+			AppSecret string `json:"appSecret"`
+		}
+		if err := decodeParams(params, &input); err != nil {
+			return nil, err
+		}
+		if err := server.service.ConfigureFeishu(ctx, input.AppID, input.AppSecret); err != nil {
+			return nil, err
+		}
+		return map[string]bool{"configured": true}, nil
+	case "feishu/auth/start":
+		return server.service.StartFeishuAuth(ctx)
+	case "feishu/auth/finish":
+		if err := server.service.FinishFeishuAuth(ctx); err != nil {
+			return nil, err
+		}
+		return map[string]bool{"authenticated": true}, nil
+	case "feishu/permissions/read":
+		return server.service.FeishuPermissions(ctx)
+	case "feishu/profile/set":
+		var input struct {
+			Profile string `json:"profile"`
+		}
+		if err := decodeParams(params, &input); err != nil {
+			return nil, err
+		}
+		return server.service.SetFeishuProfile(ctx, input.Profile)
+	case "feishu/service/control":
+		var input struct {
+			Action string `json:"action"`
+		}
+		if err := decodeParams(params, &input); err != nil {
+			return nil, err
+		}
+		return server.service.ControlFeishuService(ctx, input.Action)
 	case "shutdown":
 		server.service.Close()
 		close(server.stop)

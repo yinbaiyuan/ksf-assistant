@@ -2,7 +2,7 @@ package domain
 
 import "time"
 
-const Protocol = "codex-usage-core-v1"
+const Protocol = "codex-usage-core-v2"
 
 type RateLimitWindow struct {
 	UsedPercent        int    `json:"usedPercent"`
@@ -360,6 +360,10 @@ type FeishuTaskLink struct {
 type FeishuSnapshot struct {
 	Availability            string           `json:"availability"`
 	Message                 string           `json:"message,omitempty"`
+	Profile                 string           `json:"profile,omitempty"`
+	ProfileValid            bool             `json:"profileValid"`
+	InboundConnection       bool             `json:"inboundConnection"`
+	ProcessRunning          bool             `json:"processRunning"`
 	TargetAliases           []string         `json:"targetAliases"`
 	TaskLinkProtocolVersion int              `json:"taskLinkProtocolVersion"`
 	TaskLinkReady           bool             `json:"taskLinkReady"`

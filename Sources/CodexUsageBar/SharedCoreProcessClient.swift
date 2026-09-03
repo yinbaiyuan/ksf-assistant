@@ -32,6 +32,32 @@ struct SharedCoreCreatedTask: Decodable {
     let submission: String
 }
 
+struct SharedCoreFeishuAuth: Decodable {
+    let status: String
+    let flow: String
+    let userCode: String?
+    let qrDataURL: String
+}
+
+struct SharedCoreFeishuPermissions: Decodable {
+    struct PermissionSet: Decodable {
+        let missing: [String]
+    }
+    struct UserIdentity: Decodable {
+        let ready: Bool
+        let application: PermissionSet?
+        let oauth: PermissionSet
+    }
+    struct Identities: Decodable {
+        let user: UserIdentity
+    }
+    struct Permissions: Decodable {
+        let verified: Bool
+        let identities: Identities
+    }
+    let permissions: Permissions
+}
+
 struct SharedCoreDashboard {
     let coreVersion: String
     let usage: UsageSnapshot
@@ -85,6 +111,17 @@ actor SharedCoreProcessClient {
         let errorPipe = Pipe()
         process.executableURL = executable
         process.currentDirectoryURL = executable.deletingLastPathComponent()
+        var environment = ProcessInfo.processInfo.environment
+        if let runtime = Self.locateFeishuRuntime() {
+            environment["CODEX_USAGE_BAR_MANAGED"] = "1"
+            environment["CODEX_USAGE_BAR_FEISHU_SERVICE_ROOT"] = runtime.service.path
+            environment["FEISHU_BRIDGE_DATA_DIR"] = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".config/feishu-bridge", isDirectory: true).path
+            if let node = runtime.node {
+                environment["CODEX_USAGE_BAR_NODE"] = node.path
+            }
+        }
+        process.environment = environment
         process.standardInput = inputPipe
         process.standardOutput = outputPipe
         process.standardError = errorPipe
@@ -100,7 +137,7 @@ actor SharedCoreProcessClient {
                 "clientInfo": [
                     "name": "codex_usage_bar_macos",
                     "title": "Codex Usage Bar for macOS",
-                    "version": "0.8.0",
+                    "version": "0.9.0",
                 ],
             ])
         } catch {
@@ -111,13 +148,11 @@ actor SharedCoreProcessClient {
 
     func dashboard(
         ksfRoot: String,
-        feishuBridgeRoot: String,
         pinnedProjectIDs: Set<String>,
         pricingSelection: PricingSelection
     ) throws -> SharedCoreDashboard {
         let data = try requestData(method: "dashboard/read", params: [
             "ksfRoot": ksfRoot,
-            "feishuBridgeRoot": feishuBridgeRoot,
             "pinnedProjectIds": Array(pinnedProjectIDs).sorted(),
             "pricingSelection": Self.pricingSelectionObject(pricingSelection),
         ])
@@ -165,14 +200,12 @@ actor SharedCoreProcessClient {
     }
 
     func createTaskLink(
-        feishuBridgeRoot: String,
         threadID: String,
         title: String,
         projectName: String,
         targetAlias: String
     ) throws -> FeishuTaskLinkSnapshot {
         try decode(method: "feishu/taskLink/create", params: [
-            "feishuBridgeRoot": feishuBridgeRoot,
             "threadId": threadID,
             "title": title,
             "projectName": projectName,
@@ -180,28 +213,33 @@ actor SharedCoreProcessClient {
         ])
     }
 
-    func releaseTaskLink(feishuBridgeRoot: String, threadID: String) throws -> FeishuTaskLinkSnapshot {
+    func releaseTaskLink(threadID: String) throws -> FeishuTaskLinkSnapshot {
         try decode(method: "feishu/taskLink/release", params: [
-            "feishuBridgeRoot": feishuBridgeRoot,
             "threadId": threadID,
         ])
     }
 
-    func interruptTaskLink(feishuBridgeRoot: String, threadID: String) throws -> FeishuTaskLinkSnapshot {
+    func interruptTaskLink(threadID: String) throws -> FeishuTaskLinkSnapshot {
         try decode(method: "feishu/taskLink/interrupt", params: [
-            "feishuBridgeRoot": feishuBridgeRoot,
             "threadId": threadID,
         ])
     }
 
-    func sendFeishuTest(feishuBridgeRoot: String, targetAlias: String) throws {
+    func sendFeishuTest(targetAlias: String) throws {
         _ = try requestData(method: "feishu/test", params: [
-            "feishuBridgeRoot": feishuBridgeRoot,
             "targetAlias": targetAlias,
         ])
     }
 
     func stop() {
+        let activeProcess = process
+        let watchdog = DispatchWorkItem {
+            if activeProcess?.isRunning == true {
+                activeProcess?.terminate()
+            }
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 8, execute: watchdog)
+        defer { watchdog.cancel() }
         if process != nil {
             _ = try? requestData(method: "shutdown", params: [:])
         }
@@ -285,6 +323,57 @@ actor SharedCoreProcessClient {
                 .appendingPathComponent("dist/core/\(platformDirectory)/codex-usage-core")
         )
         return candidates.first { fileManager.isExecutableFile(atPath: $0.path) }
+    }
+
+    func setFeishuProfile(_ profile: String) throws {
+        _ = try requestData(method: "feishu/profile/set", params: ["profile": profile])
+    }
+
+    func controlFeishuService(_ action: String) throws {
+        _ = try requestData(method: "feishu/service/control", params: ["action": action])
+    }
+
+    func configureFeishu(appID: String, appSecret: String) throws {
+        _ = try requestData(method: "feishu/auth/configure", params: [
+            "appId": appID,
+            "appSecret": appSecret,
+        ])
+    }
+
+    func startFeishuAuth() throws -> SharedCoreFeishuAuth {
+        try decode(method: "feishu/auth/start", params: [:])
+    }
+
+    func finishFeishuAuth() throws {
+        _ = try requestData(method: "feishu/auth/finish", params: [:])
+    }
+
+    func feishuPermissions() throws -> SharedCoreFeishuPermissions {
+        try decode(method: "feishu/permissions/read", params: [:])
+    }
+
+    private static func locateFeishuRuntime() -> (service: URL, node: URL?)? {
+        let fileManager = FileManager.default
+#if arch(arm64)
+        let platformDirectory = "darwin-arm64"
+#else
+        let platformDirectory = "darwin-x64"
+#endif
+        var roots: [(URL, URL?)] = []
+        if let resources = Bundle.main.resourceURL {
+            roots.append((
+                resources.appendingPathComponent("services/feishu-bridge", isDirectory: true),
+                resources.appendingPathComponent("runtime/node/\(platformDirectory)/node")
+            ))
+        }
+        let current = URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
+        roots.append((current.appendingPathComponent("Services/FeishuBridge", isDirectory: true), nil))
+        return roots.compactMap { candidate -> (URL, URL?)? in
+            let (service, node) = candidate
+            let entry = service.appendingPathComponent("scripts/bridge-client.js")
+            guard fileManager.fileExists(atPath: entry.path) else { return nil }
+            return (service, node.flatMap { fileManager.isExecutableFile(atPath: $0.path) ? $0 : nil })
+        }.first
     }
 
     private static func decoder() -> JSONDecoder {
@@ -524,6 +613,10 @@ private struct LaunchActionDTO: Decodable {
 private struct FeishuDTO: Decodable {
     let availability: String
     let message: String?
+    let profile: String?
+    let profileValid: Bool?
+    let inboundConnection: Bool?
+    let processRunning: Bool?
     let targetAliases: [String]
     let taskLinkProtocolVersion: Int
     let taskLinkReady: Bool
@@ -536,7 +629,11 @@ private struct FeishuDTO: Decodable {
             targetAliases: targetAliases,
             taskLinkProtocolVersion: taskLinkProtocolVersion,
             taskLinkReady: taskLinkReady,
-            readinessBlockers: readinessBlockers
+            readinessBlockers: readinessBlockers,
+            profile: profile ?? "",
+            profileValid: profileValid ?? false,
+            inboundConnection: inboundConnection ?? false,
+            processRunning: processRunning ?? false
         )
     }
 

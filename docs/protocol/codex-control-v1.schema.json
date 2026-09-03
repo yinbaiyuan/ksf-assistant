@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://internal.ksf/codex-control-v1.schema.json",
+  "title": "codex-control-v1 request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "requestId", "operation", "taskKey", "payload"],
+  "properties": {
+    "protocol": { "const": "codex-control-v1" },
+    "requestId": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{8,128}$" },
+    "operation": {
+      "enum": ["task.create", "turn.continue", "turn.steer", "turn.interrupt", "question.answer", "attachment.attach", "card.callback"]
+    },
+    "taskKey": { "type": "string", "pattern": "^task_[a-f0-9]{16,64}$" },
+    "payload": { "type": "object", "maxProperties": 16 },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "explicit"],
+      "properties": {
+        "source": { "const": "feishu-bridge" },
+        "explicit": { "const": true }
+      }
+    }
+  }
+}

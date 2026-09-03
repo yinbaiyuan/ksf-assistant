@@ -6,7 +6,7 @@ Codex Usage Bar is a private macOS menu-bar and Windows system-tray instrument f
 
 ## Current release
 
-The prepared `0.8.0-internal.1` team preview moves cross-platform business behavior into one native Go core and adds a Windows tray host while preserving the macOS SwiftUI host. Quota, Token accounting, task classification, KSF projection, project task creation and Feishu orchestration now share one protocol and implementation.
+The prepared `0.9.0-internal.1` team preview makes Codex Usage Bar the single product and repository for the UI, shared Go core, and Feishu Bridge service. The package carries Node 24 LTS; the Go core supervises the bridge, and explicit UI exit stops the full product process tree.
 
 ## Confirmed hierarchy
 

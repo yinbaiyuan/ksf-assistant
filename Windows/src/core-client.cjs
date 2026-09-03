@@ -1,12 +1,13 @@
 'use strict';
 
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { createInterface } = require('node:readline');
 const path = require('node:path');
 
 class CoreClient {
-  constructor({ executablePath, timeoutMs = 45_000 }) {
+  constructor({ executablePath, env = {}, timeoutMs = 45_000 }) {
     this.executablePath = executablePath;
+    this.env = env;
     this.timeoutMs = timeoutMs;
     this.process = null;
     this.sequence = 0;
@@ -30,6 +31,7 @@ class CoreClient {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
       cwd: path.dirname(this.executablePath),
+      env: { ...process.env, ...this.env },
     });
     this.process = child;
     createInterface({ input: child.stdout }).on('line', (line) => this.#handleLine(line));
@@ -37,7 +39,7 @@ class CoreClient {
     child.once('exit', (_code, signal) => this.#failAll(new Error(`共享核心已停止${signal ? `（${signal}）` : ''}`)));
     child.once('error', (error) => this.#failAll(error));
     await this.request('initialize', {
-      clientInfo: { name: 'codex_usage_bar_windows', title: 'Codex Usage Bar for Windows', version: '0.8.0' },
+      clientInfo: { name: 'codex_usage_bar_windows', title: 'Codex Usage Bar for Windows', version: '0.9.0' },
     }, { skipStart: true });
   }
 
@@ -66,11 +68,45 @@ class CoreClient {
   async close() {
     const child = this.process;
     if (!child) return;
+    let shutdownTimer;
     try {
-      await this.request('shutdown', {}, { skipStart: true });
-    } catch {}
-    if (!child.killed) child.kill();
+      const timeout = new Promise((resolve) => { shutdownTimer = setTimeout(resolve, 8_000); });
+      await Promise.race([
+        this.request('shutdown', {}, { skipStart: true }).catch(() => {}),
+        timeout,
+      ]);
+    } finally {
+      clearTimeout(shutdownTimer);
+    }
+    child.stdin?.end();
+    await this.#waitForExit(child, 2_000);
+    if (child.exitCode === null && !child.killed) this.#forceStopTree(child);
     this.process = null;
+  }
+
+  async #waitForExit(child, timeoutMs) {
+    if (child.exitCode !== null) return;
+    await new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        child.removeListener('exit', done);
+        resolve();
+      };
+      const timer = setTimeout(done, timeoutMs);
+      child.once('exit', done);
+    });
+  }
+
+  #forceStopTree(child) {
+    if (process.platform === 'win32' && child.pid) {
+      spawnSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore',
+        timeout: 5_000,
+      });
+      return;
+    }
+    child.kill('SIGTERM');
   }
 
   #handleLine(line) {

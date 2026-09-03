@@ -10,6 +10,7 @@ architectures="${ARCHS:-arm64 x86_64}"
 signing_mode="${SIGNING_MODE:-adhoc}"
 
 CORE_TARGETS="darwin-arm64 darwin-x64" "$repo_root/scripts/build-core.sh"
+node "$repo_root/scripts/prepare-feishu-runtime.mjs" --platform darwin --arch arm64 --arch x64
 
 if [[ "$app_path" != "$repo_root/dist/Codex Usage Bar.app" ]]; then
     echo "Refusing to remove an unexpected app path: $app_path" >&2
@@ -48,13 +49,22 @@ cp "$icon_path" "$app_path/Contents/Resources/CodexStatusIcon.svg"
 mkdir -p "$app_path/Contents/Resources/core/darwin-arm64" "$app_path/Contents/Resources/core/darwin-x64"
 cp "$repo_root/dist/core/darwin-arm64/codex-usage-core" "$app_path/Contents/Resources/core/darwin-arm64/codex-usage-core"
 cp "$repo_root/dist/core/darwin-x64/codex-usage-core" "$app_path/Contents/Resources/core/darwin-x64/codex-usage-core"
+mkdir -p "$app_path/Contents/Resources/services" "$app_path/Contents/Resources/runtime/node/darwin-arm64" "$app_path/Contents/Resources/runtime/node/darwin-x64"
+cp -R "$repo_root/dist/services/feishu-bridge" "$app_path/Contents/Resources/services/feishu-bridge"
+cp "$repo_root/dist/runtime/node/darwin-arm64/node" "$app_path/Contents/Resources/runtime/node/darwin-arm64/node"
+cp "$repo_root/dist/runtime/node/darwin-x64/node" "$app_path/Contents/Resources/runtime/node/darwin-x64/node"
 test -s "$app_path/Contents/Resources/CodexStatusIcon.svg"
+test -x "$app_path/Contents/Resources/runtime/node/darwin-arm64/node"
+test -x "$app_path/Contents/Resources/runtime/node/darwin-x64/node"
+test -f "$app_path/Contents/Resources/services/feishu-bridge/scripts/bridge-client.js"
 /usr/bin/plutil -lint "$app_path/Contents/Info.plist"
 
 case "$signing_mode" in
     adhoc)
         /usr/bin/codesign --force --sign - --timestamp=none "$app_path/Contents/Resources/core/darwin-arm64/codex-usage-core"
         /usr/bin/codesign --force --sign - --timestamp=none "$app_path/Contents/Resources/core/darwin-x64/codex-usage-core"
+        /usr/bin/codesign --force --sign - --timestamp=none "$app_path/Contents/Resources/runtime/node/darwin-arm64/node"
+        /usr/bin/codesign --force --sign - --timestamp=none "$app_path/Contents/Resources/runtime/node/darwin-x64/node"
         /usr/bin/codesign --force --sign - --timestamp=none "$app_path"
         ;;
     identity)
@@ -62,6 +72,8 @@ case "$signing_mode" in
         [[ -n "$signing_identity" ]] || { echo "SIGNING_IDENTITY is required when SIGNING_MODE=identity." >&2; exit 1; }
         /usr/bin/codesign --force --sign "$signing_identity" --timestamp=none "$app_path/Contents/Resources/core/darwin-arm64/codex-usage-core"
         /usr/bin/codesign --force --sign "$signing_identity" --timestamp=none "$app_path/Contents/Resources/core/darwin-x64/codex-usage-core"
+        /usr/bin/codesign --force --sign "$signing_identity" --timestamp=none "$app_path/Contents/Resources/runtime/node/darwin-arm64/node"
+        /usr/bin/codesign --force --sign "$signing_identity" --timestamp=none "$app_path/Contents/Resources/runtime/node/darwin-x64/node"
         /usr/bin/codesign --force --sign "$signing_identity" --timestamp=none "$app_path"
         ;;
     *) echo "SIGNING_MODE must be 'adhoc' or 'identity'." >&2; exit 1 ;;
