@@ -14,12 +14,22 @@ enum UsageDisplayStatus: Equatable {
 
 @MainActor
 final class UsageViewModel: ObservableObject {
+    static let defaultPricingPlanID = "openai:gpt-5.6-sol"
+
     @Published private(set) var snapshot: UsageSnapshot?
     @Published private(set) var status: UsageDisplayStatus
     @Published private(set) var isRefreshing = false
     @Published private(set) var lastErrorMessage: String?
     @Published private(set) var tokenErrorMessage: String?
     @Published private(set) var localTokenHistory: [DailyUsageBucket] = []
+    @Published private(set) var tokenHistoryComparison = TokenHistoryComparison()
+    @Published private(set) var pricingCatalog = PricingCatalog(
+        defaultPlanId: UsageViewModel.defaultPricingPlanID,
+        plans: []
+    )
+    @Published private(set) var customPricingPlans: [PricingPlan] = []
+    @Published private(set) var selectedPricingPlanID = UsageViewModel.defaultPricingPlanID
+    @Published private(set) var pricingFeedback: String?
     @Published private(set) var isRefreshingLocalTokenHistory = false
     @Published private(set) var localTokenHistoryError: String?
     @Published private(set) var taskActivity = TaskActivitySnapshot(availability: .loading)
@@ -60,7 +70,10 @@ final class UsageViewModel: ObservableObject {
     private let taskOpener: CodexTaskOpening = WorkspaceCodexTaskOpener()
     private let taskSubmissionClient: CodexDesktopTaskSubmissionClient
     private let feishuClient = FeishuBridgeClient()
+    private let sharedCore = SharedCoreProcessClient()
     private var client: CodexAppServerClient?
+    private var sharedCoreEnabled = false
+    private var refreshingSharedCore = false
     private var started = false
     private var refreshingRateLimits = false
     private var refreshingTokenUsage = false
@@ -74,6 +87,7 @@ final class UsageViewModel: ObservableObject {
     private var taskActivityUpdateTask: Task<Void, Never>?
     private var projectRefreshTask: Task<Void, Never>?
     private var feishuTaskLinkTimerTask: Task<Void, Never>?
+    private var sharedCorePollTask: Task<Void, Never>?
     private var refreshingFeishuBridge = false
     private var popoverIsOpen = false
     private var refreshingProjects = false
@@ -107,6 +121,7 @@ final class UsageViewModel: ObservableObject {
             "launchAtLoginEnabled": false,
             "resetNotificationsEnabled": false,
             "onboardingComplete": false,
+            "selectedPricingPlanID": Self.defaultPricingPlanID,
         ])
         defaults.removeObject(forKey: "selectedProjectID")
         let cached = store.load()
@@ -118,6 +133,11 @@ final class UsageViewModel: ObservableObject {
             ?? AppConfiguration.suggestedKSFRoot()
         feishuBridgeRootPath = defaults.string(forKey: "feishuBridgeRootPath") ?? ""
         selectedFeishuTargetAlias = defaults.string(forKey: "selectedFeishuTargetAlias") ?? ""
+        selectedPricingPlanID = defaults.string(forKey: "selectedPricingPlanID") ?? Self.defaultPricingPlanID
+        if let data = defaults.data(forKey: "customPricingPlansV1"),
+           let plans = try? JSONDecoder().decode([PricingPlan].self, from: data) {
+            customPricingPlans = Array(plans.prefix(20))
+        }
         isOnboardingComplete = defaults.bool(forKey: "onboardingComplete")
         pinnedProjectIDs = Set(defaults.stringArray(forKey: "pinnedProjectIDs") ?? [])
         projectUsage = projectUsageStore.load()
@@ -151,6 +171,7 @@ final class UsageViewModel: ObservableObject {
         taskActivityUpdateTask?.cancel()
         projectRefreshTask?.cancel()
         feishuTaskLinkTimerTask?.cancel()
+        sharedCorePollTask?.cancel()
         if let wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
         }
@@ -252,7 +273,6 @@ final class UsageViewModel: ObservableObject {
     func start() async {
         guard !started else { return }
         started = true
-        configureClientIfNeeded()
         configureLoginItem()
         notificationPermission = await notifications.permissionState()
         let observer = WorkspaceWakeObserver { [weak self] in
@@ -266,6 +286,18 @@ final class UsageViewModel: ObservableObject {
         )
         wakeObserver = observer
 
+        do {
+            try await sharedCore.start()
+            sharedCoreEnabled = true
+            await refreshPricingCatalog()
+            await refreshSharedDashboard()
+            startSharedCoreTimers()
+            return
+        } catch {
+            sharedCoreEnabled = false
+        }
+
+        configureClientIfNeeded()
         taskActivityUpdateTask = Task { [weak self, taskActivityProvider] in
             for await update in taskActivityProvider.updates {
                 guard !Task.isCancelled else { break }
@@ -304,6 +336,10 @@ final class UsageViewModel: ObservableObject {
     }
 
     func refreshAll() async {
+        if sharedCoreEnabled {
+            await refreshSharedDashboard()
+            return
+        }
         beginRefreshActivity()
         defer { endRefreshActivity() }
         await taskActivityProvider.refresh()
@@ -323,12 +359,19 @@ final class UsageViewModel: ObservableObject {
 
     func popoverDidOpen() {
         popoverIsOpen = true
+        if sharedCoreEnabled {
+            startSharedCorePolling()
+            Task { [weak self] in await self?.refreshSharedDashboard() }
+            return
+        }
         startFeishuTaskLinkPollingIfNeeded()
         Task { [weak self] in await self?.refreshAll() }
     }
 
     func popoverDidClose() {
         popoverIsOpen = false
+        sharedCorePollTask?.cancel()
+        sharedCorePollTask = nil
         feishuTaskLinkTimerTask?.cancel()
         feishuTaskLinkTimerTask = nil
     }
@@ -355,7 +398,11 @@ final class UsageViewModel: ObservableObject {
                 self.defaults.set(true, forKey: "onboardingComplete")
                 self.isOnboardingComplete = true
                 self.onboardingError = nil
-                await self.refreshProjects()
+                if self.sharedCoreEnabled {
+                    await self.refreshSharedDashboard()
+                } else {
+                    await self.refreshProjects()
+                }
                 self.refreshLocalTokenHistory()
             } catch {
                 self.onboardingError = error.localizedDescription
@@ -369,6 +416,25 @@ final class UsageViewModel: ObservableObject {
         isRefreshingLocalTokenHistory = true
         localTokenHistoryError = nil
 
+        if sharedCoreEnabled {
+            localTokenHistoryTask = Task { [weak self] in
+                guard let self else { return }
+                do {
+                    let comparison = try await self.sharedCore.tokenHistoryComparison(
+                        dayCount: 30,
+                        pricingSelection: self.pricingSelection
+                    )
+                    self.applyTokenHistoryComparison(comparison)
+                    self.localTokenHistoryError = nil
+                } catch {
+                    self.localTokenHistoryError = error.localizedDescription
+                }
+                self.isRefreshingLocalTokenHistory = false
+                self.localTokenHistoryTask = nil
+            }
+            return
+        }
+
         let rootURL = URL(fileURLWithPath: ksfRootPath, isDirectory: true).standardizedFileURL
         localTokenHistoryTask = Task { [weak self, localTokenHistoryCache] in
             do {
@@ -378,6 +444,7 @@ final class UsageViewModel: ObservableObject {
                 // The cache is the history page's fast path. Show it before touching session
                 // logs; archived sessions can span many gigabytes even though the cache is tiny.
                 self.localTokenHistory = Array(cached.days.suffix(30))
+                self.rebuildTokenHistoryComparison()
 
                 let dayCount = Self.localHistoryRefreshDayCount(
                     cachedAt: cached.updatedAt,
@@ -394,6 +461,7 @@ final class UsageViewModel: ObservableObject {
                         observed: observed
                     )
                     self.localTokenHistory = Array(merged.days.suffix(30))
+                    self.rebuildTokenHistoryComparison()
                 }
                 self.localTokenHistoryError = nil
             } catch {
@@ -402,6 +470,97 @@ final class UsageViewModel: ObservableObject {
             self?.isRefreshingLocalTokenHistory = false
             self?.localTokenHistoryTask = nil
         }
+    }
+
+    var selectedPricingPlan: PricingPlan? {
+        pricingCatalog.plans.first { $0.id == selectedPricingPlanID }
+    }
+
+    var pricingSelection: PricingSelection {
+        PricingSelection(planId: selectedPricingPlanID, customPlans: customPricingPlans)
+    }
+
+    func selectPricingPlan(_ planID: String) {
+        guard pricingCatalog.plans.contains(where: { $0.id == planID }) else { return }
+        selectedPricingPlanID = planID
+        defaults.set(planID, forKey: "selectedPricingPlanID")
+        Task { [weak self] in await self?.repriceLoadedTokenHistory() }
+    }
+
+    func saveCustomPricingPlan(
+        id: String?,
+        provider: String,
+        model: String,
+        variant: String,
+        regularInputMicroUSDPerMillion: Int64,
+        cachedInputMicroUSDPerMillion: Int64,
+        outputMicroUSDPerMillion: Int64
+    ) async -> Bool {
+        guard sharedCoreEnabled else {
+            pricingFeedback = "共享核心不可用，暂不能保存价格方案。"
+            return false
+        }
+        let planID = id ?? "custom:\(UUID().uuidString.lowercased())"
+        let candidate = PricingPlan(
+            id: planID,
+            provider: provider,
+            model: model,
+            variant: variant.isEmpty ? nil : variant,
+            regularInputMicroUsdPerMillion: regularInputMicroUSDPerMillion,
+            cachedInputMicroUsdPerMillion: cachedInputMicroUSDPerMillion,
+            outputMicroUsdPerMillion: outputMicroUSDPerMillion
+        )
+        var proposed = customPricingPlans.filter { $0.id != planID }
+        proposed.append(candidate)
+        do {
+            let catalog = try await sharedCore.pricingCatalog(customPlans: proposed)
+            guard catalog.plans.contains(where: { $0.id == planID }),
+                  !(catalog.rejectedCustomPlanIds ?? []).contains(planID) else {
+                pricingFeedback = "价格方案无效：请检查名称、重复项和 0–1000 美元的六位小数价格。"
+                return false
+            }
+            customPricingPlans = catalog.plans.filter { !$0.builtIn }
+            pricingCatalog = catalog
+            persistPricingSettings()
+            pricingFeedback = nil
+            await repriceLoadedTokenHistory()
+            return true
+        } catch {
+            pricingFeedback = error.localizedDescription
+            return false
+        }
+    }
+
+    func deleteCustomPricingPlan(_ planID: String) {
+        customPricingPlans.removeAll { $0.id == planID }
+        if selectedPricingPlanID == planID {
+            selectedPricingPlanID = Self.defaultPricingPlanID
+        }
+        persistPricingSettings()
+        Task { [weak self] in
+            guard let self else { return }
+            await self.refreshPricingCatalog()
+            await self.repriceLoadedTokenHistory()
+        }
+    }
+
+    static func microUSDPerMillion(from value: String) -> Int64? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              trimmed.range(of: #"^\d{1,4}(?:\.\d{1,6})?$"#, options: .regularExpression) != nil,
+              let decimal = Decimal(string: trimmed, locale: Locale(identifier: "en_US_POSIX")),
+              decimal >= 0, decimal <= 1000 else { return nil }
+        var scaled = decimal * Decimal(1_000_000)
+        var rounded = Decimal()
+        NSDecimalRound(&rounded, &scaled, 0, .plain)
+        return NSDecimalNumber(decimal: rounded).int64Value
+    }
+
+    static func priceRateText(_ microUSDPerMillion: Int64) -> String {
+        var value = String(format: "%.6f", Double(microUSDPerMillion) / 1_000_000)
+        while value.contains(".") && value.last == "0" { value.removeLast() }
+        if value.last == "." { value.removeLast() }
+        return value
     }
 
     static func localHistoryRefreshDayCount(
@@ -459,6 +618,10 @@ final class UsageViewModel: ObservableObject {
         }
         defaults.set(Array(pinnedProjectIDs).sorted(), forKey: "pinnedProjectIDs")
         defaults.set(projectListOrder, forKey: "projectListOrder")
+        if sharedCoreEnabled {
+            Task { [weak self] in await self?.refreshSharedDashboard() }
+            return
+        }
         rebuildProjectDashboard()
     }
 
@@ -509,6 +672,11 @@ final class UsageViewModel: ObservableObject {
 
     private func createTask(for project: KSFProject, purpose: ProjectTaskPurpose) {
         guard !creatingProjectTaskIDs.contains(project.id) else { return }
+
+        if sharedCoreEnabled {
+            createTaskUsingSharedCore(for: project, purpose: purpose)
+            return
+        }
 
         guard isDirectory(atPath: ksfRootPath) else {
             projectTaskCreationErrors[project.id] = "KSF 根目录不存在，无法在 KSF 项目中新建任务。"
@@ -581,6 +749,44 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
+    private func createTaskUsingSharedCore(for project: KSFProject, purpose: ProjectTaskPurpose) {
+        projectTaskCreationErrors[project.id] = nil
+        creatingProjectTaskIDs.insert(project.id)
+        if purpose == .archiveProject {
+            archivingProjectTaskIDs.insert(project.id)
+        }
+        let purposeValue = purpose == .archiveProject ? "archiveProject" : "contextPreparation"
+        Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.creatingProjectTaskIDs.remove(project.id)
+                self.archivingProjectTaskIDs.remove(project.id)
+            }
+            do {
+                let created = try await self.sharedCore.createTask(
+                    projectID: project.id,
+                    ksfRoot: self.ksfRootPath,
+                    purpose: purposeValue
+                )
+                try self.taskOpener.openTask(id: created.threadId)
+                do {
+                    try await Task.sleep(nanoseconds: 700_000_000)
+                    try await self.sharedCore.submitTask(
+                        threadID: created.threadId,
+                        cwd: self.ksfRootPath,
+                        prompt: created.prompt
+                    )
+                    self.projectTaskCreationErrors[project.id] = nil
+                } catch {
+                    self.projectTaskCreationErrors[project.id] = self.taskCreationErrorMessage(for: error)
+                }
+                await self.refreshSharedDashboard()
+            } catch {
+                self.projectTaskCreationErrors[project.id] = self.taskCreationErrorMessage(for: error)
+            }
+        }
+    }
+
     func chooseKSFRoot() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -599,10 +805,18 @@ final class UsageViewModel: ObservableObject {
         localTokenHistoryTask?.cancel()
         localTokenHistoryTask = nil
         localTokenHistory = []
+        tokenHistoryComparison = TokenHistoryComparison()
         localTokenHistoryError = nil
         onboardingError = nil
         if isOnboardingComplete {
-            Task { [weak self] in await self?.refreshProjects() }
+            Task { [weak self] in
+                guard let self else { return }
+                if self.sharedCoreEnabled {
+                    await self.refreshSharedDashboard()
+                } else {
+                    await self.refreshProjects()
+                }
+            }
             refreshLocalTokenHistory()
         }
     }
@@ -640,7 +854,14 @@ final class UsageViewModel: ObservableObject {
             feishuBridgeRootPath = path
             defaults.set(path, forKey: "feishuBridgeRootPath")
             feishuFeedback = nil
-            Task { [weak self] in await self?.refreshFeishuBridge() }
+            Task { [weak self] in
+                guard let self else { return }
+                if self.sharedCoreEnabled {
+                    await self.refreshSharedDashboard()
+                } else {
+                    await self.refreshFeishuBridge()
+                }
+            }
         } catch {
             feishuFeedback = error.localizedDescription
         }
@@ -652,6 +873,10 @@ final class UsageViewModel: ObservableObject {
     }
 
     func refreshFeishuBridge(showProgress: Bool = true) async {
+        if sharedCoreEnabled {
+            await refreshSharedDashboard()
+            return
+        }
         guard !feishuBridgeRootPath.isEmpty else {
             feishuBridge = .notConfigured
             return
@@ -701,6 +926,15 @@ final class UsageViewModel: ObservableObject {
             guard let self else { return }
             defer { self.feishuActionInProgress = false }
             do {
+                if self.sharedCoreEnabled {
+                    try await self.sharedCore.sendFeishuTest(
+                        feishuBridgeRoot: self.feishuBridgeRootPath,
+                        targetAlias: self.selectedFeishuTargetAlias
+                    )
+                    self.feishuFeedback = "测试消息已发送到“\(self.selectedFeishuTargetAlias)”。"
+                    await self.refreshSharedDashboard()
+                    return
+                }
                 let client = self.feishuClient
                 let root = URL(fileURLWithPath: self.feishuBridgeRootPath, isDirectory: true)
                 let target = self.selectedFeishuTargetAlias
@@ -745,15 +979,33 @@ final class UsageViewModel: ObservableObject {
             guard let self else { return }
             defer { self.feishuTaskLinkActions.remove(task.id) }
             do {
-                let link = try await Task.detached(priority: .userInitiated) {
+                let link: FeishuTaskLinkSnapshot
+                if self.sharedCoreEnabled {
                     if existing != nil {
-                        return try client.releaseTaskLink(rootURL: root, threadID: task.threadID)
+                        link = try await self.sharedCore.releaseTaskLink(
+                            feishuBridgeRoot: self.feishuBridgeRootPath,
+                            threadID: task.threadID
+                        )
+                    } else {
+                        link = try await self.sharedCore.createTaskLink(
+                            feishuBridgeRoot: self.feishuBridgeRootPath,
+                            threadID: task.threadID,
+                            title: title,
+                            projectName: projectName,
+                            targetAlias: target
+                        )
                     }
-                    return try client.createTaskLink(
-                        rootURL: root, threadID: task.threadID,
-                        title: title, projectName: projectName, targetAlias: target
-                    )
-                }.value
+                } else {
+                    link = try await Task.detached(priority: .userInitiated) {
+                        if existing != nil {
+                            return try client.releaseTaskLink(rootURL: root, threadID: task.threadID)
+                        }
+                        return try client.createTaskLink(
+                            rootURL: root, threadID: task.threadID,
+                            title: title, projectName: projectName, targetAlias: target
+                        )
+                    }.value
+                }
                 self.feishuTaskLinks[link.taskKey] = link
                 self.feishuTaskLinkErrors.removeValue(forKey: task.id)
                 self.feishuFeedback = existing == nil ? "“\(title)”已连接到飞书。" : "“\(title)”的飞书连接已解除。"
@@ -791,7 +1043,9 @@ final class UsageViewModel: ObservableObject {
         taskActivityUpdateTask?.cancel()
         projectRefreshTask?.cancel()
         feishuTaskLinkTimerTask?.cancel()
+        sharedCorePollTask?.cancel()
         Task { [weak self] in
+            await self?.sharedCore.stop()
             await self?.client?.stop()
             await self?.taskActivityProvider.stop()
             await MainActor.run { NSApplication.shared.terminate(nil) }
@@ -817,6 +1071,190 @@ final class UsageViewModel: ObservableObject {
             defaults.set(configured, forKey: "didConfigureLaunchAtLogin")
         } else {
             loginItemState = loginItems.state()
+        }
+    }
+
+    private func refreshSharedDashboard() async {
+        guard sharedCoreEnabled, !refreshingSharedCore else { return }
+        refreshingSharedCore = true
+        beginRefreshActivity()
+        defer {
+            refreshingSharedCore = false
+            endRefreshActivity()
+        }
+        do {
+            let activeKSFRoot = isOnboardingComplete ? ksfRootPath : ""
+            let activeFeishuRoot = isOnboardingComplete ? feishuBridgeRootPath : ""
+            let dashboard = try await sharedCore.dashboard(
+                ksfRoot: activeKSFRoot,
+                feishuBridgeRoot: activeFeishuRoot,
+                pinnedProjectIDs: pinnedProjectIDs,
+                pricingSelection: pricingSelection
+            )
+            snapshot = dashboard.usage
+            store.save(dashboard.usage)
+            switch dashboard.usageStatus {
+            case "available": status = .available
+            case "stale": status = .stale
+            case "codexMissing": status = .codexMissing
+            case "unsupportedProtocol": status = .unsupportedProtocol
+            default: status = .offline
+            }
+            lastErrorMessage = dashboard.rateError
+            tokenErrorMessage = dashboard.tokenError
+            taskActivity = dashboard.activity
+
+            projectCatalog = dashboard.projects.catalog
+            if isOnboardingComplete {
+                configureSuggestedFeishuBridgeRoot(from: projectCatalog)
+            }
+            projectUsage = Dictionary(uniqueKeysWithValues: dashboard.projects.projects.compactMap { item in
+                item.usage.map { (item.id, $0) }
+            })
+            projectUsageStore.save(projectUsage)
+            projectLaunchActions = Dictionary(uniqueKeysWithValues: dashboard.projects.projects.compactMap { item in
+                item.launchAction.map { (item.id, $0) }
+            })
+            let reconciledOrder = KSFProjectListOrdering.reconcile(
+                previous: projectListOrder,
+                candidates: dashboard.projects.catalog.map(\.id)
+                    + dashboard.projects.projects.filter { !$0.isUnassigned }.map(\.id)
+            )
+            if reconciledOrder != projectListOrder {
+                projectListOrder = reconciledOrder
+                defaults.set(projectListOrder, forKey: "projectListOrder")
+            }
+            let taskOrdered = dashboard.projects.projects.map { item -> ProjectDashboardItem in
+                let order = ProjectTaskListOrdering.reconcile(
+                    previous: projectTaskOrder[item.id] ?? [],
+                    candidates: item.tasks
+                )
+                projectTaskOrder[item.id] = order
+                return item.replacingTasks(ProjectTaskListOrdering.sort(item.tasks, stableOrder: order))
+            }
+            projectDashboard = ProjectDashboardSnapshot(
+                availability: dashboard.projects.availability,
+                projects: KSFProjectListOrdering.sort(taskOrdered, stableOrder: projectListOrder),
+                catalog: dashboard.projects.catalog,
+                observedAt: dashboard.projects.observedAt,
+                message: dashboard.projects.message
+            )
+
+            feishuBridge = dashboard.feishu
+            feishuTaskLinks = Dictionary(uniqueKeysWithValues: dashboard.feishuLinks.map { ($0.taskKey, $0) })
+            if !dashboard.feishu.targetAliases.contains(selectedFeishuTargetAlias) {
+                setFeishuTargetAlias(dashboard.feishu.targetAliases.count == 1 ? dashboard.feishu.targetAliases[0] : "")
+            }
+            feishuFeedback = nil
+        } catch {
+            status = snapshot?.headlineRemainingPercent == nil ? .offline : .stale
+            lastErrorMessage = error.localizedDescription
+            if taskActivity.availability == .loading {
+                taskActivity = TaskActivitySnapshot(
+                    runningCount: 0,
+                    waitingCount: 0,
+                    observedAt: Date(),
+                    availability: .offline
+                )
+            }
+            if projectDashboard.availability == .loading {
+                projectDashboard = ProjectDashboardSnapshot(
+                    availability: .unavailable,
+                    projects: unavailablePinnedProjects(),
+                    observedAt: Date(),
+                    message: error.localizedDescription
+                )
+            }
+        }
+    }
+
+    private func refreshPricingCatalog() async {
+        guard sharedCoreEnabled else { return }
+        do {
+            let catalog = try await sharedCore.pricingCatalog(customPlans: customPricingPlans)
+            pricingCatalog = catalog
+            customPricingPlans = catalog.plans.filter { !$0.builtIn }
+            if !catalog.plans.contains(where: { $0.id == selectedPricingPlanID }) {
+                selectedPricingPlanID = catalog.defaultPlanId
+                pricingFeedback = "原价格方案已不可用，已切换为默认方案。"
+            }
+            persistPricingSettings()
+        } catch {
+            pricingFeedback = error.localizedDescription
+        }
+    }
+
+    private func repriceLoadedTokenHistory() async {
+        guard sharedCoreEnabled else { return }
+        guard !tokenHistoryComparison.days.isEmpty else {
+            await refreshSharedDashboard()
+            return
+        }
+        do {
+            let comparison = try await sharedCore.tokenHistoryComparison(
+                dayCount: 30,
+                pricingSelection: pricingSelection,
+                repriceOnly: true
+            )
+            applyTokenHistoryComparison(comparison)
+            if let todayCost = comparison.days.last(where: { $0.startDate == todayDateString })?.localCost {
+                var updated = snapshot ?? UsageSnapshot()
+                updated.localDailyCost = todayCost
+                snapshot = updated
+                store.save(updated)
+            }
+        } catch {
+            pricingFeedback = error.localizedDescription
+        }
+    }
+
+    private func applyTokenHistoryComparison(_ comparison: TokenHistoryComparison) {
+        tokenHistoryComparison = comparison
+        localTokenHistory = comparison.days.map {
+            DailyUsageBucket(
+                startDate: $0.startDate,
+                tokens: $0.localTokens,
+                breakdown: $0.localBreakdown
+            )
+        }
+        if comparison.pricingFallback, let plan = comparison.selectedPlan {
+            selectedPricingPlanID = plan.id
+            defaults.set(plan.id, forKey: "selectedPricingPlanID")
+        }
+    }
+
+    private func persistPricingSettings() {
+        defaults.set(selectedPricingPlanID, forKey: "selectedPricingPlanID")
+        if let data = try? JSONEncoder().encode(customPricingPlans) {
+            defaults.set(data, forKey: "customPricingPlansV1")
+        }
+    }
+
+    private func startSharedCoreTimers() {
+        rateTimerTask?.cancel()
+        rateTimerTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 300_000_000_000) } catch { break }
+                guard !Task.isCancelled else { break }
+                await self?.refreshSharedDashboard()
+            }
+        }
+    }
+
+    private func startSharedCorePolling() {
+        guard popoverIsOpen, sharedCorePollTask == nil else { return }
+        sharedCorePollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.popoverIsOpen else { break }
+                let hasLiveState = self.taskActivity.runningCount > 0
+                    || self.taskActivity.waitingCount > 0
+                    || self.feishuTaskLinks.values.contains { $0.linkState == "active" }
+                let interval: UInt64 = hasLiveState ? 3_000_000_000 : 15_000_000_000
+                do { try await Task.sleep(nanoseconds: interval) } catch { break }
+                guard !Task.isCancelled else { break }
+                await self.refreshSharedDashboard()
+            }
+            self?.sharedCorePollTask = nil
         }
     }
 
@@ -1235,6 +1673,7 @@ final class UsageViewModel: ObservableObject {
                 guard let self else { return }
                 if !self.localTokenHistory.isEmpty {
                     self.localTokenHistory = Array(cached.days.suffix(30))
+                    self.rebuildTokenHistoryComparison()
                 }
             } catch {
                 self?.localTokenHistoryError = error.localizedDescription
@@ -1254,6 +1693,15 @@ final class UsageViewModel: ObservableObject {
         let usage = await task.value
         localTokenReadTask = nil
         return usage
+    }
+
+    private func rebuildTokenHistoryComparison() {
+        tokenHistoryComparison = TokenHistoryComparison(
+            days: TokenHistoryComparisonSeries(
+                localDays: localTokenHistory,
+                serverDays: snapshot?.dailyUsageBuckets ?? []
+            ).days
+        )
     }
 
     private func readLocalPreviousTokenUsage() async -> DailyUsageBucket? {

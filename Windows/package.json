@@ -1,0 +1,59 @@
+{
+  "name": "codex-usage-bar-windows",
+  "version": "0.8.0-internal.1",
+  "private": true,
+  "description": "Windows system-tray host for Codex Usage Bar",
+  "author": "KSF Team",
+  "license": "MIT",
+  "main": "src/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.cjs",
+    "build:core": "node scripts/build-core.mjs",
+    "pack:win": "npm run build:core && electron-builder --win --dir --x64 && electron-builder --win --dir --arm64",
+    "dist:win": "npm run build:core && electron-builder --win nsis --x64 && electron-builder --win nsis --arm64"
+  },
+  "devDependencies": {
+    "electron": "44.1.1",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.ksf.codexusagebar",
+    "productName": "Codex Usage Bar",
+    "asar": true,
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist/core/windows-${arch}",
+        "to": "core/windows-${arch}",
+        "filter": ["codex-usage-core.exe"]
+      },
+      {
+        "from": "../LICENSE",
+        "to": "LICENSE.txt"
+      },
+      {
+        "from": "../THIRD_PARTY_NOTICES.md",
+        "to": "THIRD_PARTY_NOTICES.md"
+      }
+    ],
+    "win": {
+      "icon": "assets/app-icon.png",
+      "target": "nsis",
+      "artifactName": "Codex-Usage-Bar-${version}-Windows-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Codex Usage Bar",
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}

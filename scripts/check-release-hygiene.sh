@@ -10,7 +10,12 @@ personal_bundle="com.""lawis"
 personal_certificate="Codex Usage Bar Local ""Signing"
 
 for pattern in "$personal_user" "$absolute_user_prefix" "$personal_bundle" "$personal_certificate"; do
-    if rg -n --glob '!scripts/check-release-hygiene.sh' --fixed-strings "$pattern" Sources Resources scripts Package.swift README.md PRODUCT.md DESIGN.md AGENTS.md; then
+    if rg -n \
+        --glob '!scripts/check-release-hygiene.sh' \
+        --glob '!Windows/node_modules/**' \
+        --glob '!Windows/dist/**' \
+        --fixed-strings "$pattern" \
+        Sources Resources Core Windows docs scripts Package.swift README.md PRODUCT.md DESIGN.md AGENTS.md; then
         echo "Release hygiene failed: found forbidden machine-specific value '$pattern'." >&2
         exit 1
     fi

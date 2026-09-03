@@ -9,6 +9,15 @@ struct UsagePopoverView: View {
     @State private var showAllProjects = false
     @State private var selectedTaskID: String?
     @State private var selectedLocalHistoryDate: String?
+    @State private var editingPricingPlanID: String?
+    @State private var pricingEditorVisible = false
+    @State private var pricingProvider = ""
+    @State private var pricingModel = ""
+    @State private var pricingVariant = ""
+    @State private var pricingRegularInput = ""
+    @State private var pricingCachedInput = ""
+    @State private var pricingOutput = ""
+    @State private var pricingFormError: String?
 
     var body: some View {
         Group {
@@ -26,6 +35,8 @@ struct UsagePopoverView: View {
                     taskDetailPage
                 case .settings:
                     settingsPage
+                case .pricing:
+                    pricingPage
                 case .feishu:
                     feishuPage
                 }
@@ -41,7 +52,7 @@ struct UsagePopoverView: View {
             selectedLocalHistoryDate = nil
             if refreshOnAppear { viewModel.popoverDidOpen() }
         }
-        .onChange(of: viewModel.localTokenHistory.map(\.startDate)) { dates in
+        .onChange(of: viewModel.tokenHistoryComparison.days.map(\.startDate)) { dates in
             if selectedLocalHistoryDate == nil || !dates.contains(selectedLocalHistoryDate ?? "") {
                 selectedLocalHistoryDate = dates.last
             }
@@ -911,9 +922,9 @@ struct UsagePopoverView: View {
                 Spacer()
                 headerIconButton(
                     systemName: "chart.bar.xaxis",
-                    label: "查看本机每日 Token 历史"
+                    label: "查看每日 Token 历史"
                 ) {
-                    selectedLocalHistoryDate = viewModel.localTokenHistory.last?.startDate
+                    selectedLocalHistoryDate = nil
                     page = .tokenHistory
                     viewModel.refreshLocalTokenHistory()
                 }
@@ -946,6 +957,23 @@ struct UsagePopoverView: View {
                             isRefreshing: viewModel.isRefreshing
                         )
                     }
+                    Divider()
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("API 估算")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text(pricingPlanCompactName)
+                                .font(.caption.weight(.medium))
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 8)
+                        Text("今日 \(formattedCost(viewModel.snapshot?.localDailyCost))")
+                            .font(.system(.callout, design: .rounded, weight: .semibold))
+                            .monospacedDigit()
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
                 }
                 .padding(.vertical, 5)
                 .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
@@ -959,60 +987,111 @@ struct UsagePopoverView: View {
 
     private var tokenHistoryPage: some View {
         VStack(alignment: .leading, spacing: 9) {
-            secondaryHeader(title: "本机每日 Token", backLabel: "返回主页") { page = .home }
+            secondaryHeader(title: "每日 Token", backLabel: "返回主页") { page = .home }
+
+            HStack(spacing: 7) {
+                Picker(
+                    "API 价格方案",
+                    selection: Binding(
+                        get: { viewModel.selectedPricingPlanID },
+                        set: { viewModel.selectPricingPlan($0) }
+                    )
+                ) {
+                    ForEach(viewModel.pricingCatalog.plans) { plan in
+                        Text(plan.displayName).tag(plan.id)
+                    }
+                }
+                .labelsHidden()
+                .controlSize(.small)
+                .frame(maxWidth: .infinity)
+            }
 
             HStack(spacing: 5) {
-                Text("最近 30 个自然日 · 仅此 Mac")
+                Text("最近 30 个自然日")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                tokenHistoryLegend(color: .purple, label: "服务器")
+                tokenHistoryLegend(color: .accentColor, label: "本机")
                 if viewModel.isRefreshingLocalTokenHistory {
                     ProgressView()
                         .controlSize(.mini)
                         .scaleEffect(0.68)
                         .frame(width: 10, height: 10)
-                        .accessibilityLabel("正在刷新本机 Token 历史")
+                        .accessibilityLabel("正在刷新每日 Token 历史")
                 }
-                Spacer()
             }
 
-            if viewModel.localTokenHistory.isEmpty {
+            if viewModel.tokenHistoryComparison.days.isEmpty {
                 if viewModel.isRefreshingLocalTokenHistory {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
-                        Text("正在读取本机 Token 历史…")
+                        Text("正在读取每日 Token 历史…")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 } else {
                     emptyState(
-                        "没有本机 Token 历史",
+                        "没有每日 Token 历史",
                         detail: viewModel.localTokenHistoryError ?? "本机 Codex 会话中尚未发现可统计的 Token 记录。"
                     )
                 }
             } else {
                 localTokenHistoryDashboard(
-                    LocalTokenHistorySeries(days: viewModel.localTokenHistory)
+                    TokenHistoryComparisonSeries(days: viewModel.tokenHistoryComparison.days)
                 )
             }
 
             if let error = viewModel.localTokenHistoryError,
-               !viewModel.localTokenHistory.isEmpty {
+               !viewModel.tokenHistoryComparison.days.isEmpty {
+                compactStatus(error, color: .orange, symbol: "exclamationmark.triangle.fill")
+            }
+            if let error = viewModel.tokenHistoryComparison.serverError,
+               !viewModel.tokenHistoryComparison.days.isEmpty {
                 compactStatus(error, color: .orange, symbol: "exclamationmark.triangle.fill")
             }
         }
     }
 
-    private func localTokenHistoryDashboard(_ series: LocalTokenHistorySeries) -> some View {
+    private func tokenHistoryLegend(color: Color, label: String) -> some View {
+        HStack(spacing: 3) {
+            Circle()
+                .fill(color)
+                .frame(width: 5, height: 5)
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func localTokenHistoryDashboard(_ series: TokenHistoryComparisonSeries) -> some View {
         let selectedUsage = selectedLocalHistoryUsage(in: series)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 0) {
-                localTokenHistoryMetric("30 日总量", value: formatTokens(series.totalTokens))
+                localTokenHistoryMetric("本机 30 日", value: formatTokens(series.localTotalTokens))
                 Divider().frame(height: 28)
-                localTokenHistoryMetric("日均", value: formatTokens(series.averageTokens))
+                localTokenHistoryMetric("本机日均", value: formatTokens(series.localAverageTokens))
                 Divider().frame(height: 28)
-                localTokenHistoryMetric("活跃天", value: "\(series.activeDayCount) 天")
+                localTokenHistoryMetric("本机活跃", value: "\(series.localActiveDayCount) 天")
             }
+
+            HStack(spacing: 6) {
+                Text("30 日 API 估算")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(formattedCost(viewModel.tokenHistoryComparison.localCostSummary))
+                    .font(.system(.callout, design: .rounded, weight: .semibold))
+                    .monospacedDigit()
+                if let count = viewModel.tokenHistoryComparison.localCostSummary?.incompleteDayCount,
+                   count > 0 {
+                    Text("缺 \(count) 天")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+            }
+            .padding(.horizontal, 7)
 
             Divider()
 
@@ -1022,7 +1101,7 @@ struct UsagePopoverView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer(minLength: 8)
-                Text(selectedUsage.map { formatTokens($0.tokens) } ?? "—")
+                Text(selectedUsage.map { "本机 \(formatTokens($0.localTokens)) · \(formattedCost($0.localCost))" } ?? "—")
                     .font(.system(.title3, design: .rounded, weight: .semibold))
                     .monospacedDigit()
                     .lineLimit(1)
@@ -1044,13 +1123,46 @@ struct UsagePopoverView: View {
 
             Divider()
 
-            if let breakdown = selectedUsage?.breakdown {
+            HStack(spacing: 0) {
+                localTokenHistoryMetric(
+                    "服务器当日",
+                    value: selectedUsage?.serverTokens.map { formatTokens($0) } ?? "未同步",
+                    color: .purple
+                )
+                Divider().frame(height: 28)
+                localTokenHistoryMetric(
+                    "本机当日",
+                    value: selectedUsage.map { formatTokens($0.localTokens) } ?? "—",
+                    color: .accentColor
+                )
+                Divider().frame(height: 28)
+                localTokenHistoryMetric(
+                    "本机占比",
+                    value: selectedUsage.map { formatTokenShare(series.localShare(on: $0.startDate)) } ?? "—"
+                )
+            }
+
+            Divider()
+
+            if let breakdown = selectedUsage?.localBreakdown {
                 HStack(spacing: 0) {
-                    localTokenHistoryMetric("普通输入", value: formatTokens(breakdown.regularInputTokens))
+                    localTokenHistoryCostMetric(
+                        "普通输入",
+                        tokens: breakdown.regularInputTokens,
+                        microUSD: selectedUsage?.localCost?.regularInputMicroUsd
+                    )
                     Divider().frame(height: 28)
-                    localTokenHistoryMetric("缓存输入", value: formatTokens(breakdown.cachedInputTokens))
+                    localTokenHistoryCostMetric(
+                        "缓存输入",
+                        tokens: breakdown.cachedInputTokens,
+                        microUSD: selectedUsage?.localCost?.cachedInputMicroUsd
+                    )
                     Divider().frame(height: 28)
-                    localTokenHistoryMetric("输出", value: formatTokens(breakdown.outputTokens))
+                    localTokenHistoryCostMetric(
+                        "输出",
+                        tokens: breakdown.outputTokens,
+                        microUSD: selectedUsage?.localCost?.outputMicroUsd
+                    )
                 }
             } else {
                 Text("该日 Token 构成不可用")
@@ -1058,17 +1170,28 @@ struct UsagePopoverView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
             }
+
+            Text("按当前所选 API 价格估算，历史金额会随方案或价格变化，不代表实际账单。")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
         }
         .padding(10)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
     }
 
-    private func localTokenHistoryMetric(_ label: String, value: String) -> some View {
+    private func localTokenHistoryMetric(_ label: String, value: String, color: Color? = nil) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            HStack(spacing: 3) {
+                if let color {
+                    Circle()
+                        .fill(color)
+                        .frame(width: 5, height: 5)
+                }
+                Text(label)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
             Text(value)
                 .font(.system(.callout, design: .rounded, weight: .semibold))
                 .monospacedDigit()
@@ -1078,11 +1201,28 @@ struct UsagePopoverView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func localTokenHistoryChart(_ series: LocalTokenHistorySeries) -> some View {
+    private func localTokenHistoryCostMetric(_ label: String, tokens: Int64, microUSD: Int64?) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Text(formatTokens(tokens))
+                .font(.system(.callout, design: .rounded, weight: .semibold))
+                .monospacedDigit()
+            Text(microUSD.map(TokenCostFormatter.usd) ?? "—")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func localTokenHistoryChart(_ series: TokenHistoryComparisonSeries) -> some View {
         GeometryReader { geometry in
             let maximum = max(1, series.maximumTokens)
             let plotHeight = max(1, geometry.size.height - 7)
-            let averageFraction = CGFloat(Double(series.averageTokens) / Double(maximum))
+            let averageFraction = CGFloat(Double(series.localAverageTokens) / Double(maximum))
             let averageY = geometry.size.height - max(2, plotHeight * averageFraction)
 
             ZStack(alignment: .bottom) {
@@ -1097,20 +1237,25 @@ struct UsagePopoverView: View {
 
                 HStack(alignment: .bottom, spacing: 3) {
                     ForEach(series.days) { usage in
-                        let fraction = CGFloat(Double(max(0, usage.tokens)) / Double(maximum))
+                        let localFraction = CGFloat(Double(max(0, usage.localTokens)) / Double(maximum))
+                        let serverHeight = usage.serverTokens.map {
+                            max(2, plotHeight * CGFloat(Double(max(0, $0)) / Double(maximum)))
+                        } ?? 0
                         let isSelected = selectedLocalHistoryUsage(in: series)?.startDate == usage.startDate
                         VStack(spacing: 3) {
                             Circle()
                                 .fill(Color.accentColor)
                                 .frame(width: 4, height: 4)
                                 .opacity(isSelected ? 1 : 0)
-                            RoundedRectangle(cornerRadius: 2)
-                                .fill(
-                                    isSelected
-                                        ? Color.accentColor
-                                        : Color.accentColor.opacity(usage.tokens > 0 ? 0.28 : 0.10)
-                                )
-                                .frame(height: max(2, plotHeight * fraction))
+                            ZStack(alignment: .bottom) {
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(Color.purple.opacity(isSelected ? 0.76 : 0.26))
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: serverHeight)
+                                RoundedRectangle(cornerRadius: 1.5)
+                                    .fill(isSelected ? Color.accentColor : Color.accentColor.opacity(0.58))
+                                    .frame(width: 3, height: max(2, plotHeight * localFraction))
+                            }
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                     }
@@ -1133,16 +1278,16 @@ struct UsagePopoverView: View {
         }
         .frame(height: 108)
         .animation(.easeOut(duration: 0.16), value: selectedLocalHistoryDate)
-        .help("点击或拖动查看每天的本机 Token 用量")
+        .help("点击或拖动查看每天的服务器与本机 Token 用量")
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("最近 30 日本机 Token 趋势")
+        .accessibilityLabel("最近 30 日服务器与本机 Token 趋势")
         .accessibilityValue(localTokenHistoryChartAccessibilityValue(series))
         .accessibilityAdjustableAction { direction in
             adjustLocalHistorySelection(direction, in: series)
         }
     }
 
-    private func selectedLocalHistoryUsage(in series: LocalTokenHistorySeries) -> DailyUsageBucket? {
+    private func selectedLocalHistoryUsage(in series: TokenHistoryComparisonSeries) -> TokenHistoryComparisonDay? {
         if let selectedLocalHistoryDate,
            let selected = series.usage(on: selectedLocalHistoryDate) {
             return selected
@@ -1153,7 +1298,7 @@ struct UsagePopoverView: View {
     private func selectLocalHistoryDay(
         at xPosition: CGFloat,
         width: CGFloat,
-        days: [DailyUsageBucket]
+        days: [TokenHistoryComparisonDay]
     ) {
         guard width > 0, !days.isEmpty else { return }
         let boundedX = min(max(0, xPosition), max(0, width - 0.001))
@@ -1163,7 +1308,7 @@ struct UsagePopoverView: View {
 
     private func adjustLocalHistorySelection(
         _ direction: AccessibilityAdjustmentDirection,
-        in series: LocalTokenHistorySeries
+        in series: TokenHistoryComparisonSeries
     ) {
         guard !series.days.isEmpty else { return }
         let currentDate = selectedLocalHistoryUsage(in: series)?.startDate
@@ -1181,9 +1326,16 @@ struct UsagePopoverView: View {
         selectedLocalHistoryDate = series.days[nextIndex].startDate
     }
 
-    private func localTokenHistoryChartAccessibilityValue(_ series: LocalTokenHistorySeries) -> String {
+    private func localTokenHistoryChartAccessibilityValue(_ series: TokenHistoryComparisonSeries) -> String {
         guard let usage = selectedLocalHistoryUsage(in: series) else { return "没有数据" }
-        return "\(localTokenHistoryDateLabel(usage.startDate))，\(formatTokens(usage.tokens)) Token"
+        let server = usage.serverTokens.map { formatTokens($0) } ?? "未同步"
+        let share = formatTokenShare(series.localShare(on: usage.startDate))
+        return "\(localTokenHistoryDateLabel(usage.startDate))，服务器 \(server)，本机 \(formatTokens(usage.localTokens))，本机占比 \(share)"
+    }
+
+    private func formatTokenShare(_ value: Double?) -> String {
+        guard let value, value.isFinite else { return "—" }
+        return String(format: "%.1f%%", value * 100)
     }
 
     private var projectLibraryPage: some View {
@@ -1303,6 +1455,27 @@ struct UsagePopoverView: View {
                 )
                 Divider()
                 Button {
+                    page = .pricing
+                } label: {
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("API 估算价格").font(.caption)
+                            Text(pricingPlanCompactName)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.vertical, 7)
+                Divider()
+                Button {
                     page = .feishu
                 } label: {
                     HStack(spacing: 8) {
@@ -1336,6 +1509,196 @@ struct UsagePopoverView: View {
             .padding(.horizontal, 10)
             .accessibilityLabel("退出 Codex Usage Bar")
         }
+    }
+
+    private var pricingPage: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            secondaryHeader(title: "API 估算价格", backLabel: "返回设置") { page = .settings }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 9) {
+                    Text("当前方案")
+                        .font(.caption.weight(.semibold))
+                    Picker(
+                        "当前方案",
+                        selection: Binding(
+                            get: { viewModel.selectedPricingPlanID },
+                            set: { viewModel.selectPricingPlan($0) }
+                        )
+                    ) {
+                        ForEach(viewModel.pricingCatalog.plans) { plan in
+                            Text(plan.displayName).tag(plan.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
+
+                    Text("内置方案 · 美元 / 百万 Token")
+                        .font(.caption.weight(.semibold))
+                    VStack(spacing: 0) {
+                        ForEach(viewModel.pricingCatalog.plans.filter(\.builtIn)) { plan in
+                            pricingPlanRow(plan, editable: false)
+                            if plan.id != viewModel.pricingCatalog.plans.filter(\.builtIn).last?.id {
+                                Divider()
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 9)
+                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+
+                    HStack {
+                        Text("自定义方案")
+                            .font(.caption.weight(.semibold))
+                        Spacer()
+                        Button("添加") { beginPricingDraft(nil) }
+                            .controlSize(.small)
+                            .disabled(viewModel.customPricingPlans.count >= 20)
+                    }
+
+                    if viewModel.customPricingPlans.isEmpty && !pricingEditorVisible {
+                        Text("最多保存 20 个设备本地方案。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        VStack(spacing: 0) {
+                            ForEach(viewModel.customPricingPlans) { plan in
+                                pricingPlanRow(plan, editable: true)
+                                if plan.id != viewModel.customPricingPlans.last?.id { Divider() }
+                            }
+                        }
+                        .padding(.horizontal, 9)
+                        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+                    }
+
+                    if pricingEditorVisible {
+                        pricingEditor
+                    }
+
+                    if let feedback = pricingFormError ?? viewModel.pricingFeedback {
+                        compactStatus(feedback, color: .orange, symbol: "exclamationmark.triangle.fill")
+                    }
+
+                    HStack(spacing: 10) {
+                        Link("OpenAI 官方价格", destination: URL(string: "https://developers.openai.com/api/docs/models/compare")!)
+                        Link("DeepSeek 官方价格", destination: URL(string: "https://api-docs.deepseek.com/quick_start/pricing/")!)
+                    }
+                    .font(.caption2)
+
+                    Text("按当前所选 API 价格估算，历史金额会随方案或价格变化，不代表实际账单。")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.trailing, 2)
+            }
+            .frame(maxHeight: 610)
+        }
+    }
+
+    private func pricingPlanRow(_ plan: PricingPlan, editable: Bool) -> some View {
+        HStack(alignment: .center, spacing: 7) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(plan.displayName)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                Text(pricingRateSummary(plan))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            if editable {
+                Button("编辑") { beginPricingDraft(plan) }
+                    .controlSize(.mini)
+                Button(role: .destructive) { viewModel.deleteCustomPricingPlan(plan.id) } label: {
+                    Image(systemName: "trash")
+                }
+                .controlSize(.mini)
+                .accessibilityLabel("删除 \(plan.displayName)")
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
+    private var pricingEditor: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(editingPricingPlanID == nil ? "新建价格方案" : "编辑价格方案")
+                .font(.caption.weight(.semibold))
+            pricingTextField("厂商", text: $pricingProvider)
+            pricingTextField("模型", text: $pricingModel)
+            pricingTextField("方案名称（可选）", text: $pricingVariant)
+            HStack(spacing: 6) {
+                pricingTextField("普通输入", text: $pricingRegularInput)
+                pricingTextField("缓存输入", text: $pricingCachedInput)
+                pricingTextField("输出", text: $pricingOutput)
+            }
+            HStack {
+                Button("取消") { pricingEditorVisible = false }
+                    .controlSize(.small)
+                Spacer()
+                Button("保存") { savePricingDraft() }
+                    .controlSize(.small)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(9)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func pricingTextField(_ title: String, text: Binding<String>) -> some View {
+        TextField(title, text: text)
+            .textFieldStyle(.roundedBorder)
+            .font(.caption)
+            .accessibilityLabel(title)
+    }
+
+    private func beginPricingDraft(_ plan: PricingPlan?) {
+        editingPricingPlanID = plan?.id
+        pricingProvider = plan?.provider ?? ""
+        pricingModel = plan?.model ?? ""
+        pricingVariant = plan?.variant ?? ""
+        pricingRegularInput = plan.map { UsageViewModel.priceRateText($0.regularInputMicroUsdPerMillion) } ?? ""
+        pricingCachedInput = plan.map { UsageViewModel.priceRateText($0.cachedInputMicroUsdPerMillion) } ?? ""
+        pricingOutput = plan.map { UsageViewModel.priceRateText($0.outputMicroUsdPerMillion) } ?? ""
+        pricingFormError = nil
+        pricingEditorVisible = true
+    }
+
+    private func savePricingDraft() {
+        guard let regular = UsageViewModel.microUSDPerMillion(from: pricingRegularInput),
+              let cached = UsageViewModel.microUSDPerMillion(from: pricingCachedInput),
+              let output = UsageViewModel.microUSDPerMillion(from: pricingOutput) else {
+            pricingFormError = "价格需为 0–1000 美元，最多六位小数。"
+            return
+        }
+        Task {
+            let saved = await viewModel.saveCustomPricingPlan(
+                id: editingPricingPlanID,
+                provider: pricingProvider,
+                model: pricingModel,
+                variant: pricingVariant,
+                regularInputMicroUSDPerMillion: regular,
+                cachedInputMicroUSDPerMillion: cached,
+                outputMicroUSDPerMillion: output
+            )
+            if saved { pricingEditorVisible = false }
+        }
+    }
+
+    private func pricingRateSummary(_ plan: PricingPlan) -> String {
+        "入 \(UsageViewModel.priceRateText(plan.regularInputMicroUsdPerMillion)) · 缓 \(UsageViewModel.priceRateText(plan.cachedInputMicroUsdPerMillion)) · 出 \(UsageViewModel.priceRateText(plan.outputMicroUsdPerMillion))"
+    }
+
+    private var pricingPlanCompactName: String {
+        guard let plan = viewModel.selectedPricingPlan else { return "GPT-5.6 Sol" }
+        return [plan.model, plan.variant].compactMap { value in
+            guard let value, !value.isEmpty else { return nil }
+            return value
+        }.joined(separator: " · ")
+    }
+
+    private func formattedCost(_ estimate: TokenCostEstimate?) -> String {
+        guard let estimate, estimate.status != .unavailable else { return "—" }
+        return TokenCostFormatter.usd(microUSD: estimate.totalMicroUsd)
     }
 
     private var feishuPage: some View {
@@ -1862,6 +2225,7 @@ struct UsagePopoverView: View {
         case projectLibrary
         case taskDetail
         case settings
+        case pricing
         case feishu
     }
 }

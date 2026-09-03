@@ -23,6 +23,56 @@ final class LocalTokenUsageReaderTests: XCTestCase {
         XCTAssertEqual(series.usage(on: "2026-08-29")?.tokens, 80)
     }
 
+    func testHistoryComparisonAlignsServerUsageAndCalculatesUnclampedShare() {
+        let series = TokenHistoryComparisonSeries(days: [
+            TokenHistoryComparisonDay(
+                startDate: "2026-09-01",
+                serverTokens: 200,
+                localTokens: 50,
+                localBreakdown: TokenUsageBreakdown(
+                    regularInputTokens: 10,
+                    cachedInputTokens: 30,
+                    outputTokens: 10
+                )
+            ),
+            TokenHistoryComparisonDay(
+                startDate: "2026-09-02",
+                serverTokens: 40,
+                localTokens: 80
+            ),
+            TokenHistoryComparisonDay(
+                startDate: "2026-09-03",
+                localTokens: 10
+            ),
+        ])
+
+        XCTAssertEqual(series.localTotalTokens, 140)
+        XCTAssertEqual(series.localAverageTokens, 46)
+        XCTAssertEqual(series.localActiveDayCount, 3)
+        XCTAssertEqual(series.maximumTokens, 200)
+        XCTAssertEqual(series.localShare(on: "2026-09-01"), 0.25)
+        XCTAssertEqual(series.localShare(on: "2026-09-02"), 2.0)
+        XCTAssertNil(series.localShare(on: "2026-09-03"))
+        XCTAssertEqual(series.usage(on: "2026-09-01")?.localBreakdown?.cachedInputTokens, 30)
+    }
+
+    func testHistoryComparisonFallbackBuildsThirtyAlignedDays() {
+        let calendar = shanghaiCalendar()
+        let endDate = calendar.date(from: DateComponents(year: 2026, month: 9, day: 3))!
+        let series = TokenHistoryComparisonSeries(
+            localDays: [DailyUsageBucket(startDate: "2026-09-03", tokens: 20)],
+            serverDays: [DailyUsageBucket(startDate: "2026-09-02", tokens: 100)],
+            through: endDate,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(series.days.count, 30)
+        XCTAssertEqual(series.usage(on: "2026-09-02")?.serverTokens, 100)
+        XCTAssertEqual(series.usage(on: "2026-09-02")?.localTokens, 0)
+        XCTAssertEqual(series.usage(on: "2026-09-03")?.localTokens, 20)
+        XCTAssertNil(series.usage(on: "2026-09-03")?.serverTokens)
+    }
+
     func testTodayUsageSumsPositiveDeltasAcrossLocalSessions() throws {
         let fileManager = FileManager.default
         let root = fileManager.temporaryDirectory
@@ -147,6 +197,34 @@ final class LocalTokenUsageReaderTests: XCTestCase {
         XCTAssertEqual(usage?.breakdown?.totalTokens, usage?.tokens)
     }
 
+    func testTodayUsageRestartsBreakdownAtCounterReset() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("codex-usage-bar-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let calendar = shanghaiCalendar()
+        let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 3, hour: 12))!
+        try writeSession(
+            at: root.appendingPathComponent("reset.jsonl"),
+            lines: [
+                tokenLine(timestamp: "2026-09-03T01:00:00Z", total: 100, input: 80, cachedInput: 30, output: 20),
+                tokenLine(timestamp: "2026-09-03T02:00:00Z", total: 40, input: 32, cachedInput: 12, output: 8),
+                tokenLine(timestamp: "2026-09-03T03:00:00Z", total: 60, input: 48, cachedInput: 18, output: 12),
+            ],
+            modifiedAt: now
+        )
+
+        let usage = LocalTokenUsageReader(sessionRoot: root, fileManager: fileManager)
+            .readToday(now: now, calendar: calendar)
+
+        XCTAssertEqual(usage?.tokens, 160)
+        XCTAssertEqual(usage?.breakdown?.regularInputTokens, 80)
+        XCTAssertEqual(usage?.breakdown?.cachedInputTokens, 48)
+        XCTAssertEqual(usage?.breakdown?.outputTokens, 32)
+    }
+
     func testRequestedDayUsesThatLocalCalendarBoundary() throws {
         let fileManager = FileManager.default
         let root = fileManager.temporaryDirectory
@@ -261,6 +339,94 @@ final class LocalTokenUsageReaderTests: XCTestCase {
         XCTAssertEqual(history?.last?.breakdown?.totalTokens, 40)
     }
 
+    func testMirroredSubagentLineageIsCountedOnce() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("codex-usage-bar-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let calendar = shanghaiCalendar()
+        let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 3, hour: 12))!
+        let rootID = "12345678-1234-1234-1234-123456789abc"
+        let childID = "22345678-1234-1234-1234-123456789abc"
+        let independentID = "32345678-1234-1234-1234-123456789abc"
+        try writeSession(
+            at: root.appendingPathComponent("rollout-\(rootID).jsonl"),
+            lines: [
+                sessionMetaLine(id: rootID),
+                tokenLine(timestamp: "2026-09-03T01:00:00Z", total: 100, input: 80, cachedInput: 30, output: 20),
+                tokenLine(timestamp: "2026-09-03T02:00:00Z", total: 200, input: 160, cachedInput: 60, output: 40),
+                tokenLine(timestamp: "2026-09-03T03:00:00Z", total: 300, input: 240, cachedInput: 90, output: 60),
+            ],
+            modifiedAt: now
+        )
+        try writeSession(
+            at: root.appendingPathComponent("rollout-\(childID).jsonl"),
+            lines: [
+                sessionMetaLine(id: childID, parentID: rootID),
+                tokenLine(timestamp: "2026-09-03T02:00:01Z", total: 200, input: 160, cachedInput: 60, output: 40),
+                tokenLine(timestamp: "2026-09-03T03:00:01Z", total: 300, input: 240, cachedInput: 90, output: 60),
+                tokenLine(timestamp: "2026-09-03T04:00:00Z", total: 350, input: 280, cachedInput: 105, output: 70),
+            ],
+            modifiedAt: now
+        )
+        try writeSession(
+            at: root.appendingPathComponent("rollout-\(independentID).jsonl"),
+            lines: [
+                sessionMetaLine(id: independentID),
+                tokenLine(timestamp: "2026-09-03T05:00:00Z", total: 50, input: 40, cachedInput: 15, output: 10),
+            ],
+            modifiedAt: now
+        )
+
+        let usage = LocalTokenUsageReader(sessionRoot: root, fileManager: fileManager)
+            .readToday(now: now, calendar: calendar)
+
+        XCTAssertEqual(usage?.tokens, 400)
+        XCTAssertEqual(usage?.breakdown?.regularInputTokens, 200)
+        XCTAssertEqual(usage?.breakdown?.cachedInputTokens, 120)
+        XCTAssertEqual(usage?.breakdown?.outputTokens, 80)
+    }
+
+    func testMirroredLineageKeepsThePreviousDayBaseline() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("codex-usage-bar-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let calendar = shanghaiCalendar()
+        let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 3, hour: 12))!
+        let rootID = "42345678-1234-1234-1234-123456789abc"
+        let childID = "52345678-1234-1234-1234-123456789abc"
+        try writeSession(
+            at: root.appendingPathComponent("rollout-\(rootID).jsonl"),
+            lines: [
+                sessionMetaLine(id: rootID),
+                tokenLine(timestamp: "2026-09-02T15:00:00Z", total: 100, input: 80, cachedInput: 30, output: 20),
+                tokenLine(timestamp: "2026-09-03T01:00:00Z", total: 150, input: 120, cachedInput: 45, output: 30),
+            ],
+            modifiedAt: now
+        )
+        try writeSession(
+            at: root.appendingPathComponent("rollout-\(childID).jsonl"),
+            lines: [
+                sessionMetaLine(id: childID, parentID: rootID),
+                tokenLine(timestamp: "2026-09-02T15:00:01Z", total: 100, input: 80, cachedInput: 30, output: 20),
+                tokenLine(timestamp: "2026-09-03T01:00:01Z", total: 150, input: 120, cachedInput: 45, output: 30),
+                tokenLine(timestamp: "2026-09-03T02:00:00Z", total: 180, input: 144, cachedInput: 54, output: 36),
+            ],
+            modifiedAt: now
+        )
+
+        let usage = LocalTokenUsageReader(sessionRoot: root, fileManager: fileManager)
+            .readToday(now: now, calendar: calendar)
+
+        XCTAssertEqual(usage?.tokens, 80)
+        XCTAssertEqual(usage?.breakdown?.totalTokens, 80)
+    }
+
     func testMissingSessionRootReturnsUnavailable() {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("missing-\(UUID().uuidString)")
@@ -296,6 +462,13 @@ final class LocalTokenUsageReaderTests: XCTestCase {
             breakdown = ""
         }
         return #"{"timestamp":"\#(timestamp)","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":\#(total)\#(breakdown)}}}}"#
+    }
+
+    private func sessionMetaLine(id: String, parentID: String? = nil) -> String {
+        guard let parentID else {
+            return #"{"type":"session_meta","payload":{"id":"\#(id)","source":"vscode"}}"#
+        }
+        return #"{"type":"session_meta","payload":{"id":"\#(id)","parent_thread_id":"\#(parentID)","forked_from_id":"\#(parentID)","source":{"subagent":{"thread_spawn":{"parent_thread_id":"\#(parentID)"}}}}}"#
     }
 
     private func writeSession(at url: URL, lines: [String], modifiedAt: Date) throws {

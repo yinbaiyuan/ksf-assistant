@@ -1,8 +1,8 @@
 # Codex Usage Bar
 
-A native macOS menu bar app for KSF teams. It shows remaining Codex quota, live top-level task activity, a compact KSF project workbench, and an explicit full-control link from one Codex task to the local Feishu Bridge.
+A cross-platform tray instrument for KSF teams. It shows remaining Codex quota, live top-level task activity, a compact KSF project workbench, and an explicit full-control link from one Codex task to the local Feishu Bridge. macOS uses SwiftUI/AppKit; Windows uses an isolated Electron renderer; both consume the same native Go core.
 
-Prepared team preview: `0.7.0-internal.1`. The app is MIT-licensed; internal binary builds are ad-hoc signed and not notarized.
+Prepared team preview: `0.8.0-internal.1`. The app is MIT-licensed; internal macOS builds are ad-hoc signed and not notarized, while Windows installers are internal and unsigned unless a signing identity is supplied separately.
 
 Private source repository: `git@gitlab.houzzkit.com:costudyteam/codex-usage-bar.git`.
 
@@ -12,7 +12,8 @@ Protocol source: [OpenAI Codex App Server — rate limits](https://learn.chatgpt
 
 - The menu bar percentage is remaining capacity for the general `codex` bucket: `100 - usedPercent`, using the most constrained general window.
 - The popover intentionally omits model-specific buckets; they never change the headline value.
-- Token activity is historical activity, not an exact remaining-token balance. The account metric shows the latest server-published daily bucket as today, yesterday, or an older date; this Mac's previous- and current-day totals plus today's ordinary-input, cached-input, and output split are derived independently from active and archived local Codex session counter events. The Token heading also opens a 30-day local trend backed by a monotonic daily cache under the configured KSF root. Account and local scopes are not assumed comparable.
+- Token activity is historical activity, not an exact remaining-token balance. The account metric shows the latest server-published daily bucket as today, yesterday, or an older date; this Mac's previous- and current-day totals plus today's ordinary-input, cached-input, and output split are derived independently from active and archived local Codex session counter events. Parent and sub-agent logs in the same task lineage are merged before natural-day deltas are calculated, so a task-wide cumulative counter mirrored across agents is counted once. The Token heading opens a 30-day overlay trend: server-published account totals form the base bars and this device's monotonic local history forms the foreground bars. Selecting a date shows both exact totals and the direct, unclamped local/server percentage; absent server dates remain `未同步` because server publication can lag.
+- Local text Token can also be valued against a selected API pricing plan. The shared Go core ships seven read-only OpenAI API and DeepSeek API presets, validates up to 20 device-local custom plans, and calculates integer micro-dollar estimates for ordinary input, cached input, output, each visible day, and the known 30-day subtotal. The default is `OpenAI API · GPT-5.6 Sol`. Prices are versioned with the application and are not fetched at runtime; every amount is explicitly an API estimate rather than a bill.
 - While at least one top-level task is confirmed running, this Mac's current-day Token total refreshes immediately and then every 10 seconds. The local-only timer stops when running reaches zero or task state becomes unavailable; popover-open, wake, and the existing 30-minute account refresh remain unchanged.
 - The app reuses Codex's managed login through `codex app-server`; it never reads or copies credential files.
 - The menu bar renders `Codex 图标 N% N.NM [play.fill]N [person.fill.questionmark]N`. `N.NM` is this Mac's current-date usage and always stays in one-decimal million units, including below one million and above one billion; running and waiting counts remain present, including zero.
@@ -26,13 +27,16 @@ Protocol source: [OpenAI Codex App Server — rate limits](https://learn.chatgpt
 
 ## Requirements
 
-- macOS 13 or newer on Apple silicon
-- Swift 5.8 or newer Command Line Tools
+- macOS 13 or newer on Apple silicon or Intel, or Windows 10/11 on x64 or arm64
+- Swift 5.8 or newer Command Line Tools for macOS source builds
+- Go 1.23+, Node.js 22+ and Ruby 3.2+ for Windows source builds
 - A Codex CLI build that supports `account/rateLimits/read` and `account/usage/read`
 - ChatGPT-backed Codex authentication
 - Codex desktop app for live task counts; when it is not running, the counts are `0 / 0`
 - A compatible KSF root containing `AGENTS.md` and the standard panel bridge
 - Node.js plus a compatible local `feishu-bot-bridge` checkout when Feishu messaging is needed
+
+Ruby runs the KSF-owned catalog/projection bridge on both platforms; the shared core injects a platform-correct per-user support directory. `CODEX_BIN` may point to the Codex executable when it is not discoverable from `PATH` or the standard install locations. The Windows preview does not guess a private Codex Desktop endpoint: live task ownership and direct first-turn delivery require a compatible current-user named pipe explicitly configured through `CODEX_DESKTOP_IPC_PATH`.
 
 See [compatibility](docs/COMPATIBILITY.md) for protocol requirements and independent failure boundaries.
 
@@ -42,6 +46,8 @@ The first-run page suggests `~/Documents/KSF` only when it exists. The user must
 
 ## Build and install
 
+Shared core and macOS:
+
 ```bash
 scripts/run-tests.sh
 scripts/live-smoke-test.sh
@@ -49,6 +55,16 @@ scripts/build-app.sh
 scripts/install-local.sh
 open "$HOME/Applications/Codex Usage Bar.app"
 ```
+
+Windows, from the `Windows` directory:
+
+```powershell
+npm ci
+npm test
+npm run dist:win
+```
+
+The Windows build produces per-user NSIS installers for x64 and arm64. The tray panel uses content-driven height, Windows-native typography and controls, and keeps Node APIs outside the renderer. See [Windows/README.md](Windows/README.md).
 
 The build produces a universal2 app for Apple Silicon and Intel. `scripts/install-local.sh` installs to `$HOME/Applications` by default; override with `INSTALL_ROOT=/explicit/path`. If that folder contains the old personal Bundle ID, the script preserves it and installs the team build as `Codex Usage Bar Team.app`. `INSTALL_APP_NAME` can explicitly select another single filename. The app has no Dock icon and does not register as a login item until the user opts in.
 
@@ -64,7 +80,7 @@ To prepare a clean release after committing all reviewed changes, run `scripts/p
 
 KSF owns project-card interpretation and exports `ksf-panel-catalog-v1`; the app does not parse arbitrary Chinese Markdown. After an ordinary `verified-route-projection-v6` succeeds with exactly one project-memory root card, the wrapper can publish a display-only `ksf-task-project-projection-v1`. Raw task IDs are HMACed with a local 0600 key before any filename or projection is written. A missing bridge, an incompatible protocol, or an unavailable KSF directory only disables the project region; quota and the global task counter continue independently.
 
-Project launch is a fixed convention: `<projectDirectory>/start.sh`. The script must be a current-user-owned regular file, cannot be a symbolic link or group/other writable, and must have owner execution permission. A click revalidates it, opens a visible Terminal in the KSF project directory, executes the script, displays the exit status, and leaves the shell open. A missing or unsafe script never falls back to another command or Git engineering root.
+Project launch is a fixed convention: macOS uses `<projectDirectory>/start.sh`; Windows uses `<projectDirectory>\start.ps1`. The core revalidates the exact platform script before returning it to the native host. macOS additionally requires current-user ownership, owner execution permission and no group/other write access. Windows accepts only a regular, non-symlink file. A missing or unsafe script never falls back to another command or Git engineering root.
 
 The project's `plus.bubble` shortcut first creates an idle task through Codex App Server `thread/start` and assigns the explicit name `项目名 · 新任务` through `thread/name/set`. It then opens that exact task, waits for the visible Codex Desktop window to report that it is following the task, and submits the bootstrap input directly to that same window through desktop `thread-follower-start-turn` v2. A fresh window can report following just before it finishes becoming the stream owner, so the adapter retries only the unambiguous `no-client-found` response for up to 10 seconds. It does not retry timeouts or other errors, and it does not run a second owner-discovery round trip. The independent App Server never starts the first turn, so the prompt and live reply belong to the foreground page. `thread/start.cwd` and the submitted turn `cwd` are both the configured KSF root, which is the Codex Desktop project root. The compact bootstrap input identifies the project and its memory card, asks KSF to load the normal base context, forbids concrete work/file changes/implementation plans, and waits for the user's next instruction. KSF's own rules remain responsible for context loading, while the user's existing thread settings remain unchanged.
 
@@ -76,4 +92,4 @@ The app stores normalized quota snapshots and per-project Token totals under `~/
 
 The app stores only the selected Feishu Bridge engineering-root path and one sanitized target alias in UserDefaults. It never reads or stores Feishu credentials, real Feishu identifiers, message history, or inbound commands. Task-link payloads travel over stdin; the bridge privately stores thread/message mappings at `~/.config/feishu-bridge/task-links-v1.json` with mode `0600`. Initial cards use the bridge outbox, and all inbound authorization, redaction, serialization, lease expiry, and wake assertions remain bridge-owned. Feishu Bridge failures are isolated from Codex and KSF functions.
 
-See `docs/prd/v0.5.md` for current behavior and acceptance rules, `PRODUCT.md` for the product brief, and `DESIGN.md` for visual rules. `docs/prd/v0.4.md` remains the historical outbound-only baseline and `docs/prd/v0.3.md` the historical WeChat design.
+See `docs/prd/v0.6.md` for the cross-platform core and Windows acceptance rules, `docs/prd/v0.5.md` for the Feishu-control baseline, `PRODUCT.md` for the product brief, and `DESIGN.md` for visual rules.

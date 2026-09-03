@@ -156,6 +156,111 @@ public struct TokenUsageSummary: Codable, Equatable {
     }
 }
 
+public struct PricingPlan: Codable, Equatable, Identifiable {
+    public let id: String
+    public let provider: String
+    public let model: String
+    public let variant: String?
+    public let displayName: String
+    public let regularInputMicroUsdPerMillion: Int64
+    public let cachedInputMicroUsdPerMillion: Int64
+    public let outputMicroUsdPerMillion: Int64
+    public let builtIn: Bool
+    public let sourceUrl: String?
+    public let verifiedAt: String?
+
+    public init(
+        id: String,
+        provider: String,
+        model: String,
+        variant: String? = nil,
+        displayName: String? = nil,
+        regularInputMicroUsdPerMillion: Int64,
+        cachedInputMicroUsdPerMillion: Int64,
+        outputMicroUsdPerMillion: Int64,
+        builtIn: Bool = false,
+        sourceUrl: String? = nil,
+        verifiedAt: String? = nil
+    ) {
+        self.id = id
+        self.provider = provider
+        self.model = model
+        self.variant = variant
+        self.displayName = displayName ?? [provider, model, variant].compactMap { value in
+            guard let value, !value.isEmpty else { return nil }
+            return value
+        }.joined(separator: " · ")
+        self.regularInputMicroUsdPerMillion = regularInputMicroUsdPerMillion
+        self.cachedInputMicroUsdPerMillion = cachedInputMicroUsdPerMillion
+        self.outputMicroUsdPerMillion = outputMicroUsdPerMillion
+        self.builtIn = builtIn
+        self.sourceUrl = sourceUrl
+        self.verifiedAt = verifiedAt
+    }
+}
+
+public struct PricingSelection: Codable, Equatable {
+    public let planId: String
+    public let customPlans: [PricingPlan]
+
+    public init(planId: String, customPlans: [PricingPlan] = []) {
+        self.planId = planId
+        self.customPlans = customPlans
+    }
+}
+
+public struct PricingCatalog: Codable, Equatable {
+    public let defaultPlanId: String
+    public let plans: [PricingPlan]
+    public let rejectedCustomPlanIds: [String]?
+
+    public init(defaultPlanId: String, plans: [PricingPlan], rejectedCustomPlanIds: [String]? = nil) {
+        self.defaultPlanId = defaultPlanId
+        self.plans = plans
+        self.rejectedCustomPlanIds = rejectedCustomPlanIds
+    }
+}
+
+public enum TokenCostEstimateStatus: String, Codable, Equatable {
+    case complete
+    case partial
+    case unavailable
+}
+
+public struct TokenCostEstimate: Codable, Equatable {
+    public let planId: String
+    public let currency: String
+    public let status: TokenCostEstimateStatus
+    public let regularInputMicroUsd: Int64
+    public let cachedInputMicroUsd: Int64
+    public let outputMicroUsd: Int64
+    public let totalMicroUsd: Int64
+    public let uncoveredTokens: Int64?
+    public let incompleteDayCount: Int?
+
+    public init(
+        planId: String,
+        currency: String = "USD",
+        status: TokenCostEstimateStatus,
+        regularInputMicroUsd: Int64 = 0,
+        cachedInputMicroUsd: Int64 = 0,
+        outputMicroUsd: Int64 = 0,
+        totalMicroUsd: Int64 = 0,
+        uncoveredTokens: Int64? = nil,
+        incompleteDayCount: Int? = nil
+    ) {
+        self.planId = planId
+        self.currency = currency
+        self.status = status
+        self.regularInputMicroUsd = regularInputMicroUsd
+        self.cachedInputMicroUsd = cachedInputMicroUsd
+        self.outputMicroUsd = outputMicroUsd
+        self.totalMicroUsd = totalMicroUsd
+        self.uncoveredTokens = uncoveredTokens
+        self.incompleteDayCount = incompleteDayCount
+    }
+}
+
 public struct DailyUsageBucket: Codable, Equatable, Identifiable {
     public let startDate: String
     public let tokens: Int64
@@ -172,6 +277,69 @@ public struct DailyUsageBucket: Codable, Equatable, Identifiable {
     }
 
     public var id: String { startDate }
+}
+
+public struct TokenHistoryComparisonDay: Codable, Equatable, Identifiable {
+    public let startDate: String
+    public let serverTokens: Int64?
+    public let localTokens: Int64
+    public let localBreakdown: TokenUsageBreakdown?
+    public let localCost: TokenCostEstimate?
+
+    public init(
+        startDate: String,
+        serverTokens: Int64? = nil,
+        localTokens: Int64,
+        localBreakdown: TokenUsageBreakdown? = nil,
+        localCost: TokenCostEstimate? = nil
+    ) {
+        self.startDate = startDate
+        self.serverTokens = serverTokens
+        self.localTokens = localTokens
+        self.localBreakdown = localBreakdown
+        self.localCost = localCost
+    }
+
+    public var id: String { startDate }
+}
+
+public struct TokenHistoryComparison: Codable, Equatable {
+    public let days: [TokenHistoryComparisonDay]
+    public let serverError: String?
+    public let selectedPlan: PricingPlan?
+    public let localCostSummary: TokenCostEstimate?
+    public let pricingFallback: Bool
+
+    public init(
+        days: [TokenHistoryComparisonDay] = [],
+        serverError: String? = nil,
+        selectedPlan: PricingPlan? = nil,
+        localCostSummary: TokenCostEstimate? = nil,
+        pricingFallback: Bool = false
+    ) {
+        self.days = days
+        self.serverError = serverError
+        self.selectedPlan = selectedPlan
+        self.localCostSummary = localCostSummary
+        self.pricingFallback = pricingFallback
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case days
+        case serverError
+        case selectedPlan
+        case localCostSummary
+        case pricingFallback
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        days = try container.decodeIfPresent([TokenHistoryComparisonDay].self, forKey: .days) ?? []
+        serverError = try container.decodeIfPresent(String.self, forKey: .serverError)
+        selectedPlan = try container.decodeIfPresent(PricingPlan.self, forKey: .selectedPlan)
+        localCostSummary = try container.decodeIfPresent(TokenCostEstimate.self, forKey: .localCostSummary)
+        pricingFallback = try container.decodeIfPresent(Bool.self, forKey: .pricingFallback) ?? false
+    }
 }
 
 public struct TokenUsageBreakdown: Codable, Equatable {
@@ -222,6 +390,7 @@ public struct UsageSnapshot: Codable, Equatable {
     public var dailyUsageBuckets: [DailyUsageBucket]
     public var localDailyUsage: DailyUsageBucket?
     public var localPreviousDailyUsage: DailyUsageBucket?
+    public var localDailyCost: TokenCostEstimate?
     public var rateUpdatedAt: Date?
     public var tokenUpdatedAt: Date?
     public var localTokenUpdatedAt: Date?
@@ -232,6 +401,7 @@ public struct UsageSnapshot: Codable, Equatable {
         dailyUsageBuckets: [DailyUsageBucket] = [],
         localDailyUsage: DailyUsageBucket? = nil,
         localPreviousDailyUsage: DailyUsageBucket? = nil,
+        localDailyCost: TokenCostEstimate? = nil,
         rateUpdatedAt: Date? = nil,
         tokenUpdatedAt: Date? = nil,
         localTokenUpdatedAt: Date? = nil
@@ -241,6 +411,7 @@ public struct UsageSnapshot: Codable, Equatable {
         self.dailyUsageBuckets = dailyUsageBuckets
         self.localDailyUsage = localDailyUsage
         self.localPreviousDailyUsage = localPreviousDailyUsage
+        self.localDailyCost = localDailyCost
         self.rateUpdatedAt = rateUpdatedAt
         self.tokenUpdatedAt = tokenUpdatedAt
         self.localTokenUpdatedAt = localTokenUpdatedAt

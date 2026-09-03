@@ -56,3 +56,70 @@ public struct LocalTokenHistorySeries: Equatable {
         days.first { $0.startDate == startDate }
     }
 }
+
+public struct TokenHistoryComparisonSeries: Equatable {
+    public let days: [TokenHistoryComparisonDay]
+
+    public init(days: [TokenHistoryComparisonDay]) {
+        self.days = days.sorted { $0.startDate < $1.startDate }
+    }
+
+    public init(
+        localDays: [DailyUsageBucket],
+        serverDays: [DailyUsageBucket],
+        through endDate: Date = Date(),
+        calendar: Calendar = .current
+    ) {
+        let localSeries = LocalTokenHistorySeries(
+            days: localDays,
+            through: endDate,
+            calendar: calendar
+        )
+        let serverByDate = Dictionary(
+            serverDays.map { ($0.startDate, $0.tokens) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        days = localSeries.days.map { local in
+            TokenHistoryComparisonDay(
+                startDate: local.startDate,
+                serverTokens: serverByDate[local.startDate],
+                localTokens: local.tokens,
+                localBreakdown: local.breakdown
+            )
+        }
+    }
+
+    public var localTotalTokens: Int64 {
+        days.reduce(0) { $0 + max(0, $1.localTokens) }
+    }
+
+    public var localAverageTokens: Int64 {
+        guard !days.isEmpty else { return 0 }
+        return localTotalTokens / Int64(days.count)
+    }
+
+    public var localActiveDayCount: Int {
+        days.filter { $0.localTokens > 0 }.count
+    }
+
+    public var maximumTokens: Int64 {
+        days.reduce(0) { maximum, day in
+            max(maximum, max(max(0, day.localTokens), max(0, day.serverTokens ?? 0)))
+        }
+    }
+
+    public var latestDay: TokenHistoryComparisonDay? {
+        days.last
+    }
+
+    public func usage(on startDate: String) -> TokenHistoryComparisonDay? {
+        days.first { $0.startDate == startDate }
+    }
+
+    public func localShare(on startDate: String) -> Double? {
+        guard let usage = usage(on: startDate),
+              let serverTokens = usage.serverTokens,
+              serverTokens > 0 else { return nil }
+        return Double(max(0, usage.localTokens)) / Double(serverTokens)
+    }
+}

@@ -6,6 +6,35 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 build_dir="$repo_root/.build/direct-tests"
 mkdir -p "$build_dir"
 
+(cd "$repo_root/Core" && go test ./...)
+(cd "$repo_root/Windows" && npm test)
+
+host_arch="$(uname -m)"
+case "$host_arch" in
+    arm64|x86_64) ;;
+    *) echo "Unsupported macOS test architecture: $host_arch" >&2; exit 1 ;;
+esac
+/usr/bin/swiftc \
+    -emit-library \
+    -static \
+    -emit-module \
+    -module-name CodexUsageCore \
+    -target "$host_arch-apple-macos13.0" \
+    "$repo_root"/Sources/CodexUsageCore/*.swift \
+    -o "$build_dir/libCodexUsageCore.a" \
+    -emit-module-path "$build_dir/CodexUsageCore.swiftmodule"
+/usr/bin/swiftc \
+    -parse-as-library \
+    -target "$host_arch-apple-macos13.0" \
+    -I "$build_dir" \
+    -L "$build_dir" \
+    -lCodexUsageCore \
+    "$repo_root/Sources/CodexUsageBar/FeishuBridgeClient.swift" \
+    "$repo_root/Sources/CodexUsageBar/SharedCoreProcessClient.swift" \
+    "$repo_root/Tests/SharedCoreProcessStandalone/main.swift" \
+    -o "$build_dir/shared-core-process-tests"
+"$build_dir/shared-core-process-tests"
+
 if /usr/bin/xcrun --sdk macosx --show-sdk-platform-path >/dev/null 2>&1; then
     exec /usr/bin/swift test --package-path "$repo_root"
 fi
