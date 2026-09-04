@@ -1,5 +1,5 @@
 const CARD_ACTION_NAMESPACE = 'feishu_bridge';
-const TASK_LINK_CARD_REVISION = 33;
+const TASK_LINK_CARD_REVISION = 34;
 const FEISHU_CARD_REQUEST_MAX_BYTES = 30 * 1024;
 const CARD_REQUEST_RESERVE_BYTES = 512;
 const CARD_REQUEST_SAFE_BYTES = FEISHU_CARD_REQUEST_MAX_BYTES - CARD_REQUEST_RESERVE_BYTES;
@@ -186,8 +186,7 @@ function cardV2QuickReplyForm({
       horizontal_spacing: '8px',
       columns: [{
         tag: 'column',
-        width: 'weighted',
-        weight: 1,
+        width: 'auto',
         vertical_align: 'center',
         elements: [{ tag: 'markdown', content: '**开始新一轮**' }],
       }, {

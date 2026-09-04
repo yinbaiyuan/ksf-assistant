@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "cardRevision": 33,
+  "cardRevision": 34,
   "states": {
     "running": {
       "topActions": ["task_link_release"],
@@ -19,6 +19,7 @@
     "completed": {
       "topActions": ["task_link_release"],
       "formIntent": "开始新一轮",
+      "modePlacement": "adjacent_to_form_intent",
       "formFields": ["turnMode", "followup"],
       "turnModes": ["default", "plan"],
       "submitLabel": "发送"

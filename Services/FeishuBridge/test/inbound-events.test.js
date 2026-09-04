@@ -30,7 +30,7 @@ function cardElements(card, tag) {
   return matches;
 }
 
-test('language-neutral task-link card contract freezes revision 33 interactions', () => {
+test('language-neutral task-link card contract freezes revision 34 interactions', () => {
   assert.equal(taskLinkCardContract.schemaVersion, 1);
   assert.equal(taskLinkCardContract.cardRevision, TASK_LINK_CARD_REVISION);
   assert.deepEqual(taskLinkCardContract.states.running.topActions, ['task_link_release']);
@@ -457,6 +457,15 @@ test('completed task-link cards keep one reply and offer quick text plus native 
   const statusLayout = card.body.elements[0];
   const release = cardElements(statusLayout, 'button')[0];
   assert.equal(newTurnLayout.columns[0].elements[0].content, '**开始新一轮**');
+  assert.deepEqual(newTurnLayout.columns.map((column) => ({
+    width: column.width,
+    weight: column.weight,
+    verticalAlign: column.vertical_align,
+  })), [
+    { width: 'auto', weight: undefined, verticalAlign: 'center' },
+    { width: 'auto', weight: undefined, verticalAlign: 'center' },
+  ]);
+  assert.equal(newTurnLayout.horizontal_spacing, '8px');
   assert.equal(mode.name, 'turnMode');
   assert.equal(mode.type, 'text');
   assert.equal(mode.initial_option, 'default');
