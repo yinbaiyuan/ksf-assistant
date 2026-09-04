@@ -80,6 +80,32 @@ struct SharedCoreFeishuPermissions: Decodable {
     let permissions: Permissions
 }
 
+struct FeishuSettingsOverview: Decodable {
+    struct Health: Decodable { let core: String; let bridge: String; let inbound: String; let detail: String? }
+    struct Permissions: Decodable {
+        let application: String
+        let user: String
+        let missing: [String]
+
+        private enum CodingKeys: String, CodingKey { case application, user, missing }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            application = try values.decode(String.self, forKey: .application)
+            user = try values.decode(String.self, forKey: .user)
+            missing = try values.decodeIfPresent([String].self, forKey: .missing) ?? []
+        }
+    }
+    struct Feature: Decodable, Identifiable { let id: String; let title: String; let description: String; let state: String; let writable: Bool }
+    let state: String
+    let summary: String
+    let profile: String
+    let health: Health
+    let permissions: Permissions
+    let features: [Feature]
+    let targets: [String]
+}
+
 struct SharedCoreDashboard {
     let coreVersion: String
     let usage: UsageSnapshot
@@ -122,7 +148,7 @@ actor SharedCoreProcessClient {
     private var readBuffer = Data()
     private var sequence = 0
 
-    func start() throws {
+    func start(ksfRoot: String) throws {
         guard process == nil else { return }
         guard let executable = Self.locateExecutable() else {
             throw SharedCoreError.executableMissing
@@ -140,13 +166,13 @@ actor SharedCoreProcessClient {
             if let larkCLI = runtime.larkCLI {
                 environment["CODEX_USAGE_BAR_LARK_CLI"] = larkCLI.path
             }
-            if ProcessInfo.processInfo.environment["CODEX_USAGE_BAR_FEISHU_GO_PREVIEW"] == "1",
-               let bridge = runtime.bridge {
+			let requestedRuntime = ProcessInfo.processInfo.environment["CODEX_USAGE_BAR_FEISHU_RUNTIME"]
+			if requestedRuntime != "node", let bridge = runtime.bridge {
                 environment["CODEX_USAGE_BAR_FEISHU_BRIDGE"] = bridge.path
             }
             environment["FEISHU_BRIDGE_DATA_DIR"] = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".config/feishu-bridge", isDirectory: true).path
-            if let node = runtime.node {
+			if requestedRuntime == "node", let node = runtime.node {
                 environment["CODEX_USAGE_BAR_NODE"] = node.path
             }
         }
@@ -168,11 +194,18 @@ actor SharedCoreProcessClient {
                     "title": "CodexAssistant for macOS",
                     "version": "0.10.0-preview.1",
                 ],
+                "integrations": ["ksfRoot": ksfRoot],
             ])
         } catch {
             stopProcess()
             throw error
         }
+    }
+
+    func updateIntegrationContext(ksfRoot: String) throws {
+        _ = try requestData(method: "integration/context/update", params: [
+            "ksfRoot": ksfRoot,
+        ])
     }
 
     func dashboard(
@@ -379,6 +412,14 @@ actor SharedCoreProcessClient {
 
     func feishuPermissions() throws -> SharedCoreFeishuPermissions {
         try decode(method: "feishu/permissions/read", params: [:])
+    }
+
+    func feishuSettingsOverview() throws -> FeishuSettingsOverview {
+        try decode(method: "feishu/settings/overview/read", params: [:])
+    }
+
+    func updateFeishuFeature(_ feature: String, mode: String, confirmRealWrite: Bool = false) throws -> FeishuSettingsOverview {
+        try decode(method: "feishu/features/update", params: ["feature": feature, "mode": mode, "confirmRealWrite": confirmRealWrite])
     }
 
     func feishuSetup() throws -> FeishuSetupState {

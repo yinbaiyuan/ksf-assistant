@@ -10,6 +10,7 @@ import (
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 	larkevent "github.com/larksuite/oapi-sdk-go/v3/event"
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
+	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 )
 
@@ -67,12 +68,30 @@ func NewOfficialInbound(appID, appSecret string, sink EventSink, observer Connec
 	}
 	d := dispatcher.NewEventDispatcher("", "")
 	for _, key := range FixedEventKeys {
+		if key == "card.action.trigger" {
+			continue
+		}
 		eventKey := key
 		d.OnCustomizedEvent(eventKey, func(ctx context.Context, event *larkevent.EventReq) error {
 			body := slices.Clone(event.Body)
 			return sink(ctx, eventKey, body)
 		})
 	}
+	// Card callbacks have a much shorter platform response budget than normal
+	// events. Return the acknowledgement on the same long connection and queue
+	// the bridge work after that; never make a callback wait for Codex or CLI.
+	d.OnP2CardActionTrigger(func(ctx context.Context, event *callback.CardActionTriggerEvent) (*callback.CardActionTriggerResponse, error) {
+		if event == nil || event.EventReq == nil {
+			return nil, errors.New("card callback has no raw request")
+		}
+		body := slices.Clone(event.EventReq.Body)
+		if err := sink(ctx, "card.action.trigger", body); err != nil {
+			return nil, err
+		}
+		return &callback.CardActionTriggerResponse{Toast: &callback.Toast{
+			Type: "info", Content: "请求已接收，结果会更新到卡片",
+		}}, nil
+	})
 	client := larkws.NewClient(
 		strings.TrimSpace(appID), appSecret,
 		larkws.WithEventHandler(d),

@@ -55,6 +55,13 @@ func (server *Server) Serve(ctx context.Context) error {
 		default:
 		}
 		server.handle(ctx, line)
+		// shutdown has already flushed its reply. Do not enter Scan again:
+		// the host keeps stdin open while it waits for this process to exit.
+		select {
+		case <-server.stop:
+			return nil
+		default:
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return err
@@ -88,7 +95,17 @@ func (server *Server) handle(parent context.Context, line []byte) {
 func (server *Server) dispatch(ctx context.Context, method string, params json.RawMessage) (any, error) {
 	switch method {
 	case "initialize":
-		return server.service.Initialize(ctx), nil
+		var input service.InitializeRequest
+		if err := decodeParams(params, &input); err != nil {
+			return nil, err
+		}
+		return server.service.Initialize(ctx, input), nil
+	case "integration/context/update":
+		var input service.IntegrationContextRequest
+		if err := decodeParams(params, &input); err != nil {
+			return nil, err
+		}
+		return server.service.UpdateIntegrationContext(input)
 	case "health/read":
 		return map[string]any{"status": "ok", "at": time.Now()}, nil
 	case "dashboard/read":
@@ -188,6 +205,8 @@ func (server *Server) dispatch(ctx context.Context, method string, params json.R
 		return map[string]bool{"authenticated": true}, nil
 	case "feishu/permissions/read":
 		return server.service.FeishuPermissions(ctx)
+	case "feishu/settings/overview/read":
+		return server.service.FeishuSettingsOverview(ctx)
 	case "feishu/setup/read":
 		return server.service.FeishuSetup()
 	case "feishu/setup/begin":
@@ -222,6 +241,12 @@ func (server *Server) dispatch(ctx context.Context, method string, params json.R
 			return nil, err
 		}
 		return server.service.UpdateFeishuSettings(input)
+	case "feishu/features/update":
+		var input service.FeishuFeatureUpdateRequest
+		if err := decodeParams(params, &input); err != nil {
+			return nil, err
+		}
+		return server.service.UpdateFeishuFeature(ctx, input)
 	case "feishu/supervisor/restart":
 		return server.service.ControlFeishuService(ctx, "restart")
 	case "feishu/profile/set":

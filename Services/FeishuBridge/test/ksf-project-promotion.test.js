@@ -87,6 +87,7 @@ test('client reads the catalog and verifies the exact thread projection', async 
   const client = new KSFProjectPromotionClient({
     rootPath: root,
     env: { KSF_PROJECT_RUBY: '/test/ruby' },
+    supportDirectory: '/private/CodexUsageBar',
     runner: async (input) => {
       calls.push(input);
       if (input.args.includes('--export-catalog')) {
@@ -113,6 +114,7 @@ test('client reads the catalog and verifies the exact thread projection', async 
   assert.equal(current.project.id, projects[0].id);
   assert.equal(current.binding.projectCard, projects[0].id);
   assert.equal(calls[0].command, '/test/ruby');
+  assert.equal(calls[0].env.CODEX_USAGE_BAR_SUPPORT_DIR, '/private/CodexUsageBar');
   assert.deepEqual(calls[0].args, [
     fs.realpathSync(script),
     '--root',

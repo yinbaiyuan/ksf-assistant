@@ -8,7 +8,7 @@
 - npm package：`1.2.0`
 - KSF Skill 兼容：`1.0.x`
 - `lark-cli`：固定 `1.0.92`
-- 官方 SDK：固定 `1.73.0`，只维持一条入站 WebSocket
+- 官方 SDK：固定 `1.73.0`，维持一条入站 WebSocket，并复用常驻客户端发送高频状态卡
 - 队列状态：schema v2，兼容既有 outbox/docbox/actionbox 结果
 - 注册能力：219 项；依赖升级不会自动增加命令、参数或 EventKey
 

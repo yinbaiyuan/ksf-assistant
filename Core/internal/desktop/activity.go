@@ -10,7 +10,9 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -23,24 +25,30 @@ import (
 const maxFrameBytes = 64 * 1024 * 1024
 
 type taskKey struct{ hostID, threadID string }
+type ipcCallResponse struct {
+	result map[string]any
+	err    error
+}
 
 type ActivityClient struct {
 	endpoint string
 
-	mu             sync.Mutex
-	writeMu        sync.Mutex
-	connection     net.Conn
-	clientID       string
-	started        bool
-	sequence       int
-	availability   string
-	followedBy     map[taskKey]map[string]bool
-	owners         map[taskKey]string
-	observations   map[taskKey]domain.TaskObservation
-	pendingOwners  map[string]taskKey
-	ownerWaiters   map[string]chan string
-	requestWaiters map[string]chan error
-	candidateKeys  map[taskKey]bool
+	mu              sync.Mutex
+	writeMu         sync.Mutex
+	connection      net.Conn
+	clientID        string
+	started         bool
+	sequence        int
+	availability    string
+	followedBy      map[taskKey]map[string]bool
+	owners          map[taskKey]string
+	observations    map[taskKey]domain.TaskObservation
+	pendingOwners   map[string]taskKey
+	ownerWaiters    map[string]chan string
+	requestWaiters  map[string]chan error
+	responseWaiters map[string]chan ipcCallResponse
+	candidateKeys   map[taskKey]bool
+	states          map[taskKey]map[string]any
 }
 
 func DefaultEndpoint(home string) string {
@@ -58,7 +66,7 @@ func DefaultEndpoint(home string) string {
 }
 
 func New(endpoint string) *ActivityClient {
-	return &ActivityClient{endpoint: endpoint, availability: "loading", followedBy: map[taskKey]map[string]bool{}, owners: map[taskKey]string{}, observations: map[taskKey]domain.TaskObservation{}, pendingOwners: map[string]taskKey{}, ownerWaiters: map[string]chan string{}, requestWaiters: map[string]chan error{}, candidateKeys: map[taskKey]bool{}}
+	return &ActivityClient{endpoint: endpoint, availability: "loading", followedBy: map[taskKey]map[string]bool{}, owners: map[taskKey]string{}, observations: map[taskKey]domain.TaskObservation{}, pendingOwners: map[string]taskKey{}, ownerWaiters: map[string]chan string{}, requestWaiters: map[string]chan error{}, responseWaiters: map[string]chan ipcCallResponse{}, candidateKeys: map[taskKey]bool{}, states: map[taskKey]map[string]any{}}
 }
 
 func (client *ActivityClient) Start(ctx context.Context) error {
@@ -88,7 +96,27 @@ func (client *ActivityClient) Start(ctx context.Context) error {
 	client.availability = "loading"
 	client.mu.Unlock()
 	go client.readLoop(connection)
-	return client.send(map[string]any{"type": "request", "requestId": client.nextID("initialize"), "method": "initialize", "params": map[string]any{"clientType": "codex-usage-bar"}})
+	if err := client.send(map[string]any{"type": "request", "requestId": client.nextID("initialize"), "method": "initialize", "params": map[string]any{"clientType": "codex-usage-bar"}}); err != nil {
+		client.Close()
+		return err
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		client.mu.Lock()
+		ready := client.clientID != ""
+		client.mu.Unlock()
+		if ready {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			client.Close()
+			return ctx.Err()
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	client.Close()
+	return errors.New("Codex Desktop IPC initialization timed out")
 }
 
 func (client *ActivityClient) ReconcileCandidates(threadIDs []string) {
@@ -241,6 +269,16 @@ func (client *ActivityClient) handle(payload []byte) {
 	if typeName == "response" {
 		result, _ := envelope["result"].(map[string]any)
 		client.mu.Lock()
+		if waiter := client.responseWaiters[requestID]; waiter != nil {
+			delete(client.responseWaiters, requestID)
+			var responseErr error
+			if payload, ok := envelope["error"].(map[string]any); ok {
+				responseErr = errors.New(firstString(payload, "message"))
+			}
+			client.mu.Unlock()
+			waiter <- ipcCallResponse{result: result, err: responseErr}
+			return
+		}
 		if waiter := client.ownerWaiters[requestID]; waiter != nil {
 			delete(client.ownerWaiters, requestID)
 			owner := firstString(result, "handledByClientId", "handledByClientID")
@@ -336,6 +374,9 @@ func (client *ActivityClient) handle(payload []byte) {
 		changeType, _ := change["type"].(string)
 		if changeType == "snapshot" {
 			state, _ := change["conversationState"].(map[string]any)
+			client.mu.Lock()
+			client.states[key] = state
+			client.mu.Unlock()
 			if observation, ok := parseObservation(key, state); ok {
 				client.mu.Lock()
 				client.observations[key] = observation
@@ -345,6 +386,200 @@ func (client *ActivityClient) handle(payload []byte) {
 			client.follow(key, source, true)
 		}
 	}
+}
+
+func (client *ActivityClient) requestFollower(ctx context.Context, threadID, method string, version int, params map[string]any) (map[string]any, error) {
+	if err := client.Start(ctx); err != nil {
+		return nil, err
+	}
+	owner, err := client.owner(ctx, threadID)
+	if err != nil {
+		return nil, err
+	}
+	client.mu.Lock()
+	source := client.clientID
+	client.mu.Unlock()
+	requestID := client.nextID("follower")
+	waiter := make(chan ipcCallResponse, 1)
+	client.mu.Lock()
+	client.responseWaiters[requestID] = waiter
+	client.mu.Unlock()
+	message := map[string]any{"type": "request", "requestId": requestID, "sourceClientId": source, "targetClientId": owner, "timeoutMs": 15000, "method": method, "version": version, "params": params}
+	if err := client.send(message); err != nil {
+		client.mu.Lock()
+		delete(client.responseWaiters, requestID)
+		client.mu.Unlock()
+		return nil, err
+	}
+	select {
+	case response := <-waiter:
+		return response.result, response.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(15 * time.Second):
+		client.mu.Lock()
+		delete(client.responseWaiters, requestID)
+		client.mu.Unlock()
+		return nil, errors.New("Codex Desktop follower request timed out")
+	}
+}
+
+func (client *ActivityClient) owner(ctx context.Context, threadID string) (string, error) {
+	key := taskKey{hostID: "local", threadID: threadID}
+	client.mu.Lock()
+	if owner := client.owners[key]; owner != "" {
+		client.mu.Unlock()
+		return owner, nil
+	}
+	source := client.clientID
+	client.mu.Unlock()
+	if source == "" {
+		return "", errors.New("Codex Desktop IPC is still initializing")
+	}
+	owner, err := client.discoverOwnerSync(ctx, threadID, source)
+	if err != nil {
+		return "", err
+	}
+	if owner == "" && runtime.GOOS == "darwin" {
+		if err := openDesktopTask(threadID); err != nil {
+			return "", err
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+		owner, err = client.discoverOwnerSync(ctx, threadID, source)
+		if err != nil {
+			return "", err
+		}
+	}
+	if owner == "" {
+		return "", errors.New("Codex Desktop does not own the linked task")
+	}
+	client.mu.Lock()
+	client.owners[key] = owner
+	client.mu.Unlock()
+	return owner, nil
+}
+
+func (client *ActivityClient) discoverOwnerSync(ctx context.Context, threadID, source string) (string, error) {
+	requestID := client.nextID("owner")
+	waiter := make(chan string, 1)
+	client.mu.Lock()
+	client.ownerWaiters[requestID] = waiter
+	client.mu.Unlock()
+	if err := client.send(map[string]any{"type": "request", "requestId": requestID, "sourceClientId": source, "method": "thread-owner-discovery", "version": 1, "params": map[string]any{"conversationId": threadID, "hostId": "local"}}); err != nil {
+		return "", err
+	}
+	select {
+	case owner := <-waiter:
+		return owner, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-time.After(5 * time.Second):
+		return "", errors.New("Codex Desktop owner discovery timed out")
+	}
+}
+
+func openDesktopTask(threadID string) error {
+	if !regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`).MatchString(threadID) {
+		return errors.New("invalid Codex task id")
+	}
+	command := exec.Command("/usr/bin/open", "codex://threads/"+threadID)
+	command.Stdin, command.Stdout, command.Stderr = nil, io.Discard, io.Discard
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("open linked Codex task: %w", err)
+	}
+	return nil
+}
+
+func (client *ActivityClient) ReadConversationState(ctx context.Context, threadID string) (map[string]any, error) {
+	key := taskKey{hostID: "local", threadID: threadID}
+	client.mu.Lock()
+	delete(client.states, key)
+	source := client.clientID
+	client.mu.Unlock()
+	owner, err := client.owner(ctx, threadID)
+	if err != nil {
+		return nil, err
+	}
+	_ = client.send(map[string]any{"type": "broadcast", "sourceClientId": source, "method": "thread-stream-following-changed", "version": 1, "params": map[string]any{"conversationId": threadID, "hostId": "local", "following": true}})
+	if _, err := client.requestFollower(ctx, threadID, "thread-follower-load-complete-history", 1, map[string]any{"conversationId": threadID}); err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	_ = owner
+	for time.Now().Before(deadline) {
+		client.mu.Lock()
+		state := client.states[key]
+		client.mu.Unlock()
+		if state != nil {
+			return state, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+	return nil, errors.New("Codex Desktop task snapshot timed out")
+}
+
+func (client *ActivityClient) StartBridgeTurn(ctx context.Context, threadID, cwd, text string, collaborationMode map[string]any) (string, error) {
+	request := map[string]any{"threadId": threadID, "input": []any{map[string]any{"type": "text", "text": text, "text_elements": []any{}}}, "cwd": cwd, "approvalPolicy": "never", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}}
+	if collaborationMode != nil {
+		request["collaborationMode"] = collaborationMode
+	}
+	result, err := client.requestFollower(ctx, threadID, "thread-follower-start-turn", 2, map[string]any{"conversationId": threadID, "turnStart": map[string]any{"request": request, "context": map[string]any{"inheritThreadSettings": true}}})
+	if err != nil {
+		return "", err
+	}
+	turnID := recursiveFirstString(result, "turnId", "id")
+	if turnID == "" {
+		return "", errors.New("Codex Desktop returned no turn id")
+	}
+	return turnID, nil
+}
+func (client *ActivityClient) SteerBridgeTurn(ctx context.Context, threadID, cwd, turnID, text string) (string, error) {
+	result, err := client.requestFollower(ctx, threadID, "thread-follower-steer-turn", 1, map[string]any{"conversationId": threadID, "input": []any{map[string]any{"type": "text", "text": text, "text_elements": []any{}}}, "restoreMessage": map[string]any{"cwd": cwd, "context": map[string]any{"workspaceRoots": []string{cwd}, "collaborationMode": nil}, "responsesapiClientMetadata": map[string]any{}}, "attachments": []any{}, "clientUserMessageId": client.nextID("message")})
+	if err != nil {
+		return "", err
+	}
+	if value := recursiveFirstString(result, "turnId", "id"); value != "" {
+		return value, nil
+	}
+	return turnID, nil
+}
+func (client *ActivityClient) InterruptBridgeTurn(ctx context.Context, threadID, turnID string) error {
+	_, err := client.requestFollower(ctx, threadID, "thread-follower-interrupt-turn", 4, map[string]any{"conversationId": threadID, "mode": "user-stop", "expectedTurnId": turnID})
+	return err
+}
+func (client *ActivityClient) SubmitBridgeUserInput(ctx context.Context, threadID, requestID string, response map[string]any) error {
+	_, err := client.requestFollower(ctx, threadID, "thread-follower-submit-user-input", 1, map[string]any{"conversationId": threadID, "requestId": requestID, "response": response})
+	return err
+}
+func recursiveFirstString(value any, names ...string) string {
+	switch item := value.(type) {
+	case map[string]any:
+		for _, name := range names {
+			if text, ok := item[name].(string); ok && text != "" {
+				return text
+			}
+		}
+		for _, child := range item {
+			if text := recursiveFirstString(child, names...); text != "" {
+				return text
+			}
+		}
+	case []any:
+		for _, child := range item {
+			if text := recursiveFirstString(child, names...); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
 }
 
 func parseObservation(key taskKey, state map[string]any) (domain.TaskObservation, bool) {
@@ -450,6 +685,10 @@ func (client *ActivityClient) connectionEnded(connection net.Conn) {
 		for id, waiter := range client.requestWaiters {
 			delete(client.requestWaiters, id)
 			waiter <- errors.New("Codex Desktop IPC disconnected")
+		}
+		for id, waiter := range client.responseWaiters {
+			delete(client.responseWaiters, id)
+			waiter <- ipcCallResponse{err: errors.New("Codex Desktop IPC disconnected")}
 		}
 	}
 	client.mu.Unlock()

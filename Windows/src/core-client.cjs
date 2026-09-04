@@ -5,10 +5,11 @@ const { createInterface } = require('node:readline');
 const path = require('node:path');
 
 class CoreClient {
-  constructor({ executablePath, env = {}, timeoutMs = 45_000 }) {
+  constructor({ executablePath, env = {}, timeoutMs = 45_000, integrations = {} }) {
     this.executablePath = executablePath;
     this.env = env;
     this.timeoutMs = timeoutMs;
+    this.integrations = integrations;
     this.process = null;
     this.sequence = 0;
     this.pending = new Map();
@@ -40,6 +41,7 @@ class CoreClient {
     child.once('error', (error) => this.#failAll(error));
     await this.request('initialize', {
       clientInfo: { name: 'codex_usage_bar_windows', title: 'CodexAssistant for Windows', version: '0.10.0-preview.1' },
+      integrations: this.integrations,
     }, { skipStart: true });
   }
 

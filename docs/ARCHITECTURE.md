@@ -21,10 +21,12 @@ Windows Electron ─────┘                              ├─ Codex Ap
 
 ## 飞书迁移
 
-Go 入口维持 Bridge/Capability `1.0.0`、队列 schema `2` 与 `client.json` schema v4。23 类固定非 Approval 事件由 `oapi-sdk-go/v3.11.0` 接入，219 项固定能力继续委托随包 `lark-cli 1.0.92`。生产切换前 Node 与 Go 只能对同一冻结样本做回放，不得同时消费真实事件。
+Go 入口维持 Bridge/Capability `1.0.0`、队列 schema `2` 与 `client.json` schema v4。23 类固定非 Approval 事件由 `oapi-sdk-go/v3.11.0` 接入，219 项固定能力继续委托随包 `lark-cli 1.0.92`。Node 与 Go 只能对同一冻结样本做离线回放，不得同时消费真实事件。
 
-当前公开预览源码会构建并打包 Go 桥，但真实硬件矩阵全部通过前仍以 Node 兼容实现为生产入口。切换是一次性动作，不长期维护双实现。
+macOS arm64 已按用户确认的先行策略切换为 Go 生产入口，Node 只能通过显式人工回退启用，禁止自动故障回退。Windows 在实机等价验收完成前继续使用 Node；macOS x64 与 Windows 两种架构完成后，再移除安装包中的 Node runtime、npm 生产依赖和 Node 服务源码。
 
 ## 生命周期
+
+macOS 的按钮退出只把一次退出请求交给 AppKit 运行循环；按钮与系统退出均由 `AppDelegate.applicationShouldTerminate` 统一等待 `UsageViewModel.shutdown`。不得在持有主队列的 Swift Task 内调用 `NSApplication.terminate`，否则 `terminateLater` 的嵌套模态循环会阻塞负责确认退出的 MainActor 任务。重复按钮请求合并为一次。Core 的 `shutdown` 在停止受管服务、写出确认后立即结束 RPC 读取循环，不依赖宿主再发送输入或关闭 stdin。回归入口为 `bash scripts/test-quit-lifecycle.sh` 及 Go RPC shutdown 测试。
 
 Core 启动桥，桥通过父级控制管道感知所有者。正常退出先等待最多 5 秒，再结束进程组或 Windows kill-on-close Job Object。异常退出按 1、2、5 秒退避；滚动 5 分钟最多重启 3 次，持续健康 5 分钟后清零。超过阈值进入 `degraded`，只允许用户“重新启动”。

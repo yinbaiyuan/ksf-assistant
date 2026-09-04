@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	managedfeishu "codexusagebar/core/internal/feishu"
 	"codexusagebar/core/internal/service"
 )
 
 func TestServerPublishesVersionedInitializeContract(t *testing.T) {
+	t.Setenv("FEISHU_BRIDGE_DATA_DIR", t.TempDir())
 	input := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` + "\n")
 	var output bytes.Buffer
 	server := New(service.New(), input, &output)
@@ -32,6 +37,27 @@ func TestServerPublishesVersionedInitializeContract(t *testing.T) {
 	}
 	if !response.Result.Capabilities["tokenHistory"] || !response.Result.Capabilities["tokenHistoryComparison"] || !response.Result.Capabilities["tokenCostEstimate"] || !response.Result.Capabilities["feishuTaskLinks"] {
 		t.Fatalf("missing public capabilities: %#v", response.Result.Capabilities)
+	}
+}
+
+func TestServerUpdatesPrivateHostIntegrationContext(t *testing.T) {
+	dataRoot := t.TempDir()
+	ksfRoot := t.TempDir()
+	t.Setenv("FEISHU_BRIDGE_DATA_DIR", dataRoot)
+	input := strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"integration/context/update","params":{"ksfRoot":` + fmt.Sprintf("%q", ksfRoot) + `}}` + "\n")
+	var output bytes.Buffer
+	if err := New(service.New(), input, &output).Serve(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), `"state":"ready"`) || !strings.Contains(output.String(), ksfRoot) {
+		t.Fatalf("unexpected integration response: %s", output.String())
+	}
+	stored, err := os.ReadFile(filepath.Join(dataRoot, managedfeishu.HostContextFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(stored, []byte("threadId")) || bytes.Contains(stored, []byte("message")) {
+		t.Fatalf("host context contains task data: %s", stored)
 	}
 }
 

@@ -26,6 +26,7 @@ const state = {
   feishuSetupPayload: null,
   feishuSetupMode: 'new',
   feishuPermissions: '',
+  feishuOverview: null,
   timer: null,
 };
 
@@ -427,9 +428,11 @@ function renderFeishuPage() {
   } else {
     step = renderFeishuReady(feishu);
   }
+  const componentSummary = setup.stage !== 'ready' || isFaulted
+    ? `<section class="card setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">${escapeHTML(feishuSetupStageText(setup))}</div><div class="setting-description">桥进程 ${escapeHTML(feishuComponentStatusText(feishu))} · ${escapeHTML(feishuProfileText(feishu.profile))}</div></div>${isFaulted ? '<button class="button" type="button" data-action="feishu-restart">重新启动</button>' : ''}</div></section>`
+    : '';
   return `${header('飞书配置')}
-    <section class="card setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">${escapeHTML(feishuSetupStageText(setup))}</div><div class="setting-description">桥进程 ${escapeHTML(feishuComponentStatusText(feishu))} · ${escapeHTML(feishuProfileText(feishu.profile))}</div></div>${isFaulted ? '<button class="button" type="button" data-action="feishu-restart">重新启动</button>' : ''}</div></section>
-    ${setupError}${step}`;
+    ${componentSummary}${setupError}${step}`;
 }
 
 function renderFeishuActivation(feishu) {
@@ -444,7 +447,23 @@ function renderFeishuQRStep(title, description, qrDataURL, verificationURL, user
 
 function renderFeishuReady(feishu) {
   const settings = state.settings || {};
-  return `<section class="card settings-list"><div class="setting"><div class="setting-title">飞书已就绪</div><div class="setting-description">配置、授权和只读诊断均已通过。</div></div><div class="setting"><div class="setting-head"><div class="setting-copy"><label class="setting-title" for="feishu-profile">本机事件角色</label><div class="setting-description">主设备接收入站事件；仅手动能力仍可发送和处理队列。</div></div><select id="feishu-profile" data-field="feishu-profile"><option value="primary" ${feishu.profile === 'primary' ? 'selected' : ''}>主设备</option><option value="manual-only" ${feishu.profile === 'manual-only' ? 'selected' : ''}>仅手动能力</option></select></div></div><div class="setting"><div class="setting-head"><div class="setting-copy"><label class="setting-title" for="feishu-target">测试目标</label><div class="setting-description">只显示软件已自动授权的别名，不暴露真实飞书 ID。</div></div><select id="feishu-target" data-field="feishu-target" ${!feishu.targetAliases?.length ? 'disabled' : ''}><option value="">请选择</option>${(feishu.targetAliases || []).map((alias) => `<option value="${escapeHTML(alias)}" ${alias === settings.selectedFeishuTargetAlias ? 'selected' : ''}>${escapeHTML(alias)}</option>`).join('')}</select></div>${settings.selectedFeishuTargetAlias ? '<div class="detail-actions"><button class="button" type="button" data-action="feishu-test">确认发送测试消息</button></div>' : ''}</div><div class="setting"><div class="setting-title">高级功能</div><div class="setting-description">群聊、通讯录和队列能力将在这里通过表单与开关管理，不需要编辑配置文件。</div></div></section>`;
+  const overview = state.feishuOverview;
+  const permissions = overview?.permissions || {};
+  const health = overview?.health || {};
+  const permissionState = (value) => value === 'verified' ? '已验证' : value === 'missing' ? '缺少授权' : '暂不可用';
+  const statusRow = (title, value, healthy) => `<div class="setting-head"><div class="setting-copy"><div class="setting-title">${escapeHTML(title)}</div></div><div class="inline-status ${healthy ? 'healthy' : 'warning'}"><span aria-hidden="true"></span>${escapeHTML(value)}</div></div>`;
+  const featureRows = (overview?.features || []).map((feature) => `<div class="setting-head feishu-feature-row"><div class="setting-copy"><label class="setting-title" for="feishu-feature-${escapeHTML(feature.id)}">${escapeHTML(feature.title)}</label><div class="setting-description">${escapeHTML(feature.description)}</div></div><select id="feishu-feature-${escapeHTML(feature.id)}" data-field="feishu-feature" data-feature="${escapeHTML(feature.id)}"><option value="off" ${feature.state === 'off' ? 'selected' : ''}>关闭</option>${feature.writable ? `<option value="dry_run" ${feature.state === 'dry_run' ? 'selected' : ''}>演练</option><option value="live" ${feature.state === 'live' ? 'selected' : ''}>真实执行</option>` : `<option value="enabled" ${feature.state === 'enabled' ? 'selected' : ''}>启用</option>`}</select></div>`).join('');
+  const missing = permissions.missing?.length
+    ? `<div class="setting-description warning">仍需处理：${escapeHTML(permissions.missing.join('、'))}</div><div class="detail-actions"><button class="button" type="button" data-action="feishu-refresh-overview">重新检查</button></div>`
+    : '<div class="setting-description">基础单聊、卡片回调和 Codex 任务控制已授权。</div>';
+  const targets = feishu.targetAliases || [];
+  return `<section class="card settings-list">
+    <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">飞书桥</div><div class="setting-description">${escapeHTML(overview?.summary || '正在读取可用范围…')}</div></div><div class="inline-status ${feishu.processState === 'degraded' ? 'warning' : 'healthy'}"><span aria-hidden="true"></span>${feishu.processState === 'degraded' ? '需要处理' : '已就绪'}</div></div></div>
+    <div class="setting"><div class="setting-section-title">权限</div>${statusRow('应用权限', permissionState(permissions.application), permissions.application === 'verified')}${statusRow('当前用户授权', permissionState(permissions.user), permissions.user === 'verified')}${missing}</div>
+    <div class="setting"><div class="setting-section-title">接收与高级功能</div><div class="setting-head"><div class="setting-copy"><label class="setting-title" for="feishu-profile">本机事件角色</label><div class="setting-description">主设备接收入站事件；仅手动能力仍可主动发送和处理队列。</div></div><select id="feishu-profile" data-field="feishu-profile"><option value="primary" ${feishu.profile === 'primary' ? 'selected' : ''}>主设备</option><option value="manual-only" ${feishu.profile === 'manual-only' ? 'selected' : ''}>仅手动能力</option></select></div>${featureRows}</div>
+    <div class="setting"><div class="setting-section-title">诊断</div>${statusRow('Shared Core', health.core === 'running' ? '运行中' : '需要处理', health.core === 'running')}${statusRow('飞书桥', health.bridge === 'running' ? '运行中' : health.bridge || '未知', health.bridge === 'running')}${statusRow('本机事件', health.inbound === 'connected' ? '已连接' : health.inbound === 'manual_only' ? '仅手动能力' : '未连接', health.inbound === 'connected' || health.inbound === 'manual_only')}${health.detail ? `<div class="setting-description">${escapeHTML(health.detail)}</div>` : ''}${feishu.processState === 'degraded' ? '<div class="detail-actions"><button class="button" type="button" data-action="feishu-restart">重新启动</button></div>' : ''}</div>
+    <div class="setting"><div class="setting-section-title">连接测试</div><div class="setting-description">只显示软件已自动授权的别名。</div><div class="setting-head"><select id="feishu-target" data-field="feishu-target" ${!targets.length ? 'disabled' : ''}><option value="">请选择</option>${targets.map((alias) => `<option value="${escapeHTML(alias)}" ${alias === settings.selectedFeishuTargetAlias ? 'selected' : ''}>${escapeHTML(alias)}</option>`).join('')}</select><button class="button" type="button" data-action="feishu-test" ${!settings.selectedFeishuTargetAlias ? 'disabled' : ''}>发送测试消息</button></div></div>
+  </section>`;
 }
 
 function selectHomeProjects(items = []) {
@@ -528,11 +547,13 @@ async function refresh({ quiet = false } = {}) {
   state.refreshing = true;
   if (!quiet) render();
   try {
-    const [dashboard, settings, pricingCatalog, feishuSetup] = await Promise.all([api.dashboard(), api.settings(), api.pricingCatalog(), api.readFeishuSetup().catch(() => ({ stage: 'not_started' }))]);
+    const overviewRead = state.page.startsWith('feishu') ? api.feishuOverview().catch(() => null) : Promise.resolve(state.feishuOverview);
+    const [dashboard, settings, pricingCatalog, feishuSetup, feishuOverview] = await Promise.all([api.dashboard(), api.settings(), api.pricingCatalog(), api.readFeishuSetup().catch(() => ({ stage: 'not_started' })), overviewRead]);
     state.dashboard = dashboard;
     state.settings = settings;
     state.pricingCatalog = pricingCatalog;
     state.feishuSetup = feishuSetup;
+    state.feishuOverview = feishuOverview;
     state.error = '';
   } catch (error) {
     state.error = error.message;
@@ -593,6 +614,7 @@ async function handleAction(action, element) {
   else if (action === 'pin') { await api.setPinned(element.dataset.id, element.dataset.pinned !== 'true'); return refresh({ quiet: true }); }
   else if (action === 'choose-ksf') { if (await api.chooseDirectory('ksfRoot')) return refresh(); }
   else if (action === 'feishu-test') { await api.sendFeishuTest(state.settings.selectedFeishuTargetAlias); showToast('测试消息已发送'); }
+  else if (action === 'feishu-refresh-overview') return refresh({ quiet: true });
   else if (action === 'feishu-restart') { await api.restartFeishu(); showToast('飞书桥重启请求已提交'); return refresh({ quiet: true }); }
   else if (action === 'feishu-show-existing') state.feishuSetupMode = 'existing';
   else if (action === 'feishu-begin-new') {
@@ -708,6 +730,14 @@ root.addEventListener('change', async (event) => {
     }
     if (event.target.dataset.field === 'feishu-profile') {
       await api.setFeishuProfile(event.target.value);
+      state.dashboard = await api.dashboard();
+    }
+    if (event.target.dataset.field === 'feishu-feature') {
+      const feature = event.target.dataset.feature;
+      const mode = event.target.value;
+      const confirmRealWrite = mode === 'live' && window.confirm('允许真实执行后，此功能可以处理真实写入操作。是否继续？');
+      if (mode === 'live' && !confirmRealWrite) { await refresh({ quiet: true }); return; }
+      state.feishuOverview = await api.updateFeishuFeature({ feature, mode, confirmRealWrite });
       state.dashboard = await api.dashboard();
     }
     if (event.target.dataset.field === 'launch-login') {

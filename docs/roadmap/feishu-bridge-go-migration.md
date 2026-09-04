@@ -29,23 +29,22 @@ Platform differences may exist only in adapters. macOS uses Keychain, POSIX perm
 
 ## Current checkpoint
 
-- Complete: local Node baseline tag; managed Go child lifecycle; private settings
-  and resumable setup state; setup/settings/restart RPC; macOS and Windows setup
-  UI; fixed 23-event replay ingress; four-target bridge cross-compilation;
-  pinned lark-cli packaging; public-source hygiene, license policy and SPDX SBOM.
-- Production remains Node. The Go executable is packaged behind the explicit
-  preview flag and cannot become the production consumer before every hardware
-  gate passes.
-- Remaining parity: secure Keychain/DPAPI credential loading, queue and
-  authorization state, all 219 capability executions, Codex control, automatic
-  current-user alias binding, platform configuration verification, and card
-  callback transport. The public WebSocket API in `oapi-sdk-go/v3.11.0` does not
-  currently expose the card-message handler used by the Node compatibility
-  implementation, so this requires an audited adapter or an upstream-supported
-  API before cutover.
-- Remaining acceptance: real macOS arm64 end-to-end testing plus macOS x64,
-  Windows x64 and Windows arm64 installation, setup, send/receive, recovery,
-  exit and upgrade tests.
+- Complete: language-neutral capability/event/permission snapshots; managed Go
+  lifecycle; Keychain/DPAPI adapters; lossless private-state migration; all 219
+  capability executions; three queues; audit/redaction; official Go SDK message
+  and card ingress; attachments; Codex task control; four-target cross-build;
+  pinned lark-cli packaging; macOS arm64 install, restart recovery and real
+  outbound acceptance and a real inbound message round trip through Codex and
+  the Feishu reply path.
+- macOS arm64 now uses Go in production. Node is retained only for explicit
+  manual rollback and is not an automatic failure path. Windows remains on Node
+  until its platform acceptance is complete.
+- Remaining parity is limited to the old convenience-command orchestration
+  layer (directory/name lookup, selected domain shortcuts and read-only composed
+  workflows). The fixed 219-capability execution surface is already native.
+- Remaining live acceptance: a card click on the switched macOS arm64 build,
+  then macOS x64, Windows x64 and Windows arm64 installation,
+  setup, send/receive, recovery, exit and upgrade tests.
 
 ## Done
 

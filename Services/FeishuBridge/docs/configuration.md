@@ -27,7 +27,7 @@ Windows 用户级计划任务、DPAPI、ACL、休眠抑制和任务深链适配�
 
 启动包装器 `scripts/start-bridge.js` 会先读取 `.env.local`，再叠加 shell、launchd 或 Windows 计划任务注入的环境变量。显式环境变量优先级高于 `.env.local`。
 
-飞书 API 与主动出站只调用项目固定版本的本地 `lark-cli`。官方 SDK 单一入站长连接需要在内存中读取同一应用凭据：macOS 复用 lark-cli/Keychain，Windows 使用当前用户 DPAPI 文件；两端都不把明文写入 `.env.local`、命令行、日志或仓库。
+219 项通用飞书 API 与主动出站继续调用项目固定版本的本地 `lark-cli`。高频状态卡回复与更新复用常驻官方 SDK 客户端，避免每次启动 CLI；官方 SDK 单一入站长连接与卡片客户端都只在内存中读取同一应用凭据：macOS 复用 lark-cli/Keychain，Windows 使用当前用户 DPAPI 文件；两端都不把明文写入 `.env.local`、命令行、日志或仓库。
 
 统一客户端的目标别名和专用测试资产绑定另存于平台私有根的 `client.json`（schema v4），只读通讯录缓存另存于同目录的 `directory.json`。macOS 与 Windows 默认都使用 `~/.config/feishu-bridge`；macOS 使用 `0700/0600`，Windows 使用安装器设置的当前用户 ACL。该路径避开 Windows 打包应用的 `%LOCALAPPDATA%` 文件视图隔离，并且不进入项目仓库。
 
@@ -83,7 +83,7 @@ npm run bridge -- auth configure-existing --payload-file -
 npx lark-cli auth status
 ```
 
-项目把 `@larksuite/cli` 精确固定在 `1.0.92`，把 `@larksuiteoapi/node-sdk` 精确固定在 `1.73.0`。`lark-cli` 是唯一飞书 API/出站客户端；官方 SDK 只负责单一入站长连接。桥只在内存中读取平台安全存储中的凭据，不把凭据复制到 `.env.local`、日志或命令行。`auth start-config --create-new` 只在用户明确要求新建飞书 CLI 应用时使用。升级任一依赖前必须重新验证事件帧分发、快捷命令参数、身份语义和审计脱敏。
+项目把 `@larksuite/cli` 精确固定在 `1.0.92`，把 `@larksuiteoapi/node-sdk` 精确固定在 `1.73.0`。`lark-cli` 承担 219 项通用能力和主动出站；官方 SDK 承担单一入站长连接以及普通任务状态卡的低延迟回复与更新。桥只在内存中读取平台安全存储中的凭据，不把凭据复制到 `.env.local`、日志或命令行。`auth start-config --create-new` 只在用户明确要求新建飞书 CLI 应用时使用。升级任一依赖前必须重新验证事件帧分发、卡片幂等、快捷命令参数、身份语义和审计脱敏。
 
 ## 3. 路径配置
 
@@ -104,8 +104,7 @@ FEISHU_BRIDGE_WINDOWS_TASK_NAME=FeishuBotBridge
 - `FEISHU_BRIDGE_WINDOWS_TASK_NAME`：Windows 计划任务名，必须与安装器的 `-TaskName` 一致。
 - `FEISHU_BRIDGE_DATA_DIR`：可选私有数据根。macOS 与 Windows 默认均为 `~/.config/feishu-bridge`。
 - `FEISHU_BRIDGE_LOG_DIR`：可选运行日志目录。macOS 默认项目内 `./logs`，Windows 默认私有数据根内 `logs`。
-- `KMS_ROOT`：个人知识管理系统根目录。没有固定知识管理系统目录时可以指向其他本地目录。
-- `KSF_PROJECT_ROOT`：可选。用于“默认对话升级项目”的 KSF 根目录；未配置时依次尝试 `KMS_ROOT` 和当前用户的 `Documents/KSF`。桥只调用 KSF 的项目目录与任务投影协议，不直接解析或修改项目记忆卡。
+- `KMS_ROOT`、`KSF_PROJECT_ROOT` 只供仓库独立开发与协议测试使用。CodexAssistant 托管运行时不读取它们，也不猜测 `~/Documents/KSF`；普通用户只在软件设置中选择并验证 KSF 目录。
 - `FEISHU_AUDIT_DIR`：人类可读审计 Markdown 输出目录。需要关闭或替换审计时，修改这里即可。
 
 不要把个人真实路径写入版本化文档、代码或 plist 模板。
@@ -121,6 +120,7 @@ CODEX_FEISHU_DEFAULT_THREAD_TITLE=飞书默认对话
 CODEX_TIMEOUT_MS=600000
 CODEX_TASK_TIMEOUT_MS=1800000
 CODEX_BYPASS_APPROVALS=true
+CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MS=5000
 CODEX_APP_SERVER_REQUEST_TIMEOUT_MS=60000
 CODEX_DESKTOP_IPC_PATH=/Users/<user>/.codex/ipc/ipc.sock
 CODEX_DESKTOP_REQUEST_TIMEOUT_MS=20000
@@ -132,8 +132,7 @@ CODEX_CLIENT_TITLE=Codex
 
 建议保持：
 
-- `CODEX_TRANSPORT=auto`：优先使用 app-server proxy，不可用时自动回退。
-- `CODEX_AUTO_START_DAEMON=true`：proxy 不可用时尝试自动启动本机 daemon。
+- `CODEX_TRANSPORT`、`CODEX_AUTO_START_DAEMON` 只用于独立开发模式。CodexAssistant 托管运行固定使用短生命周期独立 app-server，初始化最长 5 秒，不尝试 proxy 或 daemon；该限时不作用于 `thread/start`、`turn/start` 等常规 RPC。
 - `CODEX_DESKTOP_IPC_PATH`：可选。任务连接的写操作通过当前用户私有的 Codex Desktop IPC 交给任务所有者；默认使用 `~/.codex/ipc/ipc.sock`。桥会校验路径确为当前用户所有且权限不向组或其他用户开放。
 - `CODEX_DESKTOP_REQUEST_TIMEOUT_MS`：Desktop 所有者请求的单次超时；默认 20 秒。目标任务未被窗口持有时，桥先打开准确任务并等待 Desktop 接管。
 - `CODEX_CLIENT_NAME=codex_vscode`：已验证更容易让新 thread 出现在 Codex 本地 UI。

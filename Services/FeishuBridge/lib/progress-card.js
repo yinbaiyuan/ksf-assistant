@@ -1,5 +1,5 @@
 const CARD_ACTION_NAMESPACE = 'feishu_bridge';
-const TASK_LINK_CARD_REVISION = 37;
+const TASK_LINK_CARD_REVISION = 39;
 const FEISHU_CARD_REQUEST_MAX_BYTES = 30 * 1024;
 const CARD_REQUEST_RESERVE_BYTES = 512;
 const CARD_REQUEST_SAFE_BYTES = FEISHU_CARD_REQUEST_MAX_BYTES - CARD_REQUEST_RESERVE_BYTES;
@@ -246,10 +246,17 @@ function cardV2QuickReplyForm({
   };
 }
 
-function chatCardContextLine(status, taskDurationSeconds) {
+function chatCardContextLine(status, totalDurationSeconds, codexDurationSeconds, taskDurationSeconds) {
   const parts = [];
-  if (['completed', 'failed'].includes(status) && Number.isInteger(taskDurationSeconds)) {
-    parts.push(`耗时 ${formatElapsedDuration(taskDurationSeconds)}`);
+  if (['completed', 'failed'].includes(status)) {
+    if (Number.isInteger(totalDurationSeconds)) {
+      parts.push(`总耗时 ${formatElapsedDuration(totalDurationSeconds)}`);
+      if (Number.isInteger(codexDurationSeconds)) {
+        parts.push(`Codex ${formatElapsedDuration(codexDurationSeconds)}`);
+      }
+    } else if (Number.isInteger(taskDurationSeconds)) {
+      parts.push(`耗时 ${formatElapsedDuration(taskDurationSeconds)}`);
+    }
   }
   return parts.join(' · ');
 }
@@ -276,15 +283,16 @@ function chatStatusTag(status) {
   };
 }
 
-function codexCardHeader(title, template, statusTag) {
+function codexCardHeader(title, template, statusTags) {
   const color = [
     'blue', 'wathet', 'turquoise', 'green', 'yellow', 'orange', 'red',
     'carmine', 'violet', 'purple', 'indigo', 'grey', 'default',
   ].includes(template) ? template : 'default';
+  const tags = (Array.isArray(statusTags) ? statusTags : [statusTags]).filter(Boolean);
   return {
     template: color,
     title: { tag: 'plain_text', content: boundedText(title, 120) },
-    ...(statusTag ? { text_tag_list: [statusTag] } : {}),
+    ...(tags.length ? { text_tag_list: tags } : {}),
   };
 }
 
@@ -302,17 +310,22 @@ function codexCardBody(contentElements) {
 
 function chatCardV2({
   state, status, title, detail, followupEnabled = false, latestInput, taskDurationSeconds,
+  totalDurationSeconds, codexDurationSeconds,
 }) {
   const contentElements = [];
-  const contextLine = chatCardContextLine(status, taskDurationSeconds);
+  const contextLine = chatCardContextLine(
+    status, totalDurationSeconds, codexDurationSeconds, taskDurationSeconds,
+  );
   if (contextLine || followupEnabled) {
     const context = contextLine
       ? { tag: 'markdown', content: `**${contextLine}**` }
       : null;
-    const controls = followupEnabled ? [cardV2Overflow([{
-      text: '关闭卡片',
+    const controls = followupEnabled ? [cardV2Button({
+      name: 'disconnect_chat',
+      text: '断开',
+      type: 'danger',
       action: bridgeAction('dismiss'),
-    }])] : [];
+    })] : [];
     contentElements.push(cardV2ControlRow(context, controls));
     contentElements.push({ tag: 'hr' });
   }
@@ -406,18 +419,6 @@ function taskLinkContextLine(taskLink, fallbackStatus, progress) {
   }
   const ownerLabels = { bridge: '飞书控制', desktop: 'Codex Desktop 控制' };
   if (turnState === 'running' && ownerLabels[taskLink.turnOwner]) parts.push(ownerLabels[taskLink.turnOwner]);
-  const activeMode = String(taskLink.activeTurnMode || '');
-  const nextMode = String(taskLink.nextTurnMode || 'default');
-  if (turnState === 'plan_ready') parts.push('Plan 已完成');
-  if (activeMode === 'plan' && turnState !== 'plan_ready') {
-    parts.push(['running', 'waiting_input', 'desktop_action_required', 'queued'].includes(turnState)
-      ? 'Plan 模式' : '本轮 Plan');
-  }
-  if (turnState !== 'plan_ready'
-    && nextMode !== activeMode && (nextMode === 'plan' || activeMode === 'plan')) {
-    parts.push(nextMode === 'plan' ? '下轮 Plan' : '下轮默认');
-  }
-  parts.push('全权限');
   const phase = String(progress?.phase || '').trim();
   if (turnState === 'running' && phase && !['运行中', '当前进展'].includes(phase)) {
     parts.push(boundedText(phase, 40));
@@ -603,6 +604,23 @@ function taskLinkStatusTag(taskLink, fallbackStatus) {
   };
 }
 
+function taskLinkModeTag(taskLink, fallbackStatus) {
+  const turnState = String(taskLink.turnState || fallbackStatus || 'idle');
+  const activeStates = ['running', 'waiting_input', 'desktop_action_required', 'queued', 'plan_ready'];
+  const activeMode = String(taskLink.activeTurnMode || '');
+  const nextMode = String(taskLink.nextTurnMode || 'default');
+  const mode = turnState === 'plan_ready'
+    ? 'plan'
+    : activeStates.includes(turnState) && activeMode
+      ? activeMode
+      : nextMode;
+  return {
+    tag: 'text_tag',
+    text: { tag: 'plain_text', content: mode === 'plan' ? '计划' : '默认' },
+    color: 'green',
+  };
+}
+
 function taskLinkCardTitle(taskLink, fallbackTitle) {
   return String(taskLink.projectName || fallbackTitle || 'Codex 任务').trim();
 }
@@ -681,7 +699,7 @@ function taskLinkCardV2({
     header: codexCardHeader(
       taskLinkCardTitle(taskLink, title || state.title),
       state.template,
-      taskLinkStatusTag(taskLink, status),
+      [taskLinkStatusTag(taskLink, status), taskLinkModeTag(taskLink, status)],
     ),
     body: codexCardBody(contentElements),
   };
@@ -689,7 +707,8 @@ function taskLinkCardV2({
 
 function progressCard({
   status = 'processing', title, detail, taskId, taskLink, progress, questions, openIds,
-  taskDurationSeconds, followupEnabled = false, hideActions = false, latestInput, schemaVersion,
+  taskDurationSeconds, totalDurationSeconds, codexDurationSeconds,
+  followupEnabled = false, hideActions = false, latestInput, schemaVersion,
 } = {}) {
   const states = {
     processing: { title: 'Codex 正在处理', template: 'blue', detail: '请求已经进入本机 Codex。' },
@@ -717,6 +736,7 @@ function progressCard({
   if (schemaVersion === '2.0' || canFollowup) {
     return chatCardV2({
       state, status, title, detail, followupEnabled: canFollowup, latestInput, taskDurationSeconds,
+      totalDurationSeconds, codexDurationSeconds,
     });
   }
   const refreshInput = taskId
@@ -772,7 +792,6 @@ function fitProgressCardToRequestBudget(state = {}) {
     {
       state: {
         ...state,
-        latestInput: '',
         progress: state.progress ? { ...state.progress, plan: '' } : state.progress,
       },
       planComplete: !hasPlan,

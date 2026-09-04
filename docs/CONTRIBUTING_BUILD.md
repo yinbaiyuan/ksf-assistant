@@ -9,7 +9,7 @@
 - Windows 宿主：Node.js 20+ 与 npm
 - 仅使用 KSF 开发集成时：Ruby 3.2+
 
-普通用户安装包会携带运行所需的 Go 飞书桥、固定版 lark-cli 和迁移期 Node 兼容运行时。
+普通用户安装包会携带运行所需的 Go 飞书桥和固定版 lark-cli。迁移期安装包仍携带 Windows 默认入口及人工回退所需的 Node 兼容运行时；macOS arm64 健康路径不启动 Node。
 
 ## 验证
 

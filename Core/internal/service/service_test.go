@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -204,6 +206,40 @@ func TestFeishuSetupSettingsKeepRealWritesDisabledUntilConfirmation(t *testing.T
 	}
 }
 
+func TestFeishuSettingsOverviewSeparatesEnabledFromWriteModes(t *testing.T) {
+	settings := managedfeishu.DefaultSettings()
+	settings.Group.Enabled = true
+	settings.Directory.Enabled = true
+	settings.Docbox = managedfeishu.DryRunSwitch{Enabled: true, DryRun: true}
+	settings.Actionbox = managedfeishu.DryRunSwitch{Enabled: true, DryRun: false}
+	features := feishuFeatureOverview(settings)
+	states := map[string]string{}
+	for _, feature := range features {
+		states[feature.ID] = feature.State
+	}
+	if states["groupMessaging"] != "enabled" || states["peopleDirectory"] != "enabled" || states["groupDirectory"] != "off" || states["docbox"] != "dry_run" || states["actionbox"] != "live" {
+		t.Fatalf("unexpected feature projection: %#v", states)
+	}
+}
+
+func TestFeishuMissingCapabilitiesAreSanitizedAndGrouped(t *testing.T) {
+	got := feishuMissingCapabilities([]string{"docs:document.content:read", "contact:user:search", "docs:document:create", "unknown:scope"})
+	if strings.Join(got, ",") != "人员与群组,文档与知识库" {
+		t.Fatalf("unexpected capability projection: %#v", got)
+	}
+}
+
+func TestFeishuPermissionFailureKeepsMissingAsEmptyArray(t *testing.T) {
+	value := feishuPermissionOverview(nil, errors.New("permission check failed"))
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"missing":[]`) {
+		t.Fatalf("permission failure must remain decodable by desktop hosts: %s", data)
+	}
+}
+
 func TestFeishuActivationWaitsForReadyBeforeSending(t *testing.T) {
 	source, err := os.ReadFile("service.go")
 	if err != nil {
@@ -247,5 +283,21 @@ func TestConfigureCodexProcessEnvironmentDiscoversUserInstallWithoutPATH(t *test
 	}
 	if resolved != executable || os.Getenv("CODEX_BIN") != executable {
 		t.Fatalf("Codex path was not injected: resolved=%q env=%q", resolved, os.Getenv("CODEX_BIN"))
+	}
+}
+
+func TestCodexAssistantSupportRootUsesTheCurrentUserConfigurationDirectory(t *testing.T) {
+	home := t.TempDir()
+	configured := filepath.Join(home, "configured-support")
+	if runtime.GOOS == "windows" {
+		t.Setenv("LOCALAPPDATA", configured)
+	} else if runtime.GOOS == "darwin" {
+		t.Setenv("HOME", home)
+	} else {
+		t.Setenv("XDG_CONFIG_HOME", configured)
+	}
+	root := codexAssistantSupportRoot(home)
+	if !filepath.IsAbs(root) || filepath.Base(root) != "CodexUsageBar" {
+		t.Fatalf("unexpected CodexAssistant support root: %q", root)
 	}
 }

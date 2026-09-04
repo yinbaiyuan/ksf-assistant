@@ -401,14 +401,14 @@ ws client ready
 
 ### Codex 调用方式
 
-当前 bridge 不再通过 `codex exec` 执行任务，而是启动长期 `codex app-server` 进程，并用 JSON-RPC 调用原生 Codex 会话能力。
+当前 bridge 不再通过 `codex exec` 执行任务。普通任务按轮次启动短生命周期 `codex app-server`，并用 JSON-RPC 调用原生 Codex 会话能力。
 
 默认传输策略为 `CODEX_TRANSPORT=auto`：
 
 ```text
-- 优先尝试 codex app-server proxy，复用本地 app-server daemon。
-- 如果 daemon socket 不存在或不可用，先自动执行一次 `codex app-server daemon start`，然后重试 proxy。
-- 如果 proxy 仍不可用，自动降级为独立 codex app-server，保证飞书可用性。
+- CodexAssistant 托管的普通根消息和后台任务固定使用短生命周期独立 `codex app-server`，不经过 proxy，也不自动启动 daemon。
+- 初始化最多等待 5 秒；失败立即更新失败卡，禁止在不确定状态下重复创建 Thread 或 Turn。
+- 新 Thread 命名复用同一短连接并限制为 1 秒，失败仅记录安全诊断，不阻塞轮次结果。
 ```
 
 核心链路：
@@ -424,7 +424,7 @@ ws client ready
   -> 回复飞书
 ```
 
-CodexAssistant 显式连接的既有 Desktop 任务采用分离链路：App Server proxy 只执行 `thread/read`、历史和内容补读；`start / steer / interrupt` 通过 `~/.codex/ipc/ipc.sock` 定向交给目标任务的 Desktop 所有者。桥以标准本地 rollout 中的 `task_started / task_complete / turn_aborted` 作为 Desktop 轮次生命周期证据，避免把独立 App Server 对未完成轮次的临时 `interrupted` 投影误报为失败。这样不会由第二个 app-server `thread/resume` 已加载任务，也不会创建替代 thread。目标任务暂时没有所有者时，桥打开准确任务并等待 Desktop 接管后再提交。
+CodexAssistant 显式连接的既有 Desktop 任务采用独立链路：权威快照读取以及 `start / steer / interrupt` 均通过当前用户私有 Desktop IPC 定向交给目标任务的 Desktop 所有者。桥以标准本地 rollout 中的 `task_started / task_complete / turn_aborted` 作为轮次生命周期证据。这样不会由第二个 app-server `thread/resume` 已加载任务，也不会创建替代 thread。目标任务暂时没有所有者时，桥打开准确任务并等待 Desktop 接管后再提交。
 
 效果：
 
@@ -434,8 +434,9 @@ CodexAssistant 显式连接的既有 Desktop 任务采用分离链路：App Serv
 - 任务模式创建独立 Codex thread。
 - 飞书创建的 Codex 任务会进入标准 ~/.codex/sessions 与 session_index.jsonl。
 - Codex Desktop UI 可以看到这些标准本地 thread，并可继续后续工作。
-- 默认 Thread 使用 `飞书默认对话` 标题；卡片与 Thread 的私有绑定是后续轮次的唯一恢复入口。
+- 新根消息 Thread 使用 `飞书 · <首条消息摘要>` 标题；卡片与 Thread 的私有绑定是后续轮次的唯一恢复入口。
 - 默认对话与传统后台任务的每个飞书轮次使用短生命周期 App Server 客户端；轮次结束后先 `thread/unsubscribe` 再关闭传输，让持久 Thread 可以立即由 Codex Desktop 接管输入。项目升级后的飞书控制改走 Desktop IPC。
+- KSF 工作区只来自 Core 私有宿主上下文：就绪时以 KSF 根创建任务，未配置时使用托管通用工作区，失效时阻止创建并引导回软件设置；无权威项目投影的 KSF 根任务显示在“无项目”，不获得项目属性。
 - 启动时只清理旧版全局默认 session 指针，不删除历史 Codex Thread。
 - 审计日志仍保留，但只作为辅助索引，不再是主会话系统。
 ```
@@ -456,6 +457,7 @@ CODEX_TRANSPORT=auto
 CODEX_AUTO_START_DAEMON=true
 CODEX_CLIENT_NAME=codex_vscode
 CODEX_CLIENT_TITLE=Codex
+CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MS=5000
 CODEX_APP_SERVER_REQUEST_TIMEOUT_MS=60000
 CODEX_DESKTOP_IPC_PATH=/Users/<user>/.codex/ipc/ipc.sock
 CODEX_DESKTOP_REQUEST_TIMEOUT_MS=20000

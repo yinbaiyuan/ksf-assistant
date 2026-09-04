@@ -192,7 +192,14 @@ button { color: inherit; }
 .setting-head { display: flex; align-items: center; gap: 9px; }
 .setting-copy { flex: 1; min-width: 0; }
 .setting-title { font-weight: 630; }
+.setting-section-title { margin-bottom: 8px; font-size: 12px; font-weight: 700; }
+.setting > .setting-head + .setting-head { margin-top: 7px; }
+.feishu-feature-row { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--divider); }
 .setting-description { margin-top: 2px; color: var(--text-secondary); font-size: 11px; line-height: 1.45; }
+.setting-description.warning { color: var(--warning); }
+.inline-status { display: inline-flex; align-items: center; gap: 5px; color: var(--warning); font-size: 11px; font-weight: 630; white-space: nowrap; }
+.inline-status span { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.inline-status.healthy { color: var(--success); }
 .component-status-list { display: grid; gap: 5px; margin-top: 9px; }
 .component-status { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 12px; color: var(--text-secondary); font-size: 12px; }
 .component-status strong { color: var(--text); font-weight: 630; }

@@ -72,6 +72,18 @@ test('an explicit Codex workspace must already be a safe directory', (t) => {
   }), /does not exist/);
 });
 
+test('managed Codex workspace ignores legacy environment roots', (t) => {
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'feishu-workspace-managed-'));
+  const legacyRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'feishu-workspace-legacy-'));
+  t.after(() => fs.rmSync(dataRoot, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(legacyRoot, { recursive: true, force: true }));
+  assert.equal(defaultCodexWorkspaceRoot({
+    platform: 'darwin',
+    env: { CODEX_USAGE_BAR_MANAGED: '1', KMS_ROOT: legacyRoot },
+    dataRoot,
+  }), path.join(dataRoot, 'codex-workspace'));
+});
+
 test('managed compatibility launcher uses the host-provided pinned lark-cli', () => {
   const projectRoot = '/Applications/CodexAssistant.app/Contents/Resources/services/feishu-bridge';
   const larkCLI = '/Applications/CodexAssistant.app/Contents/Resources/runtime/lark-cli/darwin-arm64/lark-cli';

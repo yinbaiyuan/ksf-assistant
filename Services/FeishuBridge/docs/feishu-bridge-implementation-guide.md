@@ -107,7 +107,8 @@ feishu-bot-bridge/
 关键文件职责：
 
 - `bot-bridge.js`：主程序，包含事件消费、权限、路由、Codex 调用、outbox/docbox worker、wake server、日志和审计。
-- `lib/official-event-adapter.js`：官方 SDK 单一长连接入口；只适配事件传输，不执行飞书 API 读写。
+- `lib/official-event-adapter.js`：官方 SDK 单一长连接入口，负责事件传输。
+- `lib/official-message-client.js`：常驻官方 SDK 卡片快路径，只负责状态卡回复与更新；其余 219 项能力仍由 `lark-cli` 承担。
 - `lib/lark-cli-credentials.js`：在内存中复用 lark-cli 安全 profile 凭据，不写明文 secret。
 - `lib/lark-cli-runner.js`：统一的 `lark-cli` 执行层，封装飞书 API、消息发送、消息回复、文档读取、文档更新和官方版本管理调用。
 - `lib/contact-directory.js`：通讯录分页、去重、字段裁剪、安全缓存、姓名解析和同名绑定。
@@ -221,6 +222,7 @@ CODEX_FEISHU_DEFAULT_THREAD_TITLE=飞书默认对话
 CODEX_TIMEOUT_MS=600000
 CODEX_TASK_TIMEOUT_MS=1800000
 CODEX_BYPASS_APPROVALS=true
+CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MS=5000
 CODEX_APP_SERVER_REQUEST_TIMEOUT_MS=60000
 CODEX_CLIENT_NAME=codex_vscode
 CODEX_CLIENT_TITLE=Codex
@@ -397,7 +399,7 @@ task <任务描述>
 
 ## 9. Codex 调用链路
 
-推荐配置：
+以下传输开关只用于独立开发模式；CodexAssistant 托管模式会忽略它们并固定直连：
 
 ```text
 CODEX_TRANSPORT=auto
@@ -406,22 +408,20 @@ CODEX_CLIENT_NAME=codex_vscode
 CODEX_CLIENT_TITLE=Codex
 ```
 
-调用优先级：
+CodexAssistant 托管调用顺序：
 
 ```text
-codex app-server proxy
-  -> 本机 app-server daemon
-  -> Codex 标准 thread/turn 系统
-
-如果 proxy 不可用：
-  -> codex app-server daemon start
-  -> 再试 proxy
-  -> 回落到独立 codex app-server
+短生命周期 codex app-server
+  -> initialize（最多 5 秒）
+  -> thread/start 或 thread/resume
+  -> 新 Thread 同连接命名（最多 1 秒，失败不阻塞）
+  -> turn/start / turn/completed
+  -> thread/unsubscribe / 关闭连接
 ```
 
 超时建议：
 
-- `CODEX_APP_SERVER_REQUEST_TIMEOUT_MS=60000`
+- 托管模式初始化固定最多 5000 ms，可由 `CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MS` 单独约束；常规 RPC 继续使用 `CODEX_APP_SERVER_REQUEST_TIMEOUT_MS`，不得把初始化限时复用于 `thread/start`。
 - `CODEX_TIMEOUT_MS=600000`
 - `CODEX_TASK_TIMEOUT_MS=1800000`
 

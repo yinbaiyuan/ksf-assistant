@@ -194,7 +194,7 @@ function registerIPC() {
     await shell.openExternal(target);
     return true;
   });
-  ipcMain.handle('settings:update', (_event, patch) => {
+  ipcMain.handle('settings:update', async (_event, patch) => {
     const allowed = {};
     for (const key of ['ksfRoot', 'selectedFeishuTargetAlias', 'launchAtLogin', 'selectedPricingPlanId', 'customPricingPlans']) {
       if (Object.prototype.hasOwnProperty.call(patch || {}, key)) allowed[key] = patch[key];
@@ -203,13 +203,18 @@ function registerIPC() {
     if (Object.prototype.hasOwnProperty.call(allowed, 'launchAtLogin')) {
       app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin, openAsHidden: true });
     }
+    if (Object.prototype.hasOwnProperty.call(allowed, 'ksfRoot')) {
+      await core.request('integration/context/update', { ksfRoot: settings.ksfRoot });
+    }
     return settings;
   });
   ipcMain.handle('directory:choose', async (_event, kind) => {
     if (kind !== 'ksfRoot') throw new Error('不支持的目录类型');
     const result = await dialog.showOpenDialog(window, { properties: ['openDirectory'], title: '选择 KSF 根目录' });
     if (result.canceled || result.filePaths.length !== 1) return null;
-    return store.update({ [kind]: result.filePaths[0] });
+    const settings = store.update({ [kind]: result.filePaths[0] });
+    await core.request('integration/context/update', { ksfRoot: settings.ksfRoot });
+    return settings;
   });
   ipcMain.handle('project:set-pinned', (_event, { projectId, pinned }) => {
     if (typeof projectId !== 'string' || !projectId || /[\u0000-\u001f\u007f]/.test(projectId)) throw new Error('项目标识无效');
@@ -265,6 +270,8 @@ function registerIPC() {
   ipcMain.handle('feishu:setup-verify', () => core.request('feishu/setup/verify'));
   ipcMain.handle('feishu:setup-activate', (_event, targetAlias) => core.request('feishu/setup/activate', { targetAlias }));
   ipcMain.handle('feishu:setup-cancel', () => core.request('feishu/setup/cancel'));
+  ipcMain.handle('feishu:overview-read', () => core.request('feishu/settings/overview/read'));
+  ipcMain.handle('feishu:feature-update', (_event, payload) => core.request('feishu/features/update', payload));
   ipcMain.handle('feishu:supervisor-restart', () => core.request('feishu/supervisor/restart'));
   ipcMain.handle('feishu:open-external', async (_event, value) => {
     const target = allowedFeishuURL(value);
@@ -330,6 +337,7 @@ app.whenReady().then(async () => {
       CODEX_USAGE_BAR_LARK_CLI: runtime.larkCLI,
       FEISHU_BRIDGE_DATA_DIR: path.join(os.homedir(), '.config', 'feishu-bridge'),
     },
+    integrations: { ksfRoot: store.get().ksfRoot },
   });
   registerIPC();
   createWindow();

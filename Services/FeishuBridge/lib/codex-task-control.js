@@ -425,8 +425,21 @@ function recoveredRunningTurnOwner(link, observedState, observedTurnId) {
   return fallbackOwner;
 }
 
+function recoveredTaskLinkPublicState(link, snapshot) {
+  const observed = snapshot?.publicState || {};
+  const observedTurnId = String(snapshot?.turnId || '');
+  const deliveredTurnId = String(link?.lastDeliveredTurnId || '');
+  if (['completed', 'interrupted'].includes(link?.turnState)
+    && observed.turnState === 'interrupted'
+    && observedTurnId
+    && observedTurnId === deliveredTurnId) {
+    return { turnState: 'completed', turnOwner: 'none', actionRequired: 'none' };
+  }
+  return observed;
+}
+
 function taskLinkSnapshotRequiresSync(link, snapshot) {
-  const next = snapshot?.publicState || {};
+  const next = recoveredTaskLinkPublicState(link, snapshot);
   const pendingRevision = planImplementationRevision(snapshot?.pendingPlanImplementation);
   if (String(link.pendingPlanRevision || '') !== pendingRevision
     || String(link.pendingPlanTurnId || '') !== String(snapshot?.pendingPlanImplementation?.turnId || '')) {
@@ -604,6 +617,7 @@ module.exports = {
   publicTurnState,
   reconcilePlanTurnCompletion,
   recoveredRunningTurnOwner,
+  recoveredTaskLinkPublicState,
   safeQuestionSummary,
   terminalTaskLinkDetail,
   taskLinkCollaborationMode,

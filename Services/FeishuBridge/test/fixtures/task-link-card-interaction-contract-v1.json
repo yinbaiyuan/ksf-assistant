@@ -1,12 +1,20 @@
 {
   "schemaVersion": 1,
-  "cardRevision": 37,
+  "cardRevision": 39,
   "taskHeader": {
+    "headerTags": ["status", "mode"],
+    "modeLabels": ["默认", "计划"],
+    "modeStyle": "green",
     "primaryRow": ["taskTitle", "task_link_release"],
-    "secondaryRow": ["context", "duration", "lease"],
+    "secondaryRow": ["controller", "phase", "duration", "lease"],
     "taskTitleStyle": "strong",
     "metadataStyle": "muted",
     "releaseLabel": "断开"
+  },
+  "currentTurnInput": {
+    "label": "你",
+    "restartSource": "desktop_turn_journal",
+    "budgetPriority": "preserve_before_historical_plan"
   },
   "states": {
     "running": {
@@ -82,7 +90,9 @@
       "style": "danger"
     },
     "dismiss": {
-      "transport": "overflow"
+      "transport": "button",
+      "label": "断开",
+      "style": "danger"
     }
   }
 }

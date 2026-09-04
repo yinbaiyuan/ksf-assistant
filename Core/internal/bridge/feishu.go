@@ -16,27 +16,25 @@ import (
 )
 
 type FeishuClient struct {
-	Node string
+	Node       string
+	Executable string
+	LarkCLI    string
 }
 
 func (runtime FeishuClient) Inspect(ctx context.Context, root string) (domain.FeishuSnapshot, error) {
-	client, node, err := validateFeishuWithNode(root, runtime.Node)
+	statusData, err := runtime.runClient(ctx, root, []string{"status"}, nil)
 	if err != nil {
 		return domain.FeishuSnapshot{Availability: "notConfigured", TargetAliases: []string{}, Links: []domain.FeishuTaskLink{}}, err
 	}
-	statusData, err := run(ctx, root, node, []string{client, "status"}, nil)
+	targetData, err := runtime.runClient(ctx, root, []string{"targets", "list"}, nil)
 	if err != nil {
 		return domain.FeishuSnapshot{}, err
 	}
-	targetData, err := run(ctx, root, node, []string{client, "targets", "list"}, nil)
+	protocolData, err := runtime.runClient(ctx, root, []string{"task-link", "protocol"}, nil)
 	if err != nil {
 		return domain.FeishuSnapshot{}, err
 	}
-	protocolData, err := run(ctx, root, node, []string{client, "task-link", "protocol"}, nil)
-	if err != nil {
-		return domain.FeishuSnapshot{}, err
-	}
-	linkData, err := run(ctx, root, node, []string{client, "task-link", "list"}, nil)
+	linkData, err := runtime.runClient(ctx, root, []string{"task-link", "list"}, nil)
 	if err != nil {
 		return domain.FeishuSnapshot{}, err
 	}
@@ -62,6 +60,10 @@ func (runtime FeishuClient) Inspect(ctx context.Context, root string) (domain.Fe
 			Profile           string `json:"profile"`
 			ProfileValid      bool   `json:"profileValid"`
 			DesiredConnection bool   `json:"desiredConnection"`
+			Status            string `json:"status"`
+			Connection        struct {
+				State string `json:"state"`
+			} `json:"connection"`
 		} `json:"eventConsumer"`
 	}
 	var targets struct {
@@ -106,28 +108,25 @@ func (runtime FeishuClient) Inspect(ctx context.Context, root string) (domain.Fe
 	} else if !protocol.Readiness.Ready {
 		availability, message = "unavailable", "飞书桥任务控制尚未就绪："+strings.Join(protocol.Readiness.Blockers, "、")
 	}
-	return domain.FeishuSnapshot{Availability: availability, Message: message, Profile: status.EventConsumer.Profile, ProfileValid: status.EventConsumer.ProfileValid, InboundConnection: status.EventConsumer.DesiredConnection, ProcessRunning: running, TargetAliases: aliases, TaskLinkProtocolVersion: protocol.Version, TaskLinkReady: protocol.Readiness.Ready, ReadinessBlockers: protocol.Readiness.Blockers, Links: links.Links}, nil
+	inboundConnected := status.EventConsumer.Connection.State == "connected" || (status.EventConsumer.Connection.State == "" && status.EventConsumer.Status == "connected")
+	return domain.FeishuSnapshot{Availability: availability, Message: message, Profile: status.EventConsumer.Profile, ProfileValid: status.EventConsumer.ProfileValid, InboundConnection: inboundConnected, ProcessRunning: running, TargetAliases: aliases, TaskLinkProtocolVersion: protocol.Version, TaskLinkReady: protocol.Readiness.Ready, ReadinessBlockers: protocol.Readiness.Blockers, Links: links.Links}, nil
 }
 
 func (client FeishuClient) CreateTaskLink(ctx context.Context, root, threadID, title, projectName, targetAlias string) (domain.FeishuTaskLink, error) {
 	payload, _ := json.Marshal(map[string]string{"threadId": threadID, "title": title, "projectName": projectName, "targetAlias": targetAlias})
-	return mutateTaskLink(ctx, root, client.Node, []string{"task-link", "create", "--payload-file", "-"}, payload)
+	return client.mutateTaskLink(ctx, root, []string{"task-link", "create", "--payload-file", "-"}, payload)
 }
 
 func (client FeishuClient) InterruptTaskLink(ctx context.Context, root, threadID string) (domain.FeishuTaskLink, error) {
-	return mutateTaskLink(ctx, root, client.Node, []string{"task-link", "interrupt", "--task-key", domain.PublicTaskKey(threadID)}, nil)
+	return client.mutateTaskLink(ctx, root, []string{"task-link", "interrupt", "--task-key", domain.PublicTaskKey(threadID)}, nil)
 }
 
 func (client FeishuClient) ReleaseTaskLink(ctx context.Context, root, threadID string) (domain.FeishuTaskLink, error) {
-	return mutateTaskLink(ctx, root, client.Node, []string{"task-link", "release", "--task-key", domain.PublicTaskKey(threadID)}, nil)
+	return client.mutateTaskLink(ctx, root, []string{"task-link", "release", "--task-key", domain.PublicTaskKey(threadID)}, nil)
 }
 
 func (runtime FeishuClient) SendTest(ctx context.Context, root, targetAlias string) error {
-	client, node, err := validateFeishuWithNode(root, runtime.Node)
-	if err != nil {
-		return err
-	}
-	_, err = run(ctx, root, node, []string{client, "send", "--target", targetAlias, "--format", "text", "--content-file", "-", "--source", "codex-usage-bar", "--reason", "用户在 CodexAssistant 中手动发送连接测试消息"}, []byte("CodexAssistant 飞书桥连接测试成功"))
+	_, err := runtime.runClient(ctx, root, []string{"send", "--target", targetAlias, "--format", "text", "--content-file", "-", "--source", "codex-usage-bar", "--reason", "用户在 CodexAssistant 中手动发送连接测试消息"}, []byte("CodexAssistant 飞书桥连接测试成功"))
 	return err
 }
 
@@ -202,11 +201,7 @@ func (client FeishuClient) EnsureCurrentUserTarget(ctx context.Context, root str
 }
 
 func (client FeishuClient) command(ctx context.Context, root string, args []string, input []byte) (map[string]any, error) {
-	script, node, err := validateFeishuWithNode(root, client.Node)
-	if err != nil {
-		return nil, err
-	}
-	data, err := run(ctx, root, node, append([]string{script}, args...), input)
+	data, err := client.runClient(ctx, root, args, input)
 	if err != nil {
 		return nil, err
 	}
@@ -253,12 +248,8 @@ func readPrivateQR(filePath string) ([]byte, error) {
 	return data, nil
 }
 
-func mutateTaskLink(ctx context.Context, root, configuredNode string, args []string, input []byte) (domain.FeishuTaskLink, error) {
-	client, node, err := validateFeishuWithNode(root, configuredNode)
-	if err != nil {
-		return domain.FeishuTaskLink{}, err
-	}
-	data, err := run(ctx, root, node, append([]string{client}, args...), input)
+func (client FeishuClient) mutateTaskLink(ctx context.Context, root string, args []string, input []byte) (domain.FeishuTaskLink, error) {
+	data, err := client.runClient(ctx, root, args, input)
 	if err != nil {
 		return domain.FeishuTaskLink{}, err
 	}
@@ -269,6 +260,40 @@ func mutateTaskLink(ctx context.Context, root, configuredNode string, args []str
 		return domain.FeishuTaskLink{}, fmt.Errorf("飞书桥返回了无法识别的数据")
 	}
 	return response.Link, nil
+}
+
+func (client FeishuClient) runClient(ctx context.Context, root string, args []string, input []byte) ([]byte, error) {
+	if strings.TrimSpace(client.Executable) != "" && runtime.GOOS != "windows" {
+		executable, err := validateNativeFeishuClient(client.Executable)
+		if err != nil {
+			return nil, err
+		}
+		extra := []string{}
+		if larkCLI := strings.TrimSpace(client.LarkCLI); larkCLI != "" {
+			extra = append(extra, "LARK_CLI_BIN="+larkCLI)
+		}
+		return runWithEnvironment(ctx, filepath.Dir(executable), executable, append([]string{"client"}, args...), input, extra)
+	}
+	script, node, err := validateFeishuWithNode(root, client.Node)
+	if err != nil {
+		return nil, err
+	}
+	return run(ctx, root, node, append([]string{script}, args...), input)
+}
+
+func validateNativeFeishuClient(value string) (string, error) {
+	absolute, err := filepath.Abs(value)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(absolute)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o111 == 0 {
+		return "", fmt.Errorf("安装包内 Go 飞书桥无效")
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o022 != 0 {
+		return "", fmt.Errorf("Go 飞书桥不可被组或其他用户写入")
+	}
+	return absolute, nil
 }
 
 func validateFeishu(root string) (string, string, error) {

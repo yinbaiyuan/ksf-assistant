@@ -240,14 +240,14 @@ func writePrivateJSON(path string, value any) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Rename(temporary, path); err != nil {
+	if err := replacePrivateFile(temporary, path); err != nil {
 		return err
 	}
 	clean = false
 	if runtime.GOOS != "windows" {
 		return os.Chmod(path, 0o600)
 	}
-	return nil
+	return securePrivatePath(path, false)
 }
 
 func ensurePrivateDirectory(path string) error {
@@ -261,7 +261,7 @@ func ensurePrivateDirectory(path string) error {
 	if runtime.GOOS != "windows" {
 		return os.Chmod(path, 0o700)
 	}
-	return nil
+	return securePrivatePath(path, true)
 }
 
 func invalidText(value string, maximum int) bool {

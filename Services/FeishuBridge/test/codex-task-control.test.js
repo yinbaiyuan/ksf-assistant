@@ -19,6 +19,7 @@ const {
   publicTurnState,
   reconcilePlanTurnCompletion,
   recoveredRunningTurnOwner,
+  recoveredTaskLinkPublicState,
   terminalTaskLinkDetail,
   taskLinkFollowupProjection,
   taskLinkPlanImplementationRequest,
@@ -301,6 +302,29 @@ test('Desktop journal state overrides the provisional interrupted app-server pro
   assert.equal(completed.publicState.turnState, 'completed');
   assert.equal(completed.finalText, '最终结果');
   assert.equal(completed.turnDurationSeconds, 11);
+});
+
+test('a delivered completed turn cannot regress to interrupted during Desktop recovery', () => {
+  const link = {
+    turnState: 'completed', turnOwner: 'none', actionRequired: 'none',
+    lastDeliveredTurnId: 'turn-external', activeTurnId: '',
+    pendingPlanRevision: '', pendingPlanTurnId: '',
+    progress: { durationSeconds: 2, plan: '', changedFiles: 0 },
+  };
+  const interrupted = {
+    publicState: { turnState: 'interrupted', turnOwner: 'none', actionRequired: 'none' },
+    turnId: 'turn-external', turnDurationSeconds: 2, finalText: '', planText: '',
+    pendingPlanImplementation: null,
+  };
+  assert.deepEqual(recoveredTaskLinkPublicState(link, interrupted), {
+    turnState: 'completed', turnOwner: 'none', actionRequired: 'none',
+  });
+  assert.equal(taskLinkSnapshotRequiresSync(link, interrupted), false);
+  assert.equal(recoveredTaskLinkPublicState({ ...link, turnState: 'interrupted' }, interrupted).turnState, 'completed');
+  assert.equal(recoveredTaskLinkPublicState(link, {
+    ...interrupted,
+    turnId: 'turn-new',
+  }).turnState, 'interrupted');
 });
 
 test('Desktop journal projects a pending Plan question as Feishu-answerable', () => {

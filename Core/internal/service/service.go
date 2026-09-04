@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -37,6 +38,20 @@ type DashboardRequest struct {
 	KSFRoot          string                  `json:"ksfRoot"`
 	PinnedProjectIDs []string                `json:"pinnedProjectIds"`
 	PricingSelection domain.PricingSelection `json:"pricingSelection,omitempty"`
+}
+
+type InitializeRequest struct {
+	Integrations IntegrationContextRequest `json:"integrations"`
+}
+
+type IntegrationContextRequest struct {
+	KSFRoot string `json:"ksfRoot"`
+}
+
+type FeishuFeatureUpdateRequest struct {
+	Feature          string `json:"feature"`
+	Mode             string `json:"mode"`
+	ConfirmRealWrite bool   `json:"confirmRealWrite"`
 }
 
 type CreateTaskRequest struct {
@@ -92,6 +107,7 @@ type Service struct {
 	feishuDataRoot          string
 	legacyFeishuSupervisor  *bridge.FeishuSupervisor
 	managedFeishuSupervisor *managedfeishu.Supervisor
+	hostContextStore        managedfeishu.HostContextStore
 	lastFeishuRoot          string
 	lastFeishuAt            time.Time
 	lastFeishu              domain.FeishuSnapshot
@@ -115,6 +131,7 @@ type projectSourceCache struct {
 
 func New() *Service {
 	home, _ := os.UserHomeDir()
+	supportRoot := codexAssistantSupportRoot(home)
 	feishuRoot := os.Getenv("CODEX_USAGE_BAR_FEISHU_SERVICE_ROOT")
 	feishuNode := os.Getenv("CODEX_USAGE_BAR_NODE")
 	dataRoot := os.Getenv("FEISHU_BRIDGE_DATA_DIR")
@@ -122,8 +139,20 @@ func New() *Service {
 		dataRoot = filepath.Join(home, ".config", "feishu-bridge")
 	}
 	var managedSupervisor *managedfeishu.Supervisor
+	hostContextStore := managedfeishu.NewHostContextStore(dataRoot)
+	legacySupervisor := bridge.NewFeishuSupervisor(feishuRoot, feishuNode)
+	legacySupervisor.SetEnvironment([]string{
+		"CODEX_USAGE_BAR_MANAGED=1",
+		"CODEX_USAGE_BAR_HOST_CONTEXT=" + hostContextStore.Path(),
+		"CODEX_USAGE_BAR_SUPPORT_DIR=" + supportRoot,
+		"FEISHU_BRIDGE_DATA_DIR=" + dataRoot,
+	})
 	if executable := strings.TrimSpace(os.Getenv("CODEX_USAGE_BAR_FEISHU_BRIDGE")); executable != "" {
-		environment := []string{"FEISHU_BRIDGE_DATA_DIR=" + dataRoot}
+		environment := []string{
+			"FEISHU_BRIDGE_DATA_DIR=" + dataRoot,
+			"CODEX_USAGE_BAR_HOST_CONTEXT=" + hostContextStore.Path(),
+			"CODEX_USAGE_BAR_SUPPORT_DIR=" + supportRoot,
+		}
 		if larkCLI := strings.TrimSpace(os.Getenv("CODEX_USAGE_BAR_LARK_CLI")); larkCLI != "" {
 			environment = append(environment, "LARK_CLI_BIN="+larkCLI)
 		}
@@ -138,11 +167,12 @@ func New() *Service {
 	}
 	return &Service{
 		home:                    home,
-		feishu:                  bridge.FeishuClient{Node: feishuNode},
+		feishu:                  bridge.FeishuClient{Node: feishuNode, Executable: strings.TrimSpace(os.Getenv("CODEX_USAGE_BAR_FEISHU_BRIDGE")), LarkCLI: strings.TrimSpace(os.Getenv("CODEX_USAGE_BAR_LARK_CLI"))},
 		feishuRoot:              feishuRoot,
 		feishuDataRoot:          dataRoot,
-		legacyFeishuSupervisor:  bridge.NewFeishuSupervisor(feishuRoot, feishuNode),
+		legacyFeishuSupervisor:  legacySupervisor,
 		managedFeishuSupervisor: managedSupervisor,
+		hostContextStore:        hostContextStore,
 		desktop:                 desktop.New(desktop.DefaultEndpoint(home)),
 		trackingAt:              map[string]time.Time{},
 		projectSources:          map[string]projectSourceCache{},
@@ -150,15 +180,32 @@ func New() *Service {
 	}
 }
 
-func (service *Service) Initialize(ctx context.Context) map[string]any {
+func codexAssistantSupportRoot(home string) string {
+	if root, err := os.UserConfigDir(); err == nil && strings.TrimSpace(root) != "" {
+		return filepath.Join(root, "CodexUsageBar")
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		return filepath.Join(home, "Library", "Application Support", "CodexUsageBar")
+	case "windows":
+		return filepath.Join(home, "AppData", "Local", "CodexUsageBar")
+	default:
+		return filepath.Join(home, ".config", "CodexUsageBar")
+	}
+}
+
+func (service *Service) Initialize(ctx context.Context, request InitializeRequest) map[string]any {
 	executable, err := configureCodexProcessEnvironment(service.home)
 	if err == nil {
 		service.codex = &codex.Client{Executable: executable, Timeout: 15 * time.Second}
 		_ = service.codex.Start(ctx)
 	}
 	_ = service.desktop.Start(ctx)
-	_ = service.startFeishuSupervisor()
-	return map[string]any{
+	hostContext, hostContextErr := service.UpdateIntegrationContext(request.Integrations)
+	if hostContextErr == nil {
+		_ = service.startFeishuSupervisor()
+	}
+	result := map[string]any{
 		"protocol": domain.Protocol,
 		"version":  Version,
 		"platform": runtime.GOOS,
@@ -167,6 +214,16 @@ func (service *Service) Initialize(ctx context.Context) map[string]any {
 			"taskCreation": true, "projectLaunch": true, "feishuTaskLinks": true, "feishuServiceManagement": true,
 		},
 	}
+	if hostContextErr == nil {
+		result["integrations"] = hostContext
+	} else {
+		result["integrationError"] = "无法安全写入宿主集成上下文，飞书桥未启动"
+	}
+	return result
+}
+
+func (service *Service) UpdateIntegrationContext(request IntegrationContextRequest) (managedfeishu.HostContext, error) {
+	return service.hostContextStore.SaveKSFRoot(request.KSFRoot)
 }
 
 func configureCodexProcessEnvironment(home string) (string, error) {
@@ -645,6 +702,182 @@ func (service *Service) FinishFeishuAuth(ctx context.Context) error {
 
 func (service *Service) FeishuPermissions(ctx context.Context) (map[string]any, error) {
 	return service.feishu.Permissions(ctx, service.feishuRoot)
+}
+
+func (service *Service) FeishuSettingsOverview(ctx context.Context) (domain.FeishuSettingsOverview, error) {
+	settings, err := service.FeishuSettings()
+	if err != nil {
+		return domain.FeishuSettingsOverview{}, err
+	}
+	snapshot := service.readFeishu(ctx, service.feishuRoot, time.Now())
+	permissions, permissionErr := service.FeishuPermissions(ctx)
+	overview := domain.FeishuSettingsOverview{
+		State:       snapshot.Availability,
+		Summary:     feishuOverviewSummary(snapshot),
+		Profile:     settings.Profile,
+		Health:      domain.FeishuSettingsHealth{Core: "running", Bridge: feishuBridgeHealth(snapshot), Inbound: feishuInboundHealth(settings.Profile, snapshot), Detail: snapshot.Message},
+		Permissions: feishuPermissionOverview(permissions, permissionErr),
+		Features:    feishuFeatureOverview(settings),
+		Targets:     snapshot.TargetAliases,
+	}
+	return overview, nil
+}
+
+func (service *Service) UpdateFeishuFeature(ctx context.Context, request FeishuFeatureUpdateRequest) (domain.FeishuSettingsOverview, error) {
+	settings, err := service.FeishuSettings()
+	if err != nil {
+		return domain.FeishuSettingsOverview{}, err
+	}
+	mode := strings.TrimSpace(request.Mode)
+	switch request.Feature {
+	case "groupMessaging":
+		if mode != "off" && mode != "enabled" {
+			return domain.FeishuSettingsOverview{}, errors.New("群聊消息处理只支持关闭或启用")
+		}
+		settings.Group.Enabled = mode == "enabled"
+	case "peopleDirectory":
+		if mode != "off" && mode != "enabled" {
+			return domain.FeishuSettingsOverview{}, errors.New("人员查询只支持关闭或启用")
+		}
+		settings.Directory.Enabled = mode == "enabled"
+	case "groupDirectory":
+		if mode != "off" && mode != "enabled" {
+			return domain.FeishuSettingsOverview{}, errors.New("群组查询只支持关闭或启用")
+		}
+		settings.GroupDirectory.Enabled = mode == "enabled"
+	case "docbox", "actionbox":
+		if mode != "off" && mode != "dry_run" && mode != "live" {
+			return domain.FeishuSettingsOverview{}, errors.New("写入能力只支持关闭、演练或真实执行")
+		}
+		if mode == "live" && !request.ConfirmRealWrite {
+			return domain.FeishuSettingsOverview{}, errors.New("允许真实执行前需要明确确认")
+		}
+		value := managedfeishu.DryRunSwitch{Enabled: mode != "off", DryRun: mode != "live"}
+		if request.Feature == "docbox" {
+			settings.Docbox = value
+		} else {
+			settings.Actionbox = value
+		}
+	default:
+		return domain.FeishuSettingsOverview{}, errors.New("不支持的飞书高级功能")
+	}
+	if err := service.saveAndRestartFeishuSettings(ctx, settings); err != nil {
+		return domain.FeishuSettingsOverview{}, err
+	}
+	return service.FeishuSettingsOverview(ctx)
+}
+
+func feishuFeatureOverview(settings managedfeishu.Settings) []domain.FeishuFeatureOverview {
+	switchState := func(enabled bool) string {
+		if enabled {
+			return "enabled"
+		}
+		return "off"
+	}
+	writeState := func(value managedfeishu.DryRunSwitch) string {
+		if !value.Enabled {
+			return "off"
+		}
+		if value.DryRun {
+			return "dry_run"
+		}
+		return "live"
+	}
+	return []domain.FeishuFeatureOverview{
+		{ID: "groupMessaging", Title: "群聊消息处理", Description: "在群聊中接收并处理消息", State: switchState(settings.Group.Enabled)},
+		{ID: "peopleDirectory", Title: "人员查询", Description: "按姓名查询已授权人员", State: switchState(settings.Directory.Enabled)},
+		{ID: "groupDirectory", Title: "群组查询", Description: "按名称查询已授权群组", State: switchState(settings.GroupDirectory.Enabled)},
+		{ID: "docbox", Title: "文档与知识库", Description: "通过受控队列处理文档写入", State: writeState(settings.Docbox), Writable: true},
+		{ID: "actionbox", Title: "自动化与队列", Description: "通过受控队列执行自动化操作", State: writeState(settings.Actionbox), Writable: true},
+	}
+}
+
+func feishuPermissionOverview(value map[string]any, callErr error) domain.FeishuPermissionOverview {
+	if callErr != nil {
+		return domain.FeishuPermissionOverview{Application: "unavailable", User: "unavailable", Missing: []string{}}
+	}
+	data, _ := json.Marshal(value)
+	var report struct {
+		Permissions struct {
+			Verified   bool `json:"verified"`
+			Identities struct {
+				User struct {
+					Ready       bool `json:"ready"`
+					Application *struct {
+						Missing []string `json:"missing"`
+					} `json:"application"`
+					OAuth struct {
+						Missing []string `json:"missing"`
+					} `json:"oauth"`
+				} `json:"user"`
+			} `json:"identities"`
+		} `json:"permissions"`
+	}
+	if json.Unmarshal(data, &report) != nil {
+		return domain.FeishuPermissionOverview{Application: "unavailable", User: "unavailable", Missing: []string{}}
+	}
+	missing := append([]string{}, report.Permissions.Identities.User.OAuth.Missing...)
+	if app := report.Permissions.Identities.User.Application; app != nil {
+		missing = append(missing, app.Missing...)
+	}
+	missing = uniqueStrings(missing)
+	appState, userState := "verified", "verified"
+	if len(missing) > 0 {
+		appState, userState = "missing", "missing"
+	}
+	if !report.Permissions.Identities.User.Ready || !report.Permissions.Verified {
+		userState = "missing"
+	}
+	return domain.FeishuPermissionOverview{Application: appState, User: userState, Missing: feishuMissingCapabilities(missing)}
+}
+
+func feishuMissingCapabilities(scopes []string) []string {
+	groups := map[string]string{"doc": "文档与知识库", "docs": "文档与知识库", "wiki": "文档与知识库", "calendar": "日历", "task": "任务", "contact": "人员与群组", "im": "沟通与任务", "sheets": "表格", "base": "多维表格", "vc": "会议", "minutes": "会议纪要"}
+	result := []string{}
+	for _, scope := range scopes {
+		if name, ok := groups[strings.Split(scope, ":")[0]]; ok {
+			result = append(result, name)
+		}
+	}
+	return uniqueStrings(result)
+}
+
+func feishuBridgeHealth(snapshot domain.FeishuSnapshot) string {
+	if snapshot.ProcessRunning && snapshot.Availability == "ready" {
+		return "running"
+	}
+	return snapshot.Availability
+}
+func feishuInboundHealth(profile string, snapshot domain.FeishuSnapshot) string {
+	if profile == managedfeishu.ProfileManualOnly {
+		return "manual_only"
+	}
+	if snapshot.InboundConnection {
+		return "connected"
+	}
+	return "unavailable"
+}
+func feishuOverviewSummary(snapshot domain.FeishuSnapshot) string {
+	if snapshot.Availability == "ready" {
+		return "单聊收发、卡片回调与 Codex 任务控制可用"
+	}
+	if snapshot.Message != "" {
+		return snapshot.Message
+	}
+	return "飞书桥需要处理"
+}
+func uniqueStrings(values []string) []string {
+	seen := map[string]bool{}
+	result := []string{}
+	for _, value := range values {
+		if value != "" && !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+			seen[value] = true
+		}
+	}
+	sort.Strings(result)
+	return result
 }
 
 func (service *Service) SetFeishuProfile(ctx context.Context, profile string) (map[string]any, error) {

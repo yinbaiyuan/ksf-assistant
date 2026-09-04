@@ -88,7 +88,7 @@ private enum FeishuBridgeStandaloneTestRunner {
                 throw TestFailure(description: "task-link release was not decoded")
             }
 
-            try manager.setAttributes([.posixPermissions: 0o622], ofItemAtPath: clientScript.path)
+			try manager.setAttributes([.posixPermissions: 0o722], ofItemAtPath: fakeNode.path)
             do {
                 try client.validate(rootURL: root)
                 throw TestFailure(description: "unsafe bridge client permissions were accepted")
@@ -96,7 +96,7 @@ private enum FeishuBridgeStandaloneTestRunner {
                 // Expected.
             }
 
-            print("PASS Feishu Bridge status, task links, stdin payloads, and script security")
+			print("PASS Feishu Bridge status, task links, stdin payloads, and native executable security")
         } catch {
             fputs("FAIL \(error)\n", stderr)
             exit(1)

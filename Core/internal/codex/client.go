@@ -36,13 +36,22 @@ type Client struct {
 	Executable string
 	Timeout    time.Duration
 
-	stateMu sync.Mutex
-	writeMu sync.Mutex
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	pending map[int]chan response
-	nextID  int
-	closed  bool
+	stateMu        sync.Mutex
+	writeMu        sync.Mutex
+	cmd            *exec.Cmd
+	stdin          io.WriteCloser
+	pending        map[int]chan response
+	serverRequests map[string]ServerRequest
+	nextID         int
+	closed         bool
+}
+
+type ServerRequest struct {
+	ID        json.RawMessage
+	Method    string
+	ThreadID  string
+	TurnID    string
+	Questions []map[string]any
 }
 
 func LocateExecutable(home string) (string, error) {
@@ -139,6 +148,7 @@ func (client *Client) Start(ctx context.Context) error {
 	client.cmd = command
 	client.stdin = stdin
 	client.pending = map[int]chan response{}
+	client.serverRequests = map[string]ServerRequest{}
 	go io.Copy(io.Discard, stderr)
 	go client.readLoop(stdout, command)
 	client.stateMu.Unlock()
@@ -225,6 +235,107 @@ func (client *Client) CreateDraftThread(ctx context.Context, cwd, name string) (
 		return "", err
 	}
 	return started.Thread.ID, nil
+}
+
+func (client *Client) StartBridgeThread(ctx context.Context, cwd, name string) (string, error) {
+	var started struct {
+		Thread struct {
+			ID string `json:"id"`
+		} `json:"thread"`
+	}
+	params := map[string]any{
+		"cwd": cwd, "approvalPolicy": "never", "sandbox": "danger-full-access",
+		"personality": "pragmatic", "serviceName": "codex_feishu_bridge_go", "threadSource": "user", "ephemeral": false,
+		"developerInstructions": "The user is interacting through an authorized Feishu bridge. Never expose credentials or hidden identifiers. Ask for desktop interaction when secret input or approval is required.",
+	}
+	if err := client.Call(ctx, "thread/start", params, &started); err != nil {
+		return "", err
+	}
+	if started.Thread.ID == "" {
+		return "", errors.New("thread/start returned an empty thread id")
+	}
+	if strings.TrimSpace(name) != "" {
+		_ = client.Call(ctx, "thread/name/set", map[string]any{"threadId": started.Thread.ID, "name": name}, nil)
+	}
+	return started.Thread.ID, nil
+}
+
+func (client *Client) StartBridgeTurn(ctx context.Context, threadID, cwd, text string) (string, error) {
+	return client.StartBridgeTurnWithMode(ctx, threadID, cwd, text, nil)
+}
+
+func (client *Client) StartBridgeTurnWithMode(ctx context.Context, threadID, cwd, text string, collaborationMode map[string]any) (string, error) {
+	var started struct {
+		Turn struct {
+			ID string `json:"id"`
+		} `json:"turn"`
+	}
+	params := map[string]any{
+		"threadId": threadID, "input": []map[string]any{{"type": "text", "text": text}}, "cwd": cwd,
+		"approvalPolicy": "never", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "summary": "auto",
+	}
+	if collaborationMode != nil {
+		params["collaborationMode"] = collaborationMode
+	}
+	if err := client.Call(ctx, "turn/start", params, &started); err != nil {
+		return "", err
+	}
+	if started.Turn.ID == "" {
+		return "", errors.New("turn/start returned an empty turn id")
+	}
+	return started.Turn.ID, nil
+}
+
+func (client *Client) SteerBridgeTurn(ctx context.Context, threadID, turnID, text string) (string, error) {
+	var result struct {
+		TurnID string `json:"turnId"`
+		Turn   struct {
+			ID string `json:"id"`
+		} `json:"turn"`
+	}
+	err := client.Call(ctx, "turn/steer", map[string]any{"threadId": threadID, "expectedTurnId": turnID, "input": []map[string]any{{"type": "text", "text": text}}}, &result)
+	if err != nil {
+		return "", err
+	}
+	if result.TurnID != "" {
+		return result.TurnID, nil
+	}
+	if result.Turn.ID != "" {
+		return result.Turn.ID, nil
+	}
+	return turnID, nil
+}
+
+func (client *Client) ReadBridgeThread(ctx context.Context, threadID string) (map[string]any, error) {
+	var value map[string]any
+	if err := client.Call(ctx, "thread/read", map[string]any{"threadId": threadID, "includeTurns": true}, &value); err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
+func (client *Client) InterruptBridgeTurn(ctx context.Context, threadID, turnID string) error {
+	return client.Call(ctx, "turn/interrupt", map[string]any{"threadId": threadID, "turnId": turnID}, nil)
+}
+
+func (client *Client) PendingBridgeUserInput(threadID string) (ServerRequest, bool) {
+	client.stateMu.Lock()
+	defer client.stateMu.Unlock()
+	value, ok := client.serverRequests[threadID]
+	return value, ok
+}
+
+func (client *Client) AnswerBridgeUserInput(threadID string, answers map[string]any) error {
+	client.stateMu.Lock()
+	request, ok := client.serverRequests[threadID]
+	if ok {
+		delete(client.serverRequests, threadID)
+	}
+	client.stateMu.Unlock()
+	if !ok {
+		return errors.New("Codex user input request is no longer pending")
+	}
+	return client.write(map[string]any{"id": request.ID, "result": map[string]any{"answers": answers}})
 }
 
 func Observations(threads []domain.CodexThread) []domain.TaskObservation {
@@ -331,6 +442,22 @@ func (client *Client) readLoop(stdout io.Reader, command *exec.Cmd) {
 	scanner.Buffer(make([]byte, 64*1024), 64*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Bytes()
+		var requestEnvelope struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params map[string]any  `json:"params"`
+		}
+		if json.Unmarshal(line, &requestEnvelope) == nil && requestEnvelope.Method != "" && len(requestEnvelope.ID) > 0 && string(requestEnvelope.ID) != "null" {
+			threadID := recursiveString(requestEnvelope.Params, "threadId", "thread_id")
+			turnID := recursiveString(requestEnvelope.Params, "turnId", "turn_id")
+			questions := recursiveQuestions(requestEnvelope.Params)
+			if threadID != "" {
+				client.stateMu.Lock()
+				client.serverRequests[threadID] = ServerRequest{ID: append(json.RawMessage(nil), requestEnvelope.ID...), Method: requestEnvelope.Method, ThreadID: threadID, TurnID: turnID, Questions: questions}
+				client.stateMu.Unlock()
+			}
+			continue
+		}
 		var envelope struct {
 			ID *int `json:"id"`
 		}
@@ -357,6 +484,57 @@ func (client *Client) readLoop(stdout io.Reader, command *exec.Cmd) {
 	client.stateMu.Unlock()
 }
 
+func recursiveString(value any, names ...string) string {
+	switch item := value.(type) {
+	case map[string]any:
+		for _, name := range names {
+			if text, ok := item[name].(string); ok && text != "" {
+				return text
+			}
+		}
+		for _, child := range item {
+			if text := recursiveString(child, names...); text != "" {
+				return text
+			}
+		}
+	case []any:
+		for _, child := range item {
+			if text := recursiveString(child, names...); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+func recursiveQuestions(value any) []map[string]any {
+	switch item := value.(type) {
+	case map[string]any:
+		if raw, ok := item["questions"].([]any); ok {
+			result := []map[string]any{}
+			for _, entry := range raw {
+				if question, ok := entry.(map[string]any); ok {
+					result = append(result, question)
+				}
+			}
+			if len(result) > 0 {
+				return result
+			}
+		}
+		for _, child := range item {
+			if result := recursiveQuestions(child); len(result) > 0 {
+				return result
+			}
+		}
+	case []any:
+		for _, child := range item {
+			if result := recursiveQuestions(child); len(result) > 0 {
+				return result
+			}
+		}
+	}
+	return nil
+}
+
 func (client *Client) removePending(id int) {
 	client.stateMu.Lock()
 	delete(client.pending, id)
@@ -376,6 +554,7 @@ func (client *Client) stopLocked(reason error) {
 	}
 	client.cmd = nil
 	client.stdin = nil
+	client.serverRequests = map[string]ServerRequest{}
 }
 
 func sourceKind(value any) *string {

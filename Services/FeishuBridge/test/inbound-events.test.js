@@ -30,9 +30,14 @@ function cardElements(card, tag) {
   return matches;
 }
 
-test('language-neutral task-link card contract freezes revision 37 interactions', () => {
+test('language-neutral task-link card contract freezes revision 39 interactions', () => {
   assert.equal(taskLinkCardContract.schemaVersion, 1);
   assert.equal(taskLinkCardContract.cardRevision, TASK_LINK_CARD_REVISION);
+  assert.deepEqual(taskLinkCardContract.currentTurnInput, {
+    label: '你',
+    restartSource: 'desktop_turn_journal',
+    budgetPriority: 'preserve_before_historical_plan',
+  });
   assert.deepEqual(taskLinkCardContract.states.running.topActions, ['task_link_release']);
   assert.deepEqual(taskLinkCardContract.states.running.inputRow, [
     'task_link_interrupt', 'followup', 'task_link_followup',
@@ -40,6 +45,9 @@ test('language-neutral task-link card contract freezes revision 37 interactions'
   assert.equal(taskLinkCardContract.states.running.formIntent, null);
   assert.equal(taskLinkCardContract.states.running.placeholder, '补充或修正');
   assert.deepEqual(taskLinkCardContract.taskHeader.primaryRow, ['taskTitle', 'task_link_release']);
+  assert.deepEqual(taskLinkCardContract.taskHeader.headerTags, ['status', 'mode']);
+  assert.deepEqual(taskLinkCardContract.taskHeader.modeLabels, ['默认', '计划']);
+  assert.equal(taskLinkCardContract.taskHeader.modeStyle, 'green');
   assert.equal(taskLinkCardContract.taskHeader.taskTitleStyle, 'strong');
   assert.equal(taskLinkCardContract.taskHeader.metadataStyle, 'muted');
   assert.equal(taskLinkCardContract.taskHeader.releaseLabel, '断开');
@@ -56,7 +64,9 @@ test('language-neutral task-link card contract freezes revision 37 interactions'
   assert.equal(taskLinkCardContract.callbacks.task_link_release.style, 'danger');
   assert.equal(taskLinkCardContract.callbacks.task_link_interrupt.transport, 'button');
   assert.equal(taskLinkCardContract.callbacks.task_link_interrupt.style, 'danger');
-  assert.equal(taskLinkCardContract.callbacks.dismiss.transport, 'overflow');
+  assert.equal(taskLinkCardContract.callbacks.dismiss.transport, 'button');
+  assert.equal(taskLinkCardContract.callbacks.dismiss.label, '断开');
+  assert.equal(taskLinkCardContract.callbacks.dismiss.style, 'danger');
 });
 
 test('event routing accepts only the reviewed message and card event keys', () => {
@@ -193,14 +203,14 @@ test('card-only results preserve multiline content within the Feishu card size b
 test('completed chat cards mirror task-card hierarchy and accept a bounded follow-up form', () => {
   const card = progressCard({
     status: 'completed', detail: 'done', latestInput: '请解释第二点',
-    taskDurationSeconds: 41, followupEnabled: true,
+    totalDurationSeconds: 49, codexDurationSeconds: 41, followupEnabled: true,
   });
   const form = card.body.elements.find((element) => element.tag === 'form');
   const input = cardElements(form, 'input').find((element) => element.name === 'followup');
   const [quickReplyLayout] = form.elements.filter((element) => element.tag === 'column_set');
   const quickReplyElements = quickReplyLayout.columns.flatMap((column) => column.elements || []);
   const submit = quickReplyElements.find((element) => element.name === 'submit_followup');
-  const dismiss = cardElements(card, 'overflow')[0];
+  const dismiss = cardElements(card, 'button').find((button) => button.name === 'disconnect_chat');
   assert.equal(card.schema, '2.0');
   assert.equal(card.config.width_mode, 'fill');
   assert.equal(card.header.title.content, 'Codex 对话');
@@ -208,7 +218,7 @@ test('completed chat cards mirror task-card hierarchy and accept a bounded follo
     tag: 'text_tag', text: { tag: 'plain_text', content: '已完成' }, color: 'green',
   }]);
   assert.deepEqual(cardElements(card, 'markdown').slice(0, 3).map((element) => element.content), [
-    '**耗时 41 秒**',
+    '**总耗时 49 秒 · Codex 41 秒**',
     '**你**\n请解释第二点',
     '**Codex**\ndone',
   ]);
@@ -231,7 +241,11 @@ test('completed chat cards mirror task-card hierarchy and accept a bounded follo
   assert.equal(submit.text.content, '发送');
   assert.equal(submit.form_action_type, 'submit');
   assert.equal(submit.type, 'primary_filled');
-  assert.equal(dismiss.options[0].text.content, '关闭卡片');
+  assert.equal(dismiss.text.content, '断开');
+  assert.equal(dismiss.type, 'danger');
+  assert.equal(dismiss.size, 'medium');
+  assert.equal(cardElements(card, 'overflow').length, 0);
+  assert.equal(card.body.elements[0].columns.at(-1).elements[0], dismiss);
   assert.equal(JSON.stringify(card).includes('刷新状态'), false);
   assert.deepEqual(bridgeCardAction({
     actionValue: submit.behaviors[0].value,
@@ -240,12 +254,32 @@ test('completed chat cards mirror task-card hierarchy and accept a bounded follo
     action: 'chat_followup', taskId: '', followup: '请继续解释第二点',
   });
   assert.deepEqual(bridgeCardAction(normalizeCardAction({ action: {
-    tag: 'overflow', option: dismiss.options[0].value,
+    tag: 'button', value: dismiss.behaviors[0].value,
   } })), {
     action: 'dismiss', taskId: '',
   });
   assert.equal(bridgeCardAction({ actionValue: submit.behaviors[0].value, formValue: { followup: '  ' } }), null);
   assert.equal(bridgeCardAction({ actionValue: submit.behaviors[0].value, formValue: { followup: 'x'.repeat(1001) } }), null);
+});
+
+test('ordinary terminal cards expose disconnect while processing and closed cards do not', () => {
+  for (const status of ['completed', 'failed']) {
+    const card = progressCard({ status, followupEnabled: true });
+    const disconnect = cardElements(card, 'button').find((button) => button.name === 'disconnect_chat');
+    assert.ok(disconnect, status);
+    assert.equal(disconnect.type, 'danger');
+    assert.equal(disconnect.text.content, '断开');
+    assert.equal(disconnect.form_action_type, undefined);
+    assert.deepEqual(disconnect.behaviors[0].value, {
+      namespace: 'feishu_bridge', version: 1, action: 'dismiss',
+    });
+    assert.equal(cardElements(cardElements(card, 'form')[0], 'button').includes(disconnect), false);
+    assert.equal(cardElements(card, 'overflow').length, 0);
+  }
+  for (const status of ['processing', 'dismissed']) {
+    const card = progressCard({ status, schemaVersion: '2.0', followupEnabled: true });
+    assert.equal(cardElements(card, 'button').some((button) => button.name === 'disconnect_chat'), false);
+  }
 });
 
 test('JSON 2.0 chat cards keep one schema throughout follow-up and omit unsupported root fields', () => {
@@ -321,14 +355,12 @@ test('task-link cards expose bounded answers and reject forged task-link actions
   assert.equal(header.template, 'orange');
   assert.equal(header.title.content, 'Codex 等待你的选择');
   assert.equal(header.padding, undefined);
-  assert.deepEqual(header.text_tag_list, [{
-    tag: 'text_tag', text: { tag: 'plain_text', content: '等待回答' }, color: 'orange',
-  }]);
+  assert.deepEqual(header.text_tag_list, [
+    { tag: 'text_tag', text: { tag: 'plain_text', content: '等待回答' }, color: 'orange' },
+    { tag: 'text_tag', text: { tag: 'plain_text', content: '默认' }, color: 'green' },
+  ]);
   assert.equal(card.config.style, undefined);
-  assert.equal(
-    cardElements(card, 'markdown').find((element) => element.content.includes('全权限')).content,
-    "<font color='grey'>全权限</font>",
-  );
+  assert.doesNotMatch(JSON.stringify(card), /全权限/);
 });
 
 test('task-link answer options render as mobile-safe rows with optional bounded descriptions', () => {
@@ -402,8 +434,8 @@ test('project task cards use the project as the header and promote the task iden
   assert.equal(identityRow.columns[0].elements[0].content, '**CodexAssistant · 飞书任务**');
   assert.equal(identityRow.columns[1].elements[0].text.content, '断开');
   assert.equal(identityRow.columns[1].elements[0].type, 'danger');
-  assert.equal(card.body.elements[1].content, "<font color='grey'>全权限</font>");
-  assert.equal(card.body.elements[1].margin, '4px 20px 0px 20px');
+  assert.equal(card.body.elements[1].tag, 'hr');
+  assert.doesNotMatch(JSON.stringify(card), /全权限/);
 });
 
 test('task-link headers preserve long task identity space and hide generic progress phases', () => {
@@ -428,7 +460,7 @@ test('task-link headers preserve long task identity space and hide generic progr
   assert.equal(identityRow.columns[1].width, 'auto');
   assert.equal(identityRow.columns[0].elements[0].content, `**${longTitle.slice(0, 119)}…**`);
   assert.equal(identityRow.columns[1].elements[0].text.content, '断开');
-  assert.equal(card.body.elements[1].content, "<font color='grey'>Codex Desktop 控制 · 全权限</font>");
+  assert.equal(card.body.elements[1].content, "<font color='grey'>Codex Desktop 控制</font>");
   assert.equal(card.body.elements[1].margin, '4px 20px 0px 20px');
   assert.doesNotMatch(JSON.stringify(card), /当前进展/);
   assert.deepEqual(identityRow.columns[1].elements[0].behaviors[0].value, {
@@ -459,7 +491,7 @@ test('completed task-link cards keep one reply and offer quick text plus native 
   assert.equal(card.schema, '2.0');
   assert.equal(card.config.width_mode, 'fill');
   assert.equal(serialized.split(finalReply).length - 1, 1);
-  assert.match(serialized, /全权限/);
+  assert.doesNotMatch(serialized, /全权限/);
   assert.match(serialized, /23 小时后失效/);
   assert.doesNotMatch(serialized, /Codex 回复|刷新任务|修改文件|验证|active|completed/);
   const { header } = card;
@@ -467,16 +499,17 @@ test('completed task-link cards keep one reply and offer quick text plus native 
   assert.equal(header.template, 'green');
   assert.equal(header.title.content, 'CodexAssistant 到飞书');
   assert.equal(header.padding, undefined);
-  assert.deepEqual(header.text_tag_list, [{
-    tag: 'text_tag', text: { tag: 'plain_text', content: '已完成' }, color: 'green',
-  }]);
+  assert.deepEqual(header.text_tag_list, [
+    { tag: 'text_tag', text: { tag: 'plain_text', content: '已完成' }, color: 'green' },
+    { tag: 'text_tag', text: { tag: 'plain_text', content: '默认' }, color: 'green' },
+  ]);
   assert.deepEqual(
     card.body.elements.map((element) => element.tag),
     ['column_set', 'hr', 'markdown', 'hr', 'form'],
   );
   assert.equal(
-    cardElements(card, 'markdown').find((element) => element.content.includes('全权限')).content,
-    "<font color='grey'>全权限 · 23 小时后失效</font>",
+    cardElements(card, 'markdown').find((element) => element.content.includes('23 小时后失效')).content,
+    "<font color='grey'>23 小时后失效</font>",
   );
 
   const form = cardElements(card, 'form')[0];
@@ -576,12 +609,13 @@ test('task-link reply controls and compact metadata follow authoritative turn co
   assert.equal(runningHeader.template, 'blue');
   assert.equal(runningHeader.title.content, '运行中的任务');
   assert.equal(runningHeader.padding, undefined);
-  assert.deepEqual(runningHeader.text_tag_list, [{
-    tag: 'text_tag', text: { tag: 'plain_text', content: '运行中' }, color: 'blue',
-  }]);
+  assert.deepEqual(runningHeader.text_tag_list, [
+    { tag: 'text_tag', text: { tag: 'plain_text', content: '运行中' }, color: 'blue' },
+    { tag: 'text_tag', text: { tag: 'plain_text', content: '默认' }, color: 'green' },
+  ]);
   assert.equal(
     cardElements(running, 'markdown').find((element) => element.content.includes('飞书控制')).content,
-    "<font color='grey'>飞书控制 · 全权限 · 验证</font>",
+    "<font color='grey'>飞书控制 · 验证</font>",
   );
   assert.match(runningText, /正在运行完整测试。/);
   assert.equal(runningText.split('验证').length - 1, 2);
@@ -679,7 +713,9 @@ test('Plan mode task cards show the full plan separately and preserve it after c
     progress: { phase: '计划 2/3', detail: '正在实现模式切换。', plan },
   });
   const markdown = cardElements(card, 'markdown');
-  assert.match(markdown[0].content, /Plan 模式/);
+  assert.deepEqual(card.header.text_tag_list[1], {
+    tag: 'text_tag', text: { tag: 'plain_text', content: '计划' }, color: 'green',
+  });
   const instruction = markdown.find((element) => element.content.startsWith('**你**'));
   const renderedPlan = markdown.find((element) => element.content.startsWith('**计划**'));
   const reply = markdown.find((element) => element.content.startsWith('**Codex**'));
@@ -702,7 +738,9 @@ test('Plan mode task cards show the full plan separately and preserve it after c
     },
     progress: { phase: '完成', detail: '计划已经生成，可以按此执行。', plan },
   });
-  assert.match(cardElements(completed, 'markdown')[0].content, /本轮 Plan/);
+  assert.deepEqual(completed.header.text_tag_list[1], {
+    tag: 'text_tag', text: { tag: 'plain_text', content: '默认' }, color: 'green',
+  });
   assert.equal(JSON.stringify(completed).split('检查现有链路').length - 1, 1);
   assert.match(JSON.stringify(completed), /计划已经生成，可以按此执行/);
   assert.equal(cardElements(completed, 'select_static')[0].initial_option, 'default');
@@ -724,9 +762,10 @@ test('plan_ready cards offer one safe start action and hide the mode toggle', ()
     },
     progress: { phase: '等待开始执行', detail: '计划已生成。', plan },
   });
-  assert.deepEqual(card.header.text_tag_list, [{
-    tag: 'text_tag', text: { tag: 'plain_text', content: '等待开始执行' }, color: 'orange',
-  }]);
+  assert.deepEqual(card.header.text_tag_list, [
+    { tag: 'text_tag', text: { tag: 'plain_text', content: '等待开始执行' }, color: 'orange' },
+    { tag: 'text_tag', text: { tag: 'plain_text', content: '计划' }, color: 'green' },
+  ]);
   assert.match(JSON.stringify(card), /测试计划/);
   assert.equal(cardElements(card, 'input')[0].label.content, '修改计划');
   assert.equal(cardElements(card, 'input')[0].placeholder.content, '输入需要调整的内容');
@@ -804,6 +843,7 @@ test('plan_ready cards preserve plans beyond the former 3000-character display c
   const platformLimited = fitProgressCardToRequestBudget({
     status: 'plan_ready',
     title: '超大计划任务',
+    latestInput: '请保留我这一轮提出的修改要求。',
     taskLink: {
       taskKey: '0123456789abcdef0123', linkState: 'active', turnState: 'plan_ready',
       turnOwner: 'none', actionRequired: 'feishu', nextTurnMode: 'default', activeTurnMode: 'plan',
@@ -820,6 +860,7 @@ test('plan_ready cards preserve plans beyond the former 3000-character display c
   assert.equal(platformLimited.planComplete, false);
   assert.ok(cardRequestBytes(platformLimited.card) <= CARD_REQUEST_SAFE_BYTES);
   assert.match(JSON.stringify(platformLimited.card), /完整回复见后续文字消息/);
+  assert.match(JSON.stringify(platformLimited.card), /\*\*你\*\*\\n请保留我这一轮提出的修改要求/);
 });
 
 test('task controls without an input form keep disconnect in status and stop below content', () => {
@@ -834,7 +875,7 @@ test('task controls without an input form keep disconnect in status and stop bel
   });
   assert.equal(cardElements(card, 'form').length, 0);
   assert.equal(card.body.elements.filter((element) => element.tag === 'column_set').length, 1);
-  const topControls = card.body.elements[0].columns[1].elements;
+  const topControls = card.body.elements[0].columns.flatMap((column) => column.elements || []);
   assert.deepEqual(topControls.map((control) => control.name), ['release_task_link']);
   assert.equal(topControls[0].text.content, '断开');
   assert.equal(topControls[0].type, 'danger');
@@ -865,24 +906,24 @@ test('legacy input capture state no longer changes task-card controls', () => {
   assert.equal(buttons.some((button) => button.name === 'cancel_task_link_input'), false);
 });
 
-test('task-link status tags use semantic colors while supporting context stays muted', () => {
+test('task-link headers show semantic status plus green default or plan mode tags', () => {
   for (const sample of [
     {
       status: 'failed', linkState: 'active', turnState: 'failed', template: 'red',
-      label: '本轮失败', color: 'red', line: "<font color='grey'>全权限</font>",
+      label: '本轮失败', color: 'red', mode: '默认', line: null,
     },
     {
       status: 'interrupted', linkState: 'active', turnState: 'interrupted', template: 'grey',
-      label: '本轮已停止', color: 'grey', line: "<font color='grey'>全权限</font>",
+      label: '本轮已停止', color: 'grey', mode: '默认', line: null,
     },
     {
       status: 'completed', linkState: 'active', turnState: 'completed', template: 'green',
       label: '已完成', color: 'green', progress: { durationSeconds: 83 },
-      line: "<font color='grey'>耗时 1 分 23 秒 · 全权限</font>",
+      mode: '默认', line: "<font color='grey'>耗时 1 分 23 秒</font>",
     },
     {
       status: 'expired', linkState: 'expired', turnState: 'completed', template: 'grey',
-      label: '连接已过期', color: 'grey', line: null,
+      label: '连接已过期', color: 'grey', mode: '默认', line: null,
     },
   ]) {
     const card = progressCard({
@@ -897,9 +938,11 @@ test('task-link status tags use semantic colors while supporting context stays m
       progress: sample.progress,
     });
     assert.equal(card.header.template, sample.template);
-    assert.deepEqual(card.header.text_tag_list, [{
-      tag: 'text_tag', text: { tag: 'plain_text', content: sample.label }, color: sample.color,
-    }]);
+    assert.deepEqual(card.header.text_tag_list, [
+      { tag: 'text_tag', text: { tag: 'plain_text', content: sample.label }, color: sample.color },
+      { tag: 'text_tag', text: { tag: 'plain_text', content: sample.mode }, color: 'green' },
+    ]);
+    assert.doesNotMatch(JSON.stringify(card), /全权限/);
     if (sample.line) assert.equal(cardElements(card, 'markdown')[0].content, sample.line);
     else assert.equal(
       cardElements(card, 'markdown').some((element) => element.content === `**${sample.label}**`),

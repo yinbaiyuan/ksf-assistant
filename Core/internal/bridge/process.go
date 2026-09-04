@@ -11,12 +11,22 @@ import (
 )
 
 func run(ctx context.Context, directory, executable string, arguments []string, input []byte) ([]byte, error) {
+	return runWithEnvironment(ctx, directory, executable, arguments, input, nil)
+}
+
+func runWithEnvironment(ctx context.Context, directory, executable string, arguments []string, input []byte, extraEnvironment []string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	command := exec.Command(executable, arguments...)
 	command.Dir = directory
 	command.Env = bridgeEnvironment()
+	for _, entry := range extraEnvironment {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok && strings.TrimSpace(key) != "" {
+			command.Env = replaceEnvironmentValue(command.Env, key, value)
+		}
+	}
 	prepareTransientProcessTree(command)
 	if input != nil {
 		command.Stdin = bytes.NewReader(input)

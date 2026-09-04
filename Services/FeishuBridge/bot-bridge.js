@@ -63,6 +63,7 @@ const {
   OFFICIAL_EVENT_TRANSPORT,
   createOfficialEventAdapter,
 } = require('./lib/official-event-adapter');
+const { createOfficialMessageClient } = require('./lib/official-message-client');
 const {
   FIXED_EVENT_KEYS,
   createEventInbox,
@@ -100,6 +101,7 @@ const {
   publicTurnState,
   reconcilePlanTurnCompletion,
   recoveredRunningTurnOwner,
+  recoveredTaskLinkPublicState,
   safeQuestionSummary,
   terminalTaskLinkDetail,
   taskLinkCollaborationMode,
@@ -113,6 +115,10 @@ const {
 } = require('./lib/codex-task-control');
 const { CodexDesktopTaskController } = require('./lib/codex-desktop-ipc');
 const { CodexDesktopTurnJournal } = require('./lib/codex-desktop-turn-journal');
+const {
+  firstMessageTaskTitle,
+  resolveRootMessageWorkspace,
+} = require('./lib/host-context');
 const {
   assertPrivatePathBoundary,
   defaultCodexBin,
@@ -135,9 +141,16 @@ const codexBin = defaultCodexBin({ env: process.env });
 const codexTimeoutMs = Number(process.env.CODEX_TIMEOUT_MS || 10 * 60 * 1000);
 const codexTaskTimeoutMs = Number(process.env.CODEX_TASK_TIMEOUT_MS || 30 * 60 * 1000);
 const codexBypassApprovals = parseBool(process.env.CODEX_BYPASS_APPROVALS || 'true');
-const codexAppServerRequestTimeoutMs = Number(process.env.CODEX_APP_SERVER_REQUEST_TIMEOUT_MS || 60 * 1000);
+const managedRuntime = process.env.CODEX_USAGE_BAR_MANAGED === '1';
+const codexAppServerRequestTimeoutMs = Number(process.env.CODEX_APP_SERVER_REQUEST_TIMEOUT_MS
+  || 60 * 1000);
+const codexAppServerInitializeTimeoutMs = Number(process.env.CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MS
+  || (managedRuntime ? 5 * 1000 : codexAppServerRequestTimeoutMs));
 const codexTransportPreference = process.env.CODEX_TRANSPORT || 'auto';
 const codexAutoStartDaemon = parseBool(process.env.CODEX_AUTO_START_DAEMON || 'true');
+const bridgeOwnedTransportPreference = managedRuntime ? 'app-server' : codexTransportPreference;
+const bridgeOwnedAutoStartDaemon = managedRuntime ? false : codexAutoStartDaemon;
+const hostContextPath = process.env.CODEX_USAGE_BAR_HOST_CONTEXT || '';
 const codexClientName = process.env.CODEX_CLIENT_NAME || 'codex_vscode';
 const codexClientTitle = process.env.CODEX_CLIENT_TITLE || 'Codex';
 const defaultSessionName = process.env.CODEX_FEISHU_DEFAULT_SESSION || 'feishu-default-kms';
@@ -290,7 +303,16 @@ const codexDesktopTaskController = new CodexDesktopTaskController({
   projectRoot: __dirname,
 });
 const codexDesktopTurnJournal = new CodexDesktopTurnJournal({ codexHome });
-const projectPromotionClient = new KSFProjectPromotionClient({ env: process.env });
+function projectPromotionClientFor(context = {}) {
+  if (!managedRuntime) return new KSFProjectPromotionClient({ env: process.env });
+  const rootPath = context.ksfRoot || context.defaultConversation?.cwd || '';
+  return new KSFProjectPromotionClient({
+    env: {},
+    rootPath,
+    supportDirectory: process.env.CODEX_USAGE_BAR_SUPPORT_DIR || '',
+    allowDiscovery: false,
+  });
+}
 let taskLinkLeaseTimer = null;
 const lark = createLarkCliRunner({
   bin: larkCliBin,
@@ -443,6 +465,7 @@ const seenMessageIds = new Map();
 const taskMessageIndex = new Map();
 const messageDedupeTtlMs = 2 * 60 * 60 * 1000;
 let officialEventAdapter = null;
+let officialMessageClient = null;
 let eventConsumerProfileTimer = null;
 let eventConsumerProfileReconcilePromise = null;
 let activeEventConsumerProfile = '';
@@ -877,10 +900,21 @@ async function replyText(messageId, chatId, text, { phase = 'immediate' } = {}) 
 }
 
 async function replyCard(messageId, card, { phase = 'card' } = {}) {
-  const { messageId: sentId } = await lark.larkImReplyCard({
-    messageId,
-    card,
-    idempotencyKey: replyIdempotencyKey(messageId, phase, 0),
+  const idempotencyKey = replyIdempotencyKey(messageId, phase, 0);
+  let response;
+  if (officialMessageClient) {
+    try {
+      response = await officialMessageClient.replyCard({ messageId, card, idempotencyKey });
+    } catch (error) {
+      appendMessageLog({
+        direction: 'official_card_reply_failed',
+        at: new Date().toISOString(),
+        error: safeOneLine(error.message || String(error), 300),
+      });
+    }
+  }
+  const { messageId: sentId } = response || await lark.larkImReplyCard({
+    messageId, card, idempotencyKey,
   });
   return sentId || '';
 }
@@ -890,11 +924,31 @@ async function updateProgressCard(context, state) {
   const fitted = fitProgressCardToRequestBudget(state);
   if (!fitted.card) return false;
   try {
-    await lark.larkImPatchCard({
-      messageId: context.progressMessageId,
-      card: fitted.card,
-      timeoutMs: 30000,
-    });
+    if (officialMessageClient) {
+      try {
+        await officialMessageClient.patchCard({
+          messageId: context.progressMessageId,
+          card: fitted.card,
+        });
+      } catch (error) {
+        appendMessageLog({
+          direction: 'official_card_patch_failed',
+          at: new Date().toISOString(),
+          error: safeOneLine(error.message || String(error), 300),
+        });
+        await lark.larkImPatchCard({
+          messageId: context.progressMessageId,
+          card: fitted.card,
+          timeoutMs: 30000,
+        });
+      }
+    } else {
+      await lark.larkImPatchCard({
+        messageId: context.progressMessageId,
+        card: fitted.card,
+        timeoutMs: 30000,
+      });
+    }
     return fitted.complete;
   } catch (error) {
     appendMessageLog({
@@ -1045,7 +1099,12 @@ function startCodexDaemon() {
 }
 
 class CodexAppServer {
-  constructor() {
+  constructor({
+    transportPreference = codexTransportPreference,
+    autoStartDaemon = codexAutoStartDaemon,
+    requestTimeoutMs = codexAppServerRequestTimeoutMs,
+    initializeTimeoutMs = codexAppServerInitializeTimeoutMs,
+  } = {}) {
     this.proc = null;
     this.rl = null;
     this.ready = null;
@@ -1055,6 +1114,10 @@ class CodexAppServer {
     this.loadedThreadIds = new Set();
     this.stderrTail = '';
     this.transport = 'not-started';
+    this.transportPreference = transportPreference;
+    this.autoStartDaemon = autoStartDaemon;
+    this.requestTimeoutMs = requestTimeoutMs;
+    this.initializeTimeoutMs = initializeTimeoutMs;
   }
 
   async ensureStarted() {
@@ -1068,9 +1131,9 @@ class CodexAppServer {
   }
 
   async startProcess() {
-    const modes = codexTransportPreference === 'proxy'
+    const modes = this.transportPreference === 'proxy'
       ? ['proxy']
-      : codexTransportPreference === 'app-server'
+      : this.transportPreference === 'app-server'
         ? ['app-server']
         : ['proxy', 'app-server'];
     let lastError;
@@ -1095,7 +1158,7 @@ class CodexAppServer {
           error: error.message || String(error),
         });
         this.teardown(error, this.proc);
-        if (mode === 'proxy' && codexAutoStartDaemon && !triedDaemonStart) {
+        if (mode === 'proxy' && this.autoStartDaemon && !triedDaemonStart) {
           triedDaemonStart = true;
           if (startCodexDaemon()) {
             try {
@@ -1167,7 +1230,7 @@ class CodexAppServer {
       capabilities: {
         experimentalApi: true,
       },
-    }, codexAppServerRequestTimeoutMs);
+    }, this.initializeTimeoutMs);
     this.notify('initialized', {});
   }
 
@@ -1406,17 +1469,16 @@ class CodexAppServer {
       .filter((mode) => ['default', 'plan'].includes(mode));
   }
 
-  async setThreadName(threadId, name) {
+  async setThreadName(threadId, name, timeoutMs = 1000) {
     if (!threadId || !name) return false;
     try {
-      await this.request('thread/name/set', { threadId, name }, 10 * 1000);
+      await this.request('thread/name/set', { threadId, name }, timeoutMs);
       return true;
     } catch (error) {
       appendMessageLog({
         direction: 'thread_name_failed',
         at: new Date().toISOString(),
-        threadId,
-        name,
+        threadFingerprint: auditFingerprint(threadId),
         error: error.message || String(error),
       });
       return false;
@@ -1619,7 +1681,7 @@ class CodexAppServer {
 
   async runTurn({
     prompt, input, sessionId, logPath, timeoutMs, cwd = codexWorkspaceRoot, collaborationMode = null,
-    onProgress, onInputRequest, onTurnStarted, taskLink = false,
+    onProgress, onInputRequest, onTurnStarted, taskLink = false, threadName = '',
   }) {
     if (taskLink && sessionId) {
       return this.runDesktopTaskLinkTurn({
@@ -1637,6 +1699,7 @@ class CodexAppServer {
     await this.ensureStarted();
     const thread = await this.startOrResumeThread(sessionId, cwd, { taskLink });
     if (!thread?.id) throw new Error('codex app-server did not return a thread id');
+    if (!sessionId && threadName) await this.setThreadName(thread.id, threadName, 1000);
 
     if (logPath && fs.existsSync(logPath)) chmodPrivate(logPath, 0o600);
     const logStream = logPath ? fs.createWriteStream(logPath, { flags: 'a', mode: 0o600 }) : null;
@@ -1649,7 +1712,7 @@ class CodexAppServer {
         approvalPolicy: 'never',
         sandboxPolicy: taskLink ? { type: 'dangerFullAccess' } : codexSandboxPolicy(),
         summary: 'auto',
-      }, codexAppServerRequestTimeoutMs);
+      }, this.requestTimeoutMs);
     } catch (error) {
       if (logStream) logStream.end();
       throw error;
@@ -1707,7 +1770,11 @@ class CodexAppServer {
   }
 }
 
-const codexAppServer = new CodexAppServer();
+const codexAppServer = new CodexAppServer({
+  transportPreference: bridgeOwnedTransportPreference,
+  autoStartDaemon: bridgeOwnedAutoStartDaemon,
+  requestTimeoutMs: codexAppServerRequestTimeoutMs,
+});
 
 async function readTaskLinkSnapshot(threadId, { openIfNeeded = true } = {}) {
   const thread = validateAuthoritativeThread(
@@ -3189,9 +3256,26 @@ function buildCodexPrompt(prompt, context, mode) {
   return inboundAssetsPrompt(prompt, context?.inbound);
 }
 
-async function runCodex({ prompt, sessionId, logPath, timeoutMs, cwd, onTurnStarted }) {
-  const turnRunner = new CodexAppServer();
+async function runCodex({
+  prompt, sessionId, logPath, timeoutMs, cwd, onTurnStarted, threadName, timingOriginMs,
+}) {
+  const turnRunner = new CodexAppServer({
+    transportPreference: bridgeOwnedTransportPreference,
+    autoStartDaemon: bridgeOwnedAutoStartDaemon,
+    requestTimeoutMs: codexAppServerRequestTimeoutMs,
+  });
   try {
+    const transportStartedAt = Date.now();
+    await turnRunner.ensureStarted();
+    appendMessageLog({
+      direction: 'codex_route_timing',
+      at: new Date().toISOString(),
+      stage: 'transport_ready',
+      elapsedMs: Number.isFinite(timingOriginMs)
+        ? Date.now() - timingOriginMs : Date.now() - transportStartedAt,
+      startupMs: Date.now() - transportStartedAt,
+      transport: turnRunner.transport,
+    });
     return await turnRunner.runTurn({
       prompt,
       sessionId,
@@ -3199,9 +3283,23 @@ async function runCodex({ prompt, sessionId, logPath, timeoutMs, cwd, onTurnStar
       timeoutMs,
       cwd,
       onTurnStarted,
+      threadName,
     });
   } finally {
     await turnRunner.close();
+  }
+}
+
+async function renameThreadNonBlocking(threadId, name) {
+  const runner = new CodexAppServer({
+    transportPreference: bridgeOwnedTransportPreference,
+    autoStartDaemon: bridgeOwnedAutoStartDaemon,
+    requestTimeoutMs: codexAppServerRequestTimeoutMs,
+  });
+  try {
+    await runner.setThreadName(threadId, name, 1000);
+  } finally {
+    await runner.close();
   }
 }
 
@@ -3300,28 +3398,37 @@ async function answerWithDefaultCodexUnlocked(prompt, context, {
   const startedAt = new Date();
   const codexPrompt = buildCodexPrompt(prompt, context, 'default_chat');
   const shouldNameThread = !conversation?.threadId;
+  const cwd = conversation?.cwd || context.taskWorkspace || codexWorkspaceRoot;
+  const title = conversation?.title || context.taskTitle || defaultThreadTitle;
   const result = await runCodex({
     prompt: codexPrompt,
     sessionId: conversation?.threadId,
-    cwd: conversation?.cwd || codexWorkspaceRoot,
+    cwd,
     timeoutMs: codexTimeoutMs,
+    threadName: shouldNameThread ? title : '',
+    timingOriginMs: context.eventReceivedAtMs,
     onTurnStarted: ({ threadId, turnId }) => {
+      appendMessageLog({
+        direction: 'codex_route_timing',
+        at: new Date().toISOString(),
+        stage: 'turn_started',
+        elapsedMs: Date.now() - context.eventReceivedAtMs,
+      });
       bindDefaultConversation(context, {
         threadId,
         turnId,
-        cwd: conversation?.cwd || codexWorkspaceRoot,
+        cwd,
+        title,
       });
     },
   });
 
   if (result.threadId) {
-    if (shouldNameThread) {
-      await codexAppServer.setThreadName(result.threadId, defaultThreadTitle);
-    }
     bindDefaultConversation(context, {
       threadId: result.threadId,
       turnId: result.turnId,
-      cwd: conversation?.cwd || codexWorkspaceRoot,
+      cwd,
+      title,
     });
   }
 
@@ -3346,6 +3453,13 @@ async function answerWithDefaultCodexUnlocked(prompt, context, {
   context.lastCodexDurationMs = result.durationMs;
   context.lastCodexThreadId = result.threadId || '';
   context.lastCodexTurnId = result.turnId || '';
+  appendMessageLog({
+    direction: 'codex_route_timing',
+    at: new Date().toISOString(),
+    stage: 'turn_completed',
+    elapsedMs: Date.now() - context.eventReceivedAtMs,
+    codexDurationMs: result.durationMs,
+  });
   return result.finalText || 'Codex 没有返回文本。';
 }
 
@@ -3401,10 +3515,11 @@ async function promoteVerifiedDefaultConversation({
   result,
   originalInput,
   source,
+  authoritativeSnapshot = null,
 }) {
   const threadId = String(context.lastCodexThreadId || '').trim();
   if (!threadId) throw new Error('Codex 没有返回可绑定的任务标识。');
-  const snapshot = await readTaskLinkSnapshot(threadId);
+  const snapshot = authoritativeSnapshot || await readTaskLinkSnapshot(threadId);
   const openId = senderOpenId(context.sender);
   if (!openId) throw new Error('当前飞书用户缺少可验证的 open_id。');
   const title = promotedTaskTitle(project.name);
@@ -3418,8 +3533,6 @@ async function promoteVerifiedDefaultConversation({
   if (activeExisting?.projectName && activeExisting.projectName !== project.name) {
     throw new Error('这个 Codex 任务已经绑定其他项目，不能静默切换项目。');
   }
-  await codexAppServer.setThreadName(threadId, title);
-
   const durationSeconds = Number.isFinite(context.lastCodexDurationMs)
     ? Math.max(0, Math.round(context.lastCodexDurationMs / 1000))
     : snapshot.turnDurationSeconds;
@@ -3483,6 +3596,7 @@ async function promoteVerifiedDefaultConversation({
     link.progress,
     originalInput,
   );
+  void renameThreadNonBlocking(threadId, title);
   if (!cardUpdated) {
     const card = fittedTaskLinkCard(link, 'completed', result, {
       latestInput: originalInput,
@@ -3525,9 +3639,77 @@ async function promoteVerifiedDefaultConversation({
   return { result, link };
 }
 
-async function detectVerifiedProject(threadId) {
+async function promoteDefaultConversationBeforeFollowup(context) {
+  const conversation = context.defaultConversation;
+  const threadId = String(conversation?.threadId || '').trim();
+  if (!threadId || conversation?.state !== 'active') return null;
+  const resolved = await detectVerifiedProject(threadId, context);
+  if (!resolved?.project) return null;
+  const snapshot = await readTaskLinkSnapshot(threadId);
+  context.lastCodexThreadId = threadId;
+  context.lastCodexTurnId = snapshot.turnId || conversation.lastTurnId || '';
+  context.lastCodexDurationMs = Number.isInteger(snapshot.turnDurationSeconds)
+    ? snapshot.turnDurationSeconds * 1000 : undefined;
+  return promoteVerifiedDefaultConversation({
+    context,
+    project: resolved.project,
+    result: snapshot.finalText || snapshot.lastMessage || '项目上下文已加载，可以继续任务。',
+    originalInput: snapshot.lastUserMessage || '',
+    source: 'verified_projection_before_followup',
+    authoritativeSnapshot: snapshot,
+  });
+}
+
+async function reconcileDefaultConversationPromotions() {
+  const conversations = readDefaultConversationStore().conversations.filter((item) => (
+    item.state === 'active'
+      && String(item.threadId || '').trim()
+      && String(item.rootMessageId || '').trim()
+      && String(item.chatId || '').trim()
+      && String(item.operatorId || '').trim()
+  ));
+  for (const conversation of conversations) {
+    const context = {
+      message: {
+        chat_id: conversation.chatId,
+        message_id: conversation.rootMessageId,
+      },
+      sender: { sender_id: { open_id: conversation.operatorId } },
+      authz: { kind: 'direct' },
+      progressMessageId: conversation.rootMessageId,
+      defaultConversation: conversation,
+      eventReceivedAtMs: Date.now(),
+    };
+    const key = defaultConversationLockKey(conversation, context);
+    try {
+      const promoted = await withDefaultConversationLock(
+        key,
+        () => promoteDefaultConversationBeforeFollowup(context),
+      );
+      if (promoted?.link) {
+        appendMessageLog({
+          direction: 'project_projection_reconciled',
+          at: new Date().toISOString(),
+          taskKey: promoted.link.taskKey,
+          projectName: promoted.link.projectName,
+          threadId: conversation.threadId,
+          source: 'startup_reconciliation',
+        });
+      }
+    } catch (error) {
+      appendMessageLog({
+        direction: 'project_projection_reconciliation_failed',
+        at: new Date().toISOString(),
+        threadId: conversation.threadId,
+        error: safeOneLine(error.message || String(error), 500),
+      });
+    }
+  }
+}
+
+async function detectVerifiedProject(threadId, context) {
   try {
-    return await projectPromotionClient.currentProject(threadId);
+    return await projectPromotionClientFor(context).currentProject(threadId);
   } catch (error) {
     appendMessageLog({
       direction: 'project_projection_detection_failed',
@@ -3542,7 +3724,7 @@ async function detectVerifiedProject(threadId) {
 async function promoteDefaultConversationFromProjection(context, result, originalInput) {
   const threadId = String(context.lastCodexThreadId || '').trim();
   if (!threadId || context.defaultConversation?.state !== 'active') return null;
-  const resolved = await detectVerifiedProject(threadId);
+  const resolved = await detectVerifiedProject(threadId, context);
   if (!resolved?.project) return null;
   try {
     return await promoteVerifiedDefaultConversation({
@@ -3570,7 +3752,7 @@ async function promoteDefaultConversationUnlocked(
   conversation = context.defaultConversation || null,
 ) {
   const originalInput = projectPromotionInput(route);
-  const resolved = await projectPromotionClient.resolveIntent(originalInput);
+  const resolved = await projectPromotionClientFor(context).resolveIntent(originalInput);
   if (!resolved?.project) throw new Error('无法识别要继续的项目。');
 
   const result = await answerWithDefaultCodexUnlocked(
@@ -3580,7 +3762,7 @@ async function promoteDefaultConversationUnlocked(
   );
   const threadId = String(context.lastCodexThreadId || '').trim();
   if (!threadId) throw new Error('Codex 没有返回可绑定的任务标识。');
-  await projectPromotionClient.verifyBinding(threadId, resolved.project.id);
+  await projectPromotionClientFor(context).verifyBinding(threadId, resolved.project.id);
   await promoteVerifiedDefaultConversation({
     context,
     project: resolved.project,
@@ -3615,7 +3797,7 @@ function makeTaskId() {
 }
 
 function createTask(description, context) {
-  const task = createTaskRecord(description, context);
+  const task = createTaskRecord(description, context, { cwd: context.taskWorkspace || codexWorkspaceRoot });
   context.pendingTaskReply = {
     taskId: task.id,
     kind: 'createdReplyIds',
@@ -3676,10 +3858,16 @@ async function runTaskInBackground(task, context) {
       sessionId: task.resumeThreadId,
       timeoutMs: codexTaskTimeoutMs,
       logPath: runLogPath,
+      cwd: task.cwd || context.taskWorkspace || codexWorkspaceRoot,
+      threadName: task.resumeThreadId ? '' : (context.taskTitle || firstMessageTaskTitle(task.description)),
+      timingOriginMs: context.eventReceivedAtMs,
+      onTurnStarted: () => appendMessageLog({
+        direction: 'codex_route_timing',
+        at: new Date().toISOString(),
+        stage: 'turn_started',
+        elapsedMs: Date.now() - context.eventReceivedAtMs,
+      }),
     });
-    if (result.threadId && !task.resumeThreadId) {
-      await codexAppServer.setThreadName(result.threadId, safeOneLine(task.description, 80));
-    }
     const completed = {
       ...task,
       status: 'completed',
@@ -3690,6 +3878,13 @@ async function runTaskInBackground(task, context) {
       result: result.finalText,
     };
     appendTaskLog(completed);
+    appendMessageLog({
+      direction: 'codex_route_timing',
+      at: new Date().toISOString(),
+      stage: 'turn_completed',
+      elapsedMs: Date.now() - context.eventReceivedAtMs,
+      codexDurationMs: result.durationMs,
+    });
     appendAudit('任务完成', [
       `- 任务ID：${task.id}`,
       `- Codex session：${result.threadId || '-'}`,
@@ -3701,7 +3896,7 @@ async function runTaskInBackground(task, context) {
       status: 'completed',
       taskId: task.id,
       detail: [
-        `本次任务耗时：${formatElapsedDuration(Math.round(result.durationMs / 1000))}`,
+        `总耗时 ${formatElapsedDuration(Math.round((Date.now() - context.eventReceivedAtMs) / 1000))} · Codex ${formatElapsedDuration(Math.round(result.durationMs / 1000))}`,
         result.finalText || '任务已完成。',
         `完整日志：${runLogPath}`,
       ].join('\n\n'),
@@ -3713,6 +3908,13 @@ async function runTaskInBackground(task, context) {
       `完整日志：${runLogPath}`,
     ].join('\n'), { phase: `task-completed:${task.id}` });
     registerTaskMessageRefs(task.id, 'completedReplyIds', delivery.messageIds);
+    appendMessageLog({
+      direction: 'codex_route_timing',
+      at: new Date().toISOString(),
+      stage: 'final_card_completed',
+      totalDurationMs: Date.now() - context.eventReceivedAtMs,
+      codexDurationMs: result.durationMs,
+    });
   } catch (error) {
     const failed = {
       ...task,
@@ -3848,6 +4050,7 @@ function continueTask(taskRef, instruction, context) {
     parentTaskId: parent.id,
     resumeThreadId: parent.threadId,
     parentDescription: taskDisplayText(parent),
+    cwd: parent.cwd || codexWorkspaceRoot,
   });
   context.pendingTaskReply = {
     taskId: task.id,
@@ -4034,6 +4237,13 @@ async function sendProcessingReply(route, context) {
   try {
     if (context.reuseProgressCard && context.progressMessageId
       && await updateProgressCard(context, cardState)) {
+      context.processingCardCompletedAtMs = Date.now();
+      appendMessageLog({
+        direction: 'codex_route_timing',
+        at: new Date().toISOString(),
+        stage: 'processing_card_completed',
+        elapsedMs: context.processingCardCompletedAtMs - context.eventReceivedAtMs,
+      });
       logOutbound(context, route.kind, 'Codex 正在处理（原卡更新）');
       return;
     }
@@ -4049,6 +4259,13 @@ async function sendProcessingReply(route, context) {
       });
     }
     logOutbound(context, route.kind, 'Codex 正在处理（状态卡）');
+    context.processingCardCompletedAtMs = Date.now();
+    appendMessageLog({
+      direction: 'codex_route_timing',
+      at: new Date().toISOString(),
+      stage: 'processing_card_completed',
+      elapsedMs: context.processingCardCompletedAtMs - context.eventReceivedAtMs,
+    });
   } catch (error) {
     await replyText(
       context.message.message_id,
@@ -4120,6 +4337,21 @@ function cancelTaskLinkCardPush(linkId) {
   state.pending = null;
 }
 
+function taskLinkDisplayInput(link, latestInput = '') {
+  const explicitInput = String(latestInput || '').trim();
+  if (explicitInput) {
+    taskLinkLatestInputs.set(link.id, explicitInput);
+    return explicitInput;
+  }
+  const cachedInput = String(taskLinkLatestInputs.get(link.id) || '').trim();
+  if (cachedInput) return cachedInput;
+  let journalTurn = null;
+  try { journalTurn = codexDesktopTurnJournal.snapshot(link.threadId); } catch {}
+  const recoveredInput = String(journalTurn?.lastUserMessage || '').trim();
+  if (recoveredInput) taskLinkLatestInputs.set(link.id, recoveredInput);
+  return recoveredInput;
+}
+
 async function patchTaskLinkCard(
   link,
   status,
@@ -4130,7 +4362,7 @@ async function patchTaskLinkCard(
 ) {
   let fitted = null;
   const delivered = await enqueueTaskLinkCardUpdate(link, () => {
-    const resolvedLatestInput = taskLinkLatestInputs.get(link.id) || latestInput || '';
+    const resolvedLatestInput = taskLinkDisplayInput(link, latestInput);
     const resolvedDetail = taskLinkDisplayDetail(link, status, detail);
     fitted = fitProgressCardToRequestBudget({
       status,
@@ -4259,7 +4491,7 @@ function fittedTaskLinkCard(link, status, detail, {
     detail: taskLinkDisplayDetail(link, status, detail),
     taskLink: publicTaskLink(link),
     progress: taskLinkCardProgress(link),
-    latestInput: taskLinkLatestInputs.get(link.id) || latestInput || '',
+    latestInput: taskLinkDisplayInput(link, latestInput),
     questions,
     openIds,
   });
@@ -4955,9 +5187,10 @@ async function refreshTaskLinks(onlyLinkId = '') {
       if (!pendingInput && taskLinkInputRequests.get(link.threadId)?.owner === 'desktop') {
         taskLinkInputRequests.delete(link.threadId);
       }
+      const recoveredState = recoveredTaskLinkPublicState(link, snapshot);
       const next = {
-        ...snapshot.publicState,
-        turnOwner: recoveredRunningTurnOwner(link, snapshot.publicState, snapshot.turnId),
+        ...recoveredState,
+        turnOwner: recoveredRunningTurnOwner(link, recoveredState, snapshot.turnId),
       };
       if (snapshot.pendingPlanImplementation?.planContent) {
         taskLinkPendingPlans.set(link.id, snapshot.pendingPlanImplementation.planContent);
@@ -5117,17 +5350,6 @@ async function runCodexRouteInBackground(route, context) {
       : await answerWithDefaultCodex(route.payload, context, {
           conversation: context.defaultConversation || null,
         });
-    if (route.kind === 'default_chat') {
-      const promoted = await promoteDefaultConversationFromProjection(
-        context,
-        result,
-        route.payload,
-      );
-      if (promoted) {
-        logOutbound(context, 'project_promotion', result);
-        return;
-      }
-    }
     const phase = route.kind === 'task' && context.pendingTaskReply?.taskId
       ? `task-created:${context.pendingTaskReply.taskId}`
       : 'final';
@@ -5140,7 +5362,10 @@ async function runCodexRouteInBackground(route, context) {
       : {
           status: 'completed',
           followupEnabled: true,
-          taskDurationSeconds: Number.isFinite(context.lastCodexDurationMs)
+          totalDurationSeconds: Number.isFinite(context.eventReceivedAtMs)
+            ? Math.round((Date.now() - context.eventReceivedAtMs) / 1000)
+            : undefined,
+          codexDurationSeconds: Number.isFinite(context.lastCodexDurationMs)
             ? Math.round(context.lastCodexDurationMs / 1000)
             : undefined,
           latestInput: route.payload,
@@ -5153,7 +5378,23 @@ async function runCodexRouteInBackground(route, context) {
       extendDefaultConversation(context, { messageIds: delivery.messageIds });
     }
     registerPendingTaskReply(context, delivery.messageIds);
+    appendMessageLog({
+      direction: 'codex_route_timing',
+      at: new Date().toISOString(),
+      stage: 'final_card_completed',
+      totalDurationMs: Number.isFinite(context.eventReceivedAtMs)
+        ? Date.now() - context.eventReceivedAtMs : undefined,
+      processingCardMs: Number.isFinite(context.processingCardCompletedAtMs)
+        ? context.processingCardCompletedAtMs - context.eventReceivedAtMs : undefined,
+      codexDurationMs: context.lastCodexDurationMs,
+    });
     logOutbound(context, route.kind, result);
+    if (route.kind === 'default_chat') {
+      void promoteDefaultConversationFromProjection(context, result, route.payload)
+        .then((promoted) => {
+          if (promoted) logOutbound(context, 'project_promotion', result);
+        });
+    }
   } catch (error) {
     const latestInput = route.kind === 'project_promotion'
       ? projectPromotionInput(route)
@@ -5161,10 +5402,25 @@ async function runCodexRouteInBackground(route, context) {
     const cardUpdated = await updateProgressCard(context, {
       status: 'failed',
       followupEnabled: true,
+      totalDurationSeconds: Number.isFinite(context.eventReceivedAtMs)
+        ? Math.round((Date.now() - context.eventReceivedAtMs) / 1000) : undefined,
+      codexDurationSeconds: Number.isFinite(error.durationMs)
+        ? Math.round(error.durationMs / 1000) : undefined,
       latestInput,
       detail: error.message || String(error),
     });
     await sendFailureReply(context, error, route.kind, { cardUpdated });
+    appendMessageLog({
+      direction: 'codex_route_timing',
+      at: new Date().toISOString(),
+      stage: 'final_card_completed',
+      status: 'failed',
+      totalDurationMs: Number.isFinite(context.eventReceivedAtMs)
+        ? Date.now() - context.eventReceivedAtMs : undefined,
+      processingCardMs: Number.isFinite(context.processingCardCompletedAtMs)
+        ? context.processingCardCompletedAtMs - context.eventReceivedAtMs : undefined,
+      codexDurationMs: Number.isFinite(error.durationMs) ? error.durationMs : undefined,
+    });
     appendAudit('处理失败', [
       `- chat_id：${context.message.chat_id}`,
       `- message_id：${context.message.message_id}`,
@@ -5178,6 +5434,7 @@ async function runCodexRouteInBackground(route, context) {
 }
 
 async function handleFeishuMessage(data) {
+  const eventReceivedAtMs = Date.now();
   const event = normalizeFeishuEvent(data);
   if (!event?.message) {
     appendMessageLog({
@@ -5226,7 +5483,7 @@ async function handleFeishuMessage(data) {
   console.log(JSON.stringify(inbound, null, 2));
   appendMessageLog(inbound);
 
-  const context = { message, sender, inbound: null };
+  const context = { message, sender, inbound: null, eventReceivedAtMs };
   try {
     const authz = await authorizeMessage(message, sender);
     context.authz = authz;
@@ -5354,6 +5611,13 @@ async function handleFeishuMessage(data) {
       });
       context.progressMessageId = defaultConversation.rootMessageId;
       context.reuseProgressCard = true;
+      const promoted = await promoteDefaultConversationBeforeFollowup(context);
+      if (promoted?.link) {
+        context.taskLinkLatestInput = command;
+        executeTaskLink(promoted.link, command, context)
+          .catch((error) => sendFailureReply(context, error, 'task_link'));
+        return;
+      }
       const parsedReplyRoute = parseRoute(command);
       const route = parsedReplyRoute.kind === 'project_promotion'
         ? parsedReplyRoute
@@ -5372,6 +5636,38 @@ async function handleFeishuMessage(data) {
     }
 
     if (['default_chat', 'task', 'project_promotion'].includes(route.kind)) {
+      try {
+        const workspace = resolveRootMessageWorkspace({
+          managed: managedRuntime,
+          hostContextPath,
+          fallbackWorkspace: codexWorkspaceRoot,
+          dataRoot,
+        });
+        context.taskWorkspace = workspace.cwd;
+        context.ksfState = workspace.ksfState;
+        context.ksfRoot = workspace.ksfRoot;
+        context.taskTitle = firstMessageTaskTitle(
+          initialDetails.text || command,
+          message.message_type,
+        );
+      } catch (error) {
+        await replyCard(message.message_id, progressCard({
+          status: 'failed',
+          schemaVersion: '2.0',
+          latestInput: command,
+          detail: error.message || String(error),
+        }), { phase: 'host-context-invalid' });
+        logError(context, error, { route: route.kind });
+        cleanupContextInbound(context);
+        return;
+      }
+      appendMessageLog({
+        direction: 'codex_route_timing',
+        at: receivedAt,
+        stage: 'event_arrived',
+        elapsedMs: 0,
+        ksfState: context.ksfState,
+      });
       logAccepted(context, route.kind);
       runCodexRouteInBackground(route, context);
       return;
@@ -5456,8 +5752,17 @@ async function handleChatFollowup(event, action, authz) {
     authz,
     progressMessageId: conversation?.rootMessageId || event.messageId,
     defaultConversation: conversation,
+    eventReceivedAtMs: Date.now(),
   };
   try {
+    const promoted = await promoteDefaultConversationBeforeFollowup(context);
+    if (promoted?.link) {
+      await handleTaskLinkFollowup(event, {
+        action: 'task_link_followup',
+        followup: action.followup,
+      }, authz, promoted.link);
+      return;
+    }
     const parsedRoute = parseRoute(action.followup);
     const isProjectPromotion = parsedRoute.kind === 'project_promotion';
     await updateCardActionMessage(event, progressCard({
@@ -5469,26 +5774,26 @@ async function handleChatFollowup(event, action, authz) {
       hideActions: true,
       schemaVersion: '2.0',
     }));
+    context.processingCardCompletedAtMs = Date.now();
+    appendMessageLog({
+      direction: 'codex_route_timing',
+      at: new Date().toISOString(),
+      stage: 'processing_card_completed',
+      elapsedMs: context.processingCardCompletedAtMs - context.eventReceivedAtMs,
+    });
     if (isProjectPromotion) {
       const result = await promoteDefaultConversation(parsedRoute, context, conversation);
       logOutbound(context, 'project_promotion', result);
       return;
     }
     const result = await answerWithDefaultCodex(action.followup, context, { conversation });
-    const promoted = await promoteDefaultConversationFromProjection(
-      context,
-      result,
-      action.followup,
-    );
-    if (promoted) {
-      logOutbound(context, 'project_promotion', result);
-      return;
-    }
-    const durationSeconds = Math.round((context.lastCodexDurationMs || 0) / 1000);
+    const codexDurationSeconds = Math.round((context.lastCodexDurationMs || 0) / 1000);
+    const totalDurationSeconds = Math.round((Date.now() - context.eventReceivedAtMs) / 1000);
     const fitted = fitProgressCardToRequestBudget({
       status: 'completed',
       followupEnabled: true,
-      taskDurationSeconds: durationSeconds,
+      totalDurationSeconds,
+      codexDurationSeconds,
       latestInput: action.followup,
       detail: result,
     });
@@ -5508,6 +5813,18 @@ async function handleChatFollowup(event, action, authz) {
     if (context.defaultConversation?.id) {
       extendDefaultConversation(context, { messageIds: fallbackMessageIds });
     }
+    void promoteDefaultConversationFromProjection(context, result, action.followup)
+      .then((promoted) => {
+        if (promoted) logOutbound(context, 'project_promotion', result);
+      });
+    appendMessageLog({
+      direction: 'codex_route_timing',
+      at: new Date().toISOString(),
+      stage: 'final_card_completed',
+      totalDurationMs: Date.now() - context.eventReceivedAtMs,
+      processingCardMs: context.processingCardCompletedAtMs - context.eventReceivedAtMs,
+      codexDurationMs: context.lastCodexDurationMs,
+    });
     appendMessageLog({
       direction: 'card_followup_completed',
       at: new Date().toISOString(),
@@ -5520,6 +5837,9 @@ async function handleChatFollowup(event, action, authz) {
     const cardUpdated = await updateCardActionMessage(event, progressCard({
       status: 'failed',
       followupEnabled: true,
+      totalDurationSeconds: Math.round((Date.now() - context.eventReceivedAtMs) / 1000),
+      codexDurationSeconds: Number.isFinite(error.durationMs)
+        ? Math.round(error.durationMs / 1000) : undefined,
       latestInput: action.followup,
       detail: `继续追问失败：${safeOneLine(error.message || String(error), 1200)}`,
     }));
@@ -6017,6 +6337,7 @@ async function startEventConsumer() {
     platform: process.platform,
     projectRoot: __dirname,
   });
+  officialMessageClient = createOfficialMessageClient({ credentials });
   const handlers = Object.fromEntries(eventConsumerKeys.map((eventKey) => [
     eventKey,
     (data) => dispatchInboundEvent(eventKey, data),
@@ -6042,6 +6363,13 @@ async function startEventConsumer() {
   }
   console.log(`Starting official SDK event transport (${credentials.source}); keys=${eventConsumerKeys.join(',') || '-'}`);
   try {
+    await officialMessageClient.warmup().catch((error) => {
+      appendMessageLog({
+        direction: 'official_message_client_warmup_failed',
+        at: new Date().toISOString(),
+        error: safeOneLine(error.message || String(error), 300),
+      });
+    });
     await officialEventAdapter.start();
     appendMessageLog({
       direction: 'event_transport_connected',
@@ -6067,14 +6395,19 @@ async function startEventConsumer() {
       // Best-effort cleanup after a failed handshake.
     }
     officialEventAdapter = null;
+    officialMessageClient = null;
     throw error;
   }
 }
 
 async function stopEventConsumer() {
-  if (!officialEventAdapter) return;
+  if (!officialEventAdapter) {
+    officialMessageClient = null;
+    return;
+  }
   const adapter = officialEventAdapter;
   officialEventAdapter = null;
+  officialMessageClient = null;
   await adapter.stop();
 }
 
@@ -6281,6 +6614,15 @@ async function main() {
       console.log(`Group directory synced: groups=${result.groupCount}`);
     });
     await startEventConsumerProfileController();
+    setTimeout(() => {
+      reconcileDefaultConversationPromotions().catch((error) => {
+        appendMessageLog({
+          direction: 'project_projection_reconciliation_failed',
+          at: new Date().toISOString(),
+          error: safeOneLine(error.message || String(error), 500),
+        });
+      });
+    }, 0);
   } catch (error) {
     console.error(error.message || String(error));
     process.exit(1);

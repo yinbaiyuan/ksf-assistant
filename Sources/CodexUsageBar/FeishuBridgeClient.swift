@@ -101,6 +101,7 @@ enum FeishuBridgeClientError: Error, LocalizedError, Equatable {
     case invalidRoot(String)
     case unsafeClient
     case nodeMissing
+	case nativeBridgeMissing
     case commandFailed(String)
     case invalidResponse
 
@@ -109,6 +110,7 @@ enum FeishuBridgeClientError: Error, LocalizedError, Equatable {
         case let .invalidRoot(message): return message
         case .unsafeClient: return "飞书桥客户端文件的所有权或权限不安全。"
         case .nodeMissing: return "未找到 Node.js，无法运行飞书桥客户端。"
+		case .nativeBridgeMissing: return "未找到原生飞书桥客户端。"
         case let .commandFailed(message): return message.isEmpty ? "飞书桥命令执行失败。" : message
         case .invalidResponse: return "飞书桥返回了无法识别的数据。"
         }
@@ -117,18 +119,14 @@ enum FeishuBridgeClientError: Error, LocalizedError, Equatable {
 
 struct FeishuBridgeClient {
     private let fileManager: FileManager
-    private let nodeCandidates: [String]
+	private let nativeCandidates: [String]
 
     init(
         fileManager: FileManager = .default,
-        nodeCandidates: [String] = [
-            "/opt/homebrew/bin/node",
-            "/usr/local/bin/node",
-            "/usr/bin/node",
-        ]
+		nodeCandidates: [String] = []
     ) {
         self.fileManager = fileManager
-        self.nodeCandidates = nodeCandidates
+		self.nativeCandidates = nodeCandidates
     }
 
     func inspect(rootURL: URL) throws -> FeishuBridgeSnapshot {
@@ -235,17 +233,26 @@ struct FeishuBridgeClient {
         _ = try validatedClient(rootURL: rootURL)
     }
 
-    private func validatedClient(rootURL: URL) throws -> URL {
+	private func validatedClient(rootURL: URL) throws -> URL {
         let root = rootURL.standardizedFileURL
         let rootValues = try root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         guard rootValues.isDirectory == true, rootValues.isSymbolicLink != true else {
             throw FeishuBridgeClientError.invalidRoot("所选目录不是安全的飞书桥工程目录。")
         }
-        let client = root.appendingPathComponent("scripts/bridge-client.js").standardizedFileURL
-        let prefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
-        guard client.path.hasPrefix(prefix), fileManager.fileExists(atPath: client.path) else {
-            throw FeishuBridgeClientError.invalidRoot("所选目录缺少 scripts/bridge-client.js。")
-        }
+		#if arch(arm64)
+		let platformDirectory = "darwin-arm64"
+		#else
+		let platformDirectory = "darwin-x64"
+		#endif
+		var candidates = nativeCandidates.map { URL(fileURLWithPath: $0) }
+		if let resources = Bundle.main.resourceURL {
+			candidates.append(resources.appendingPathComponent("runtime/feishu-bridge/\(platformDirectory)/codex-feishu-bridge"))
+		}
+		let repositoryRoot = root.deletingLastPathComponent().deletingLastPathComponent()
+		candidates.append(repositoryRoot.appendingPathComponent("dist/runtime/feishu-bridge/\(platformDirectory)/codex-feishu-bridge"))
+		guard let client = candidates.map(\.standardizedFileURL).first(where: { fileManager.isExecutableFile(atPath: $0.path) }) else {
+			throw FeishuBridgeClientError.nativeBridgeMissing
+		}
         let values = try client.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
         let attributes = try fileManager.attributesOfItem(atPath: client.path)
         let owner = (attributes[.ownerAccountID] as? NSNumber)?.uint32Value
@@ -260,13 +267,10 @@ struct FeishuBridgeClient {
     }
 
     private func run(clientURL: URL, arguments: [String], input: Data? = nil) throws -> Data {
-        guard let nodePath = nodeCandidates.first(where: { fileManager.isExecutableFile(atPath: $0) }) else {
-            throw FeishuBridgeClientError.nodeMissing
-        }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: nodePath)
-        process.currentDirectoryURL = clientURL.deletingLastPathComponent().deletingLastPathComponent()
-        process.arguments = [clientURL.path] + arguments
+		process.executableURL = clientURL
+		process.currentDirectoryURL = clientURL.deletingLastPathComponent()
+		process.arguments = ["client"] + arguments
         let output = Pipe()
         let errors = Pipe()
         let stdout = FeishuLockedDataBuffer()

@@ -40,7 +40,9 @@ function defaultCodexWorkspaceRoot({
   homeDir = os.homedir(),
   dataRoot = defaultDataRoot({ platform, env, homeDir }),
 } = {}) {
-  const configured = String(env.CODEX_FEISHU_WORKSPACE_ROOT || env.KMS_ROOT || '').trim();
+  const configured = env.CODEX_USAGE_BAR_MANAGED === '1'
+    ? ''
+    : String(env.CODEX_FEISHU_WORKSPACE_ROOT || env.KMS_ROOT || '').trim();
   const root = path.resolve(configured || path.join(dataRoot, 'codex-workspace'));
   if (configured) {
     let stat;

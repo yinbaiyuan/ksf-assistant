@@ -21,6 +21,7 @@ struct UsagePopoverView: View {
     @State private var feishuAppID = ""
     @State private var feishuAppSecret = ""
     @State private var showExistingFeishuApp = false
+    @State private var pendingFeishuWriteFeature: FeishuSettingsOverview.Feature?
 
     var body: some View {
         Group {
@@ -887,9 +888,7 @@ struct UsagePopoverView: View {
                             Text("API 估算")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
-                            Text(pricingPlanCompactName)
-                                .font(.caption.weight(.medium))
-                                .lineLimit(1)
+                            pricingPlanMenu
                         }
                         Spacer(minLength: 8)
                         Text("今日 \(formattedCost(viewModel.snapshot?.localDailyCost))")
@@ -912,23 +911,6 @@ struct UsagePopoverView: View {
     private var tokenHistoryPage: some View {
         VStack(alignment: .leading, spacing: 9) {
             secondaryHeader(title: "每日 Token", backLabel: "返回主页") { page = .home }
-
-            HStack(spacing: 7) {
-                Picker(
-                    "API 价格方案",
-                    selection: Binding(
-                        get: { viewModel.selectedPricingPlanID },
-                        set: { viewModel.selectPricingPlan($0) }
-                    )
-                ) {
-                    ForEach(viewModel.pricingCatalog.plans) { plan in
-                        Text(plan.displayName).tag(plan.id)
-                    }
-                }
-                .labelsHidden()
-                .controlSize(.small)
-                .frame(maxWidth: .infinity)
-            }
 
             HStack(spacing: 5) {
                 Text("最近 30 个自然日")
@@ -1004,16 +986,19 @@ struct UsagePopoverView: View {
                 Text("30 日 API 估算")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                Spacer()
-                Text(formattedCost(viewModel.tokenHistoryComparison.localCostSummary))
-                    .font(.system(.callout, design: .rounded, weight: .semibold))
-                    .monospacedDigit()
+                    .fixedSize()
+                pricingPlanMenu
+                Spacer(minLength: 4)
                 if let count = viewModel.tokenHistoryComparison.localCostSummary?.incompleteDayCount,
                    count > 0 {
                     Text("缺 \(count) 天")
                         .font(.caption2)
                         .foregroundStyle(.orange)
                 }
+                Text(formattedCost(viewModel.tokenHistoryComparison.localCostSummary))
+                    .font(.system(.callout, design: .rounded, weight: .semibold))
+                    .monospacedDigit()
+                    .fixedSize()
             }
             .padding(.horizontal, 7)
 
@@ -1441,22 +1426,6 @@ struct UsagePopoverView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 9) {
-                    Text("当前方案")
-                        .font(.caption.weight(.semibold))
-                    Picker(
-                        "当前方案",
-                        selection: Binding(
-                            get: { viewModel.selectedPricingPlanID },
-                            set: { viewModel.selectPricingPlan($0) }
-                        )
-                    ) {
-                        ForEach(viewModel.pricingCatalog.plans) { plan in
-                            Text(plan.displayName).tag(plan.id)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: .infinity)
-
                     Text("内置方案 · 美元 / 百万 Token")
                         .font(.caption.weight(.semibold))
                     VStack(spacing: 0) {
@@ -1612,6 +1581,38 @@ struct UsagePopoverView: View {
         "入 \(UsageViewModel.priceRateText(plan.regularInputMicroUsdPerMillion)) · 缓 \(UsageViewModel.priceRateText(plan.cachedInputMicroUsdPerMillion)) · 出 \(UsageViewModel.priceRateText(plan.outputMicroUsdPerMillion))"
     }
 
+    private var pricingPlanMenu: some View {
+        Menu {
+            Picker("模型", selection: Binding(
+                get: { viewModel.selectedPricingPlanID },
+                set: { viewModel.selectPricingPlan($0) }
+            )) {
+                ForEach(viewModel.pricingCatalog.plans) { plan in
+                    Text(plan.displayName).tag(plan.id)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            // One text label prevents AppKit from promoting a separate Image
+            // to its leading menu icon and overriding its requested size.
+            (Text(pricingPlanCompactName) + Text(" ") +
+                Text(Image(systemName: "arrowtriangle.down.fill"))
+                    .font(.system(size: 7))
+                    .foregroundColor(.secondary)
+                    .baselineOffset(1))
+            .font(.caption.weight(.medium))
+            .lineLimit(1)
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityLabel("API 估算模型")
+        .accessibilityValue(pricingPlanCompactName)
+        .help(viewModel.selectedPricingPlan?.displayName ?? pricingPlanCompactName)
+    }
+
     private var pricingPlanCompactName: String {
         guard let plan = viewModel.selectedPricingPlan else { return "GPT-5.6 Sol" }
         return [plan.model, plan.variant].compactMap { value in
@@ -1629,6 +1630,7 @@ struct UsagePopoverView: View {
         VStack(alignment: .leading, spacing: 10) {
             secondaryHeader(title: "飞书配置", backLabel: "返回设置") { page = .settings }
 
+            if viewModel.feishuSetup.stage != "ready" || viewModel.feishuBridge.processState == "degraded" {
             VStack(alignment: .leading, spacing: 8) {
                 Text("运行组件")
                     .font(.caption.weight(.semibold))
@@ -1653,6 +1655,7 @@ struct UsagePopoverView: View {
             }
             .padding(10)
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+            }
 
             feishuSetupContent
 
@@ -1660,6 +1663,7 @@ struct UsagePopoverView: View {
                 compactStatus(feedback, color: .orange, symbol: "exclamationmark.triangle.fill")
             }
         }
+        .task { await viewModel.refreshFeishuSettingsOverview() }
     }
 
     @ViewBuilder
@@ -1749,8 +1753,34 @@ struct UsagePopoverView: View {
     }
 
     private var feishuReadySettings: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("飞书已就绪").font(.caption.weight(.semibold))
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("飞书桥").font(.headline)
+                Spacer()
+                Text(viewModel.feishuBridge.processState == "degraded" ? "需要处理" : "已就绪")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(viewModel.feishuBridge.processState == "degraded" ? .orange : .green)
+            }
+            Text(viewModel.feishuSettingsOverview?.summary ?? "正在读取可用范围…")
+                .font(.caption2).foregroundStyle(.secondary)
+
+            Divider()
+            Text("权限").font(.caption.weight(.semibold))
+            let permissions = viewModel.feishuSettingsOverview?.permissions
+            feishuStatusRow("应用权限", state: permissionStateText(permissions?.application), healthy: permissions?.application == "verified")
+            feishuStatusRow("当前用户授权", state: permissionStateText(permissions?.user), healthy: permissions?.user == "verified")
+            if let missing = permissions?.missing, !missing.isEmpty {
+                Text("仍需处理：\(missing.joined(separator: "、"))")
+                    .font(.caption2).foregroundStyle(.orange)
+                Button("重新检查") { Task { await viewModel.refreshFeishuSettingsOverview() } }
+                    .controlSize(.small)
+            } else {
+                Text("基础单聊、卡片回调和 Codex 任务控制已授权。")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+
+            Divider()
+            Text("接收与高级功能").font(.caption.weight(.semibold))
             Picker("本机事件角色", selection: Binding(
                 get: { viewModel.feishuBridge.profile.isEmpty ? "manual-only" : viewModel.feishuBridge.profile },
                 set: { viewModel.setFeishuProfile($0) }
@@ -1758,6 +1788,29 @@ struct UsagePopoverView: View {
                 Text("主设备").tag("primary")
                 Text("仅手动能力").tag("manual-only")
             }
+            .controlSize(.small)
+            Text("主设备接收入站事件；仅手动能力仍可主动发送和处理队列。")
+                .font(.caption2).foregroundStyle(.secondary)
+            ForEach(viewModel.feishuSettingsOverview?.features ?? []) { feature in
+                feishuFeatureControl(feature)
+            }
+
+            Divider()
+            Text("诊断").font(.caption.weight(.semibold))
+            let health = viewModel.feishuSettingsOverview?.health
+            feishuStatusRow("Shared Core", state: health?.core == "running" ? "运行中" : "需要处理", healthy: health?.core == "running")
+            feishuStatusRow("飞书桥", state: health?.bridge == "running" ? "运行中" : (health?.bridge ?? "未知"), healthy: health?.bridge == "running")
+            feishuStatusRow("本机事件", state: health?.inbound == "connected" ? "已连接" : (health?.inbound == "manual_only" ? "仅手动能力" : "未连接"), healthy: health?.inbound == "connected" || health?.inbound == "manual_only")
+            if let detail = health?.detail, !detail.isEmpty {
+                Text(detail).font(.caption2).foregroundStyle(.secondary)
+            }
+            if viewModel.feishuBridge.processState == "degraded" {
+                Button("重新启动") { viewModel.restartFeishuSupervisor() }
+                    .controlSize(.small)
+            }
+
+            Divider()
+            Text("连接测试").font(.caption.weight(.semibold))
             if !viewModel.feishuBridge.targetAliases.isEmpty {
                 Picker("测试目标", selection: Binding(
                     get: { viewModel.selectedFeishuTargetAlias },
@@ -1769,14 +1822,59 @@ struct UsagePopoverView: View {
             }
             Button("确认发送测试消息") { viewModel.sendFeishuTestMessage() }
                 .disabled(viewModel.selectedFeishuTargetAlias.isEmpty)
-            Divider()
-            Text("高级功能").font(.caption.weight(.semibold))
-            Text("群聊、通讯录和队列能力在这里通过表单与开关管理，不需要编辑配置文件。")
-                .font(.caption2).foregroundStyle(.secondary)
         }
         .padding(10)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+        .confirmationDialog("允许真实执行？", isPresented: Binding(
+            get: { pendingFeishuWriteFeature != nil }, set: { if !$0 { pendingFeishuWriteFeature = nil } }
+        ), titleVisibility: .visible) {
+            Button("允许真实执行", role: .destructive) {
+                if let feature = pendingFeishuWriteFeature { viewModel.updateFeishuFeature(feature.id, mode: "live", confirmRealWrite: true) }
+                pendingFeishuWriteFeature = nil
+            }
+            Button("保持演练", role: .cancel) { pendingFeishuWriteFeature = nil }
+        } message: { Text("这会允许“\(pendingFeishuWriteFeature?.title ?? "该功能")”处理真实写入操作。") }
     }
+
+    private func feishuFeatureControl(_ feature: FeishuSettingsOverview.Feature) -> some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(feature.title).font(.caption)
+                Text(feature.description)
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Picker(feature.title, selection: Binding(
+                get: { feature.state },
+                set: { value in
+                    if feature.writable && value == "live" { pendingFeishuWriteFeature = feature }
+                    else { viewModel.updateFeishuFeature(feature.id, mode: value) }
+                }
+            )) {
+                Text("关闭").tag("off")
+                if feature.writable {
+                    Text("演练").tag("dry_run")
+                    Text("真实执行").tag("live")
+                } else {
+                    Text("启用").tag("enabled")
+                }
+            }
+            .labelsHidden()
+            .controlSize(.small)
+            .frame(width: feature.writable ? 88 : 68)
+        }
+    }
+
+    private func feishuStatusRow(_ title: String, state: String, healthy: Bool) -> some View {
+        HStack(spacing: 7) {
+            Circle().fill(healthy ? Color.green : Color.orange).frame(width: 7, height: 7)
+            Text(title).font(.caption)
+            Spacer()
+            Text(state).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+        }
+    }
+
+    private func permissionStateText(_ value: String?) -> String { value == "verified" ? "已验证" : (value == "missing" ? "缺少授权" : "暂不可用") }
 
     private var feishuActivationTargetPicker: some View {
         Picker("测试目标", selection: Binding(

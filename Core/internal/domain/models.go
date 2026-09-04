@@ -376,6 +376,39 @@ type FeishuSnapshot struct {
 	Links                   []FeishuTaskLink `json:"links"`
 }
 
+// FeishuSettingsOverview is the safe, user-facing projection for the setup UI.
+// It deliberately contains no credentials, raw identifiers, or message content.
+type FeishuSettingsOverview struct {
+	State       string                   `json:"state"`
+	Summary     string                   `json:"summary"`
+	Profile     string                   `json:"profile"`
+	Health      FeishuSettingsHealth     `json:"health"`
+	Permissions FeishuPermissionOverview `json:"permissions"`
+	Features    []FeishuFeatureOverview  `json:"features"`
+	Targets     []string                 `json:"targets"`
+}
+
+type FeishuSettingsHealth struct {
+	Core    string `json:"core"`
+	Bridge  string `json:"bridge"`
+	Inbound string `json:"inbound"`
+	Detail  string `json:"detail,omitempty"`
+}
+
+type FeishuPermissionOverview struct {
+	Application string   `json:"application"`
+	User        string   `json:"user"`
+	Missing     []string `json:"missing"`
+}
+
+type FeishuFeatureOverview struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	State       string `json:"state"`
+	Writable    bool   `json:"writable"`
+}
+
 type DashboardSnapshot struct {
 	Protocol    string                   `json:"protocol"`
 	CoreVersion string                   `json:"coreVersion"`

@@ -34,6 +34,7 @@ esac
     "$repo_root/Tests/SharedCoreProcessStandalone/main.swift" \
     -o "$build_dir/shared-core-process-tests"
 "$build_dir/shared-core-process-tests"
+bash "$repo_root/scripts/test-quit-lifecycle.sh"
 
 if /usr/bin/xcrun --sdk macosx --show-sdk-platform-path >/dev/null 2>&1; then
     /usr/bin/swift test --package-path "$repo_root"

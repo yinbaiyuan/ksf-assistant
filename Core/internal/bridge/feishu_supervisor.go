@@ -18,7 +18,14 @@ type FeishuSupervisor struct {
 	node    string
 	mu      sync.Mutex
 	cmd     *exec.Cmd
+	env     []string
 	running bool
+}
+
+func (supervisor *FeishuSupervisor) SetEnvironment(environment []string) {
+	supervisor.mu.Lock()
+	defer supervisor.mu.Unlock()
+	supervisor.env = append([]string(nil), environment...)
 }
 
 func NewFeishuSupervisor(root, node string) *FeishuSupervisor {
@@ -41,7 +48,8 @@ func (supervisor *FeishuSupervisor) Start() error {
 	}
 	cmd := exec.Command(node, entry)
 	cmd.Dir = supervisor.root
-	cmd.Env = append(os.Environ(), "FEISHU_BRIDGE_PROJECT_ROOT="+supervisor.root)
+	cmd.Env = append(os.Environ(), supervisor.env...)
+	cmd.Env = append(cmd.Env, "FEISHU_BRIDGE_PROJECT_ROOT="+supervisor.root)
 	cmd.Stdin = nil
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard

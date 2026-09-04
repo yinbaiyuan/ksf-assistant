@@ -10,6 +10,7 @@ const app = fs.readFileSync(path.join(root, 'src', 'renderer', 'app.js'), 'utf8'
 const css = fs.readFileSync(path.join(root, 'src', 'renderer', 'styles.css'), 'utf8');
 const preload = fs.readFileSync(path.join(root, 'src', 'preload.cjs'), 'utf8');
 const main = fs.readFileSync(path.join(root, 'src', 'main.cjs'), 'utf8');
+const coreClient = fs.readFileSync(path.join(root, 'src', 'core-client.cjs'), 'utf8');
 
 test('formal product identity is CodexAssistant on both desktop hosts', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -28,6 +29,12 @@ test('Windows host keeps business reads behind the shared core contract', () => 
   assert.match(main, /contextIsolation: true/);
   assert.match(main, /nodeIntegration: false/);
   assert.match(main, /sandbox: true/);
+});
+
+test('Windows host publishes KSF context at startup and after in-app directory changes', () => {
+  assert.match(coreClient, /integrations: this\.integrations/);
+  assert.match(main, /integrations: \{ ksfRoot: store\.get\(\)\.ksfRoot \}/);
+  assert.ok((main.match(/integration\/context\/update/g) || []).length >= 2);
 });
 
 test('project workset and dynamic panel height remain explicit', () => {
@@ -96,6 +103,21 @@ test('Feishu settings use the packaged service and keep secrets out of persisted
   assert.match(app, /确认启用并发送测试消息/);
   assert.doesNotMatch(app, /data-action="feishu-start"/);
   assert.doesNotMatch(main, /settings\.update\([^)]*appSecret/s);
+});
+
+test('Feishu ready settings expose permissions, optional capabilities, and diagnostics inline', () => {
+  assert.match(app, /权限/);
+  assert.match(app, /接收与高级功能/);
+  assert.match(app, /诊断/);
+  assert.match(app, /连接测试/);
+  assert.match(app, /data-field="feishu-feature"/);
+  assert.match(app, /真实执行/);
+  assert.doesNotMatch(app, /renderFeishuAdvancedPage/);
+  assert.doesNotMatch(app, /data-action="feishu-advanced"/);
+  assert.match(preload, /feishuOverview/);
+  assert.match(preload, /updateFeishuFeature/);
+  assert.match(main, /feishu\/settings\/overview\/read/);
+  assert.match(main, /feishu\/features\/update/);
 });
 
 test('KSF is an optional integration and preview version is explicit', () => {

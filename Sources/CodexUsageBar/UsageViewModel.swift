@@ -53,6 +53,7 @@ final class UsageViewModel: ObservableObject {
     @Published private(set) var feishuAuthQRCode: String?
     @Published private(set) var feishuAuthUserCode: String?
     @Published private(set) var feishuPermissionStatus = "尚未检查"
+    @Published private(set) var feishuSettingsOverview: FeishuSettingsOverview?
     @Published private(set) var feishuSetup = FeishuSetupState.notStarted
     @Published private(set) var feishuSetupQRCode: String?
     @Published private(set) var feishuTaskLinks: [String: FeishuTaskLinkSnapshot] = [:]
@@ -77,6 +78,7 @@ final class UsageViewModel: ObservableObject {
     private var client: CodexAppServerClient?
     private var sharedCoreEnabled = false
     private var shutdownStarted = false
+    private var quitRequested = false
     private var refreshingSharedCore = false
     private var started = false
     private var refreshingRateLimits = false
@@ -307,7 +309,8 @@ final class UsageViewModel: ObservableObject {
         wakeObserver = observer
 
         do {
-            try await sharedCore.start()
+            let activeKSFRoot = isOnboardingComplete ? ksfRootPath : ""
+            try await sharedCore.start(ksfRoot: activeKSFRoot)
             sharedCoreEnabled = true
             await refreshPricingCatalog()
             await refreshSharedDashboard()
@@ -419,6 +422,7 @@ final class UsageViewModel: ObservableObject {
                 self.isOnboardingComplete = true
                 self.onboardingError = nil
                 if self.sharedCoreEnabled {
+                    try await self.sharedCore.updateIntegrationContext(ksfRoot: self.ksfRootPath)
                     await self.refreshSharedDashboard()
                 } else {
                     await self.refreshProjects()
@@ -951,6 +955,26 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
+    func refreshFeishuSettingsOverview() async {
+        guard sharedCoreEnabled else { return }
+        do { feishuSettingsOverview = try await sharedCore.feishuSettingsOverview() }
+        catch { feishuFeedback = error.localizedDescription }
+    }
+
+    func updateFeishuFeature(_ feature: String, mode: String, confirmRealWrite: Bool = false) {
+        guard sharedCoreEnabled, !feishuActionInProgress else { return }
+        feishuActionInProgress = true
+        feishuFeedback = nil
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.feishuActionInProgress = false }
+            do {
+                self.feishuSettingsOverview = try await self.sharedCore.updateFeishuFeature(feature, mode: mode, confirmRealWrite: confirmRealWrite)
+                await self.refreshSharedDashboard()
+            } catch { self.feishuFeedback = error.localizedDescription }
+        }
+    }
+
     func refreshFeishuSetup() async {
         guard sharedCoreEnabled else {
             feishuSetup = .notStarted
@@ -1181,10 +1205,15 @@ final class UsageViewModel: ObservableObject {
     }
 
     func quit() {
-        Task { [weak self] in
-            await self?.shutdown()
-            await MainActor.run { NSApplication.shared.terminate(nil) }
-        }
+        guard !quitRequested, !shutdownStarted else { return }
+        quitRequested = true
+        // AppDelegate owns cleanup for every exit path. Enter AppKit termination
+        // from the run loop, not a Swift task/main-queue block: terminateLater
+        // runs a nested modal loop and would block its own MainActor cleanup.
+        NSApplication.shared.perform(
+            #selector(NSApplication.terminate(_:)), with: nil, afterDelay: 0,
+            inModes: [.common]
+        )
     }
 
     private func configureClientIfNeeded() {

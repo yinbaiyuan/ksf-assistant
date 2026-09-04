@@ -175,6 +175,8 @@ class KSFProjectPromotionClient {
     homeDir = os.homedir(),
     platform = process.platform,
     rootPath = '',
+    supportDirectory = '',
+    allowDiscovery = true,
     runner = runProcess,
     timeoutMs = DEFAULT_TIMEOUT_MS,
   } = {}) {
@@ -182,6 +184,8 @@ class KSFProjectPromotionClient {
     this.homeDir = homeDir;
     this.platform = platform;
     this.rootPath = rootPath;
+    this.supportDirectory = String(supportDirectory || '').trim();
+    this.allowDiscovery = allowDiscovery;
     this.runner = runner;
     this.timeoutMs = timeoutMs;
   }
@@ -196,6 +200,12 @@ class KSFProjectPromotionClient {
       }
       return resolved;
     }
+    if (!this.allowDiscovery) {
+      throw new ProjectPromotionError(
+        'project_catalog_unavailable',
+        'KSF 尚未在 CodexAssistant 中配置，无法识别项目。',
+      );
+    }
     return discoverPanelBridgeRoot({ env: this.env, homeDir: this.homeDir });
   }
 
@@ -207,7 +217,9 @@ class KSFProjectPromotionClient {
       command: ruby,
       args: [location.scriptPath, '--root', location.root, mode],
       cwd: location.root,
-      env: this.env,
+      env: this.supportDirectory
+        ? { ...this.env, CODEX_USAGE_BAR_SUPPORT_DIR: this.supportDirectory }
+        : this.env,
       input,
       timeoutMs: this.timeoutMs,
     });

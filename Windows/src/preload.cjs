@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld('usageBar', Object.freeze({
   verifyFeishuSetup: () => ipcRenderer.invoke('feishu:setup-verify'),
   activateFeishuSetup: (targetAlias) => ipcRenderer.invoke('feishu:setup-activate', targetAlias),
   cancelFeishuSetup: () => ipcRenderer.invoke('feishu:setup-cancel'),
+  feishuOverview: () => ipcRenderer.invoke('feishu:overview-read'),
+  updateFeishuFeature: (payload) => ipcRenderer.invoke('feishu:feature-update', payload),
   restartFeishu: () => ipcRenderer.invoke('feishu:supervisor-restart'),
   openFeishuURL: (url) => ipcRenderer.invoke('feishu:open-external', url),
   resize: (height) => ipcRenderer.send('window:resize', height),
