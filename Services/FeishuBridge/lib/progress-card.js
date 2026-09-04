@@ -1,5 +1,5 @@
 const CARD_ACTION_NAMESPACE = 'feishu_bridge';
-const TASK_LINK_CARD_REVISION = 35;
+const TASK_LINK_CARD_REVISION = 36;
 const FEISHU_CARD_REQUEST_MAX_BYTES = 30 * 1024;
 const CARD_REQUEST_RESERVE_BYTES = 512;
 const CARD_REQUEST_SAFE_BYTES = FEISHU_CARD_REQUEST_MAX_BYTES - CARD_REQUEST_RESERVE_BYTES;
@@ -72,14 +72,14 @@ function cardV2Overflow(options) {
   };
 }
 
-function cardV2ControlRow(content, controls) {
+function cardV2ControlRow(content, controls, { verticalAlign = 'center' } = {}) {
   const columns = [];
   if (content) {
     columns.push({
       tag: 'column',
       width: 'weighted',
       weight: 1,
-      vertical_align: 'center',
+      vertical_align: verticalAlign,
       elements: [content],
     });
   }
@@ -89,7 +89,7 @@ function cardV2ControlRow(content, controls) {
       width: 'auto',
       direction: 'horizontal',
       horizontal_spacing: '8px',
-      vertical_align: 'center',
+      vertical_align: verticalAlign,
       elements: controls,
     });
   }
@@ -281,7 +281,7 @@ function codexCardBody(contentElements) {
     padding: '0px 0px 16px 0px',
     elements: contentElements.map((element) => ({
       ...element,
-      margin: '12px 20px 0px 20px',
+      margin: element.margin || '12px 20px 0px 20px',
     })),
   };
 }
@@ -405,7 +405,9 @@ function taskLinkContextLine(taskLink, fallbackStatus, progress) {
   }
   parts.push('全权限');
   const phase = String(progress?.phase || '').trim();
-  if (turnState === 'running' && phase && phase !== '运行中') parts.push(boundedText(phase, 40));
+  if (turnState === 'running' && phase && !['运行中', '当前进展'].includes(phase)) {
+    parts.push(boundedText(phase, 40));
+  }
   return parts.join(' · ');
 }
 
@@ -469,7 +471,7 @@ function taskLinkTopControls(taskLink) {
   if (taskLink.controls?.canRelease) {
     controls.push(cardV2Button({
       name: 'release_task_link',
-      text: '断开连接',
+      text: '断开',
       type: 'danger',
       action: bridgeAction('task_link_release', { taskKey: taskLink.taskKey }),
     }));
@@ -487,16 +489,35 @@ function taskLinkInterruptButton(taskLink) {
   });
 }
 
-function taskLinkContextElement(taskLink, status, progress) {
+function taskLinkMetadataElement(taskLink, status, progress) {
   const contextLine = taskLinkContextLine(taskLink, status, progress);
   const leaseLine = taskLinkLeaseLine(taskLink, status);
-  const controls = taskLinkTopControls(taskLink);
-  if (!contextLine && !leaseLine && !controls.length) return null;
-  const statusElement = contextLine || leaseLine ? {
+  const metadata = [contextLine, leaseLine].filter(Boolean).join(' · ');
+  return metadata ? {
     tag: 'markdown',
-    content: [`**${contextLine}**`, leaseLine ? `**${leaseLine}**` : ''].filter(Boolean).join('\n'),
+    content: `<font color='grey'>${metadata}</font>`,
   } : null;
-  return cardV2ControlRow(statusElement, controls);
+}
+
+function taskLinkOverviewElements(taskLink, status, progress, fallbackTitle) {
+  const taskIdentity = taskLinkIdentity(taskLink, fallbackTitle);
+  const taskElement = taskIdentity ? {
+    tag: 'markdown',
+    content: `**${boundedText(taskIdentity, 120)}**`,
+  } : null;
+  const metadataElement = taskLinkMetadataElement(taskLink, status, progress);
+  const controls = taskLinkTopControls(taskLink);
+  const primaryElement = taskElement || metadataElement;
+  const elements = [];
+  if (primaryElement || controls.length) {
+    elements.push(cardV2ControlRow(primaryElement, controls, {
+      verticalAlign: taskElement ? 'top' : 'center',
+    }));
+  }
+  if (taskElement && metadataElement) {
+    elements.push({ ...metadataElement, margin: '4px 20px 0px 20px' });
+  }
+  return elements;
 }
 
 function taskLinkImplementButton(taskLink) {
@@ -584,18 +605,9 @@ function taskLinkCardV2({
   state, status, title, detail, taskLink, progress, questions, latestInput,
 }) {
   const contentElements = [];
-  const contextElement = taskLinkContextElement(taskLink, status, progress);
-  if (contextElement) contentElements.push(contextElement);
-  const taskIdentity = taskLinkIdentity(taskLink, title);
-  if (taskIdentity) {
-    contentElements.push({
-      tag: 'markdown',
-      content: `<font color='grey'>任务 · ${boundedText(taskIdentity, 120)}</font>`,
-    });
-  }
-  if (contextElement || taskIdentity) {
-    contentElements.push({ tag: 'hr' });
-  }
+  const overviewElements = taskLinkOverviewElements(taskLink, status, progress, title);
+  contentElements.push(...overviewElements);
+  if (overviewElements.length) contentElements.push({ tag: 'hr' });
   const question = Array.isArray(questions) && questions.length === 1 && !questions[0].isSecret
     ? questions[0] : null;
   const planText = String(progress?.plan || '').trim();

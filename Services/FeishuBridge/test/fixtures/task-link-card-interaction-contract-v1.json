@@ -1,6 +1,13 @@
 {
   "schemaVersion": 1,
-  "cardRevision": 35,
+  "cardRevision": 36,
+  "taskHeader": {
+    "primaryRow": ["taskTitle", "task_link_release"],
+    "secondaryRow": ["context", "duration", "lease"],
+    "taskTitleStyle": "strong",
+    "metadataStyle": "muted",
+    "releaseLabel": "断开"
+  },
   "states": {
     "running": {
       "topActions": ["task_link_release"],
@@ -63,7 +70,7 @@
     },
     "task_link_release": {
       "transport": "button",
-      "label": "断开连接",
+      "label": "断开",
       "style": "danger"
     },
     "task_link_interrupt": {

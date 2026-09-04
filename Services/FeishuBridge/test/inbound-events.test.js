@@ -30,7 +30,7 @@ function cardElements(card, tag) {
   return matches;
 }
 
-test('language-neutral task-link card contract freezes revision 35 interactions', () => {
+test('language-neutral task-link card contract freezes revision 36 interactions', () => {
   assert.equal(taskLinkCardContract.schemaVersion, 1);
   assert.equal(taskLinkCardContract.cardRevision, TASK_LINK_CARD_REVISION);
   assert.deepEqual(taskLinkCardContract.states.running.topActions, ['task_link_release']);
@@ -39,6 +39,10 @@ test('language-neutral task-link card contract freezes revision 35 interactions'
   ]);
   assert.equal(taskLinkCardContract.states.running.formIntent, null);
   assert.equal(taskLinkCardContract.states.running.placeholder, '补充或修正');
+  assert.deepEqual(taskLinkCardContract.taskHeader.primaryRow, ['taskTitle', 'task_link_release']);
+  assert.equal(taskLinkCardContract.taskHeader.taskTitleStyle, 'strong');
+  assert.equal(taskLinkCardContract.taskHeader.metadataStyle, 'muted');
+  assert.equal(taskLinkCardContract.taskHeader.releaseLabel, '断开');
   assert.deepEqual(taskLinkCardContract.states.completed.formFields, ['turnMode', 'followup']);
   assert.deepEqual(taskLinkCardContract.states.completed.turnModes, ['default', 'plan']);
   assert.equal(taskLinkCardContract.states.plan_ready.primaryAction, 'task_link_implement_plan');
@@ -319,7 +323,7 @@ test('task-link cards expose bounded answers and reject forged task-link actions
   assert.equal(card.config.style, undefined);
   assert.equal(
     cardElements(card, 'markdown').find((element) => element.content.includes('全权限')).content,
-    '**全权限**',
+    "<font color='grey'>全权限</font>",
   );
 });
 
@@ -369,7 +373,7 @@ test('task-link answer options render as mobile-safe rows with optional bounded 
   assert.ok(cardRequestBytes(card) <= CARD_REQUEST_SAFE_BYTES);
 });
 
-test('project task cards use the verified project as the shared title and keep task identity secondary', () => {
+test('project task cards use the project as the header and promote the task identity above muted metadata', () => {
   const card = progressCard({
     status: 'completed',
     title: 'CodexAssistant · 飞书任务',
@@ -381,18 +385,52 @@ test('project task cards use the verified project as the shared title and keep t
       linkState: 'active',
       turnState: 'completed',
       turnOwner: 'none',
-      controls: {},
+      controls: { canRelease: true },
     },
     progress: { phase: '完成', detail: '项目任务已完成。' },
   });
 
   assert.equal(card.header.title.content, 'CodexAssistant');
-  assert.equal(
-    cardElements(card, 'markdown').some((element) => (
-      element.content === "<font color='grey'>任务 · CodexAssistant · 飞书任务</font>"
-    )),
-    true,
-  );
+  const identityRow = card.body.elements[0];
+  assert.equal(identityRow.tag, 'column_set');
+  assert.deepEqual(identityRow.columns.map((column) => column.width), ['weighted', 'auto']);
+  assert.deepEqual(identityRow.columns.map((column) => column.vertical_align), ['top', 'top']);
+  assert.equal(identityRow.columns[0].elements[0].content, '**CodexAssistant · 飞书任务**');
+  assert.equal(identityRow.columns[1].elements[0].text.content, '断开');
+  assert.equal(identityRow.columns[1].elements[0].type, 'danger');
+  assert.equal(card.body.elements[1].content, "<font color='grey'>全权限</font>");
+  assert.equal(card.body.elements[1].margin, '4px 20px 0px 20px');
+});
+
+test('task-link headers preserve long task identity space and hide generic progress phases', () => {
+  const longTitle = '检查跨平台飞书任务连接与卡片交互状态'.repeat(8);
+  const card = progressCard({
+    status: 'processing',
+    title: longTitle,
+    taskLink: {
+      taskKey: '0123456789abcdef0123',
+      title: longTitle,
+      projectName: 'CodexAssistant',
+      linkState: 'active',
+      turnState: 'running',
+      turnOwner: 'desktop',
+      controls: { canRelease: true },
+    },
+    progress: { phase: '当前进展', detail: '正在处理。' },
+  });
+
+  const identityRow = card.body.elements[0];
+  assert.equal(identityRow.columns[0].width, 'weighted');
+  assert.equal(identityRow.columns[1].width, 'auto');
+  assert.equal(identityRow.columns[0].elements[0].content, `**${longTitle.slice(0, 119)}…**`);
+  assert.equal(identityRow.columns[1].elements[0].text.content, '断开');
+  assert.equal(card.body.elements[1].content, "<font color='grey'>Codex Desktop 控制 · 全权限</font>");
+  assert.equal(card.body.elements[1].margin, '4px 20px 0px 20px');
+  assert.doesNotMatch(JSON.stringify(card), /当前进展/);
+  assert.deepEqual(identityRow.columns[1].elements[0].behaviors[0].value, {
+    namespace: 'feishu_bridge', version: 1, action: 'task_link_release',
+    taskKey: '0123456789abcdef0123',
+  });
 });
 
 test('completed task-link cards keep one reply and offer quick text plus native rich input', () => {
@@ -434,7 +472,7 @@ test('completed task-link cards keep one reply and offer quick text plus native 
   );
   assert.equal(
     cardElements(card, 'markdown').find((element) => element.content.includes('全权限')).content,
-    '**全权限**\n**23 小时后失效**',
+    "<font color='grey'>全权限 · 23 小时后失效</font>",
   );
 
   const form = cardElements(card, 'form')[0];
@@ -503,7 +541,7 @@ test('completed task-link cards keep one reply and offer quick text plus native 
     { width: 'auto', weight: undefined, verticalAlign: 'center' },
   ]);
   assert.equal(release.name, 'release_task_link');
-  assert.equal(release.text.content, '断开连接');
+  assert.equal(release.text.content, '断开');
   assert.equal(release.type, 'danger');
   assert.equal(cardElements(form, 'overflow').length, 0);
   assert.equal(cardElements(card, 'action').length, 0);
@@ -539,7 +577,7 @@ test('task-link reply controls and compact metadata follow authoritative turn co
   }]);
   assert.equal(
     cardElements(running, 'markdown').find((element) => element.content.includes('飞书控制')).content,
-    '**飞书控制 · 全权限 · 验证**',
+    "<font color='grey'>飞书控制 · 全权限 · 验证</font>",
   );
   assert.match(runningText, /正在运行完整测试。/);
   assert.equal(runningText.split('验证').length - 1, 2);
@@ -579,7 +617,7 @@ test('task-link reply controls and compact metadata follow authoritative turn co
   const runningTopControls = running.body.elements[0].columns[1].elements;
   assert.equal(runningTopControls.length, 1);
   assert.equal(runningTopControls[0].name, 'release_task_link');
-  assert.equal(runningTopControls[0].text.content, '断开连接');
+  assert.equal(runningTopControls[0].text.content, '断开');
   assert.equal(runningTopControls[0].type, 'danger');
   assert.equal(running.body.padding, '0px 0px 16px 0px');
 
@@ -725,7 +763,7 @@ test('plan_ready cards offer one safe start action and hide the mode toggle', ()
   assert.equal(JSON.stringify(implement.behaviors[0].value).includes(plan), false);
   assert.equal(JSON.stringify(implement.behaviors[0].value).includes('thread'), false);
   const release = buttons.find((button) => button.name === 'release_task_link');
-  assert.equal(release.text.content, '断开连接');
+  assert.equal(release.text.content, '断开');
   assert.equal(release.type, 'danger');
   assert.equal(bridgeCardAction({ actionValue: release.behaviors[0].value }).action, 'task_link_release');
 });
@@ -744,7 +782,7 @@ test('task controls without an input form keep disconnect in status and stop bel
   assert.equal(card.body.elements.filter((element) => element.tag === 'column_set').length, 1);
   const topControls = card.body.elements[0].columns[1].elements;
   assert.deepEqual(topControls.map((control) => control.name), ['release_task_link']);
-  assert.equal(topControls[0].text.content, '断开连接');
+  assert.equal(topControls[0].text.content, '断开');
   assert.equal(topControls[0].type, 'danger');
   const stop = card.body.elements.find((element) => element.name === 'interrupt_task_link');
   assert.equal(stop.text.content, '停止');
@@ -773,20 +811,20 @@ test('legacy input capture state no longer changes task-card controls', () => {
   assert.equal(buttons.some((button) => button.name === 'cancel_task_link_input'), false);
 });
 
-test('task-link status tags use semantic colors while supporting context stays bold', () => {
+test('task-link status tags use semantic colors while supporting context stays muted', () => {
   for (const sample of [
     {
       status: 'failed', linkState: 'active', turnState: 'failed', template: 'red',
-      label: '本轮失败', color: 'red', line: '**全权限**',
+      label: '本轮失败', color: 'red', line: "<font color='grey'>全权限</font>",
     },
     {
       status: 'interrupted', linkState: 'active', turnState: 'interrupted', template: 'grey',
-      label: '本轮已停止', color: 'grey', line: '**全权限**',
+      label: '本轮已停止', color: 'grey', line: "<font color='grey'>全权限</font>",
     },
     {
       status: 'completed', linkState: 'active', turnState: 'completed', template: 'green',
       label: '已完成', color: 'green', progress: { durationSeconds: 83 },
-      line: '**耗时 1 分 23 秒 · 全权限**',
+      line: "<font color='grey'>耗时 1 分 23 秒 · 全权限</font>",
     },
     {
       status: 'expired', linkState: 'expired', turnState: 'completed', template: 'grey',
