@@ -30,7 +30,7 @@ function cardElements(card, tag) {
   return matches;
 }
 
-test('language-neutral task-link card contract freezes revision 36 interactions', () => {
+test('language-neutral task-link card contract freezes revision 37 interactions', () => {
   assert.equal(taskLinkCardContract.schemaVersion, 1);
   assert.equal(taskLinkCardContract.cardRevision, TASK_LINK_CARD_REVISION);
   assert.deepEqual(taskLinkCardContract.states.running.topActions, ['task_link_release']);
@@ -46,6 +46,9 @@ test('language-neutral task-link card contract freezes revision 36 interactions'
   assert.deepEqual(taskLinkCardContract.states.completed.formFields, ['turnMode', 'followup']);
   assert.deepEqual(taskLinkCardContract.states.completed.turnModes, ['default', 'plan']);
   assert.equal(taskLinkCardContract.states.plan_ready.primaryAction, 'task_link_implement_plan');
+  assert.equal(taskLinkCardContract.states.plan_ready.primaryActionWidth, 'content');
+  assert.equal(taskLinkCardContract.states.plan_ready.primaryActionAlignment, 'center');
+  assert.equal(taskLinkCardContract.states.plan_ready.oversizePlanDelivery, 'threaded_text_parts');
   assert.equal(taskLinkCardContract.states.plan_ready.submitLabel, '提交修改');
   assert.deepEqual(taskLinkCardContract.states.queued.formFields, []);
   assert.deepEqual(taskLinkCardContract.callbacks.task_link_followup.intents, ['new_turn']);
@@ -166,6 +169,7 @@ test('card-only results preserve multiline content within the Feishu card size b
   const { card } = fitted;
   const detailElements = card.elements.filter((element) => element.tag === 'div');
   assert.equal(fitted.complete, true);
+  assert.equal(fitted.planComplete, true);
   assert.ok(detailElements.length > 1);
   assert.match(detailElements[0].text.content, /第一行/);
   assert.ok(detailElements.every((element) => element.text.content.length <= 2400));
@@ -693,7 +697,7 @@ test('Plan mode task cards show the full plan separately and preserve it after c
     detail: '计划已经生成，可以按此执行。',
     taskLink: {
       taskKey: '0123456789abcdef0123', linkState: 'active', turnState: 'completed', turnOwner: 'none',
-      nextTurnMode: 'plan', activeTurnMode: 'plan', remainingSeconds: 23 * 60 * 60,
+      nextTurnMode: 'default', activeTurnMode: 'plan', remainingSeconds: 23 * 60 * 60,
       controls: { canSend: true, canRelease: true, canSetMode: true },
     },
     progress: { phase: '完成', detail: '计划已经生成，可以按此执行。', plan },
@@ -701,7 +705,7 @@ test('Plan mode task cards show the full plan separately and preserve it after c
   assert.match(cardElements(completed, 'markdown')[0].content, /本轮 Plan/);
   assert.equal(JSON.stringify(completed).split('检查现有链路').length - 1, 1);
   assert.match(JSON.stringify(completed), /计划已经生成，可以按此执行/);
-  assert.equal(cardElements(completed, 'select_static')[0].initial_option, 'plan');
+  assert.equal(cardElements(completed, 'select_static')[0].initial_option, 'default');
 });
 
 test('plan_ready cards offer one safe start action and hide the mode toggle', () => {
@@ -711,7 +715,7 @@ test('plan_ready cards offer one safe start action and hide the mode toggle', ()
     title: '等待执行的任务',
     taskLink: {
       taskKey: '0123456789abcdef0123', linkState: 'active', turnState: 'plan_ready',
-      turnOwner: 'none', actionRequired: 'feishu', nextTurnMode: 'plan', activeTurnMode: 'plan',
+      turnOwner: 'none', actionRequired: 'feishu', nextTurnMode: 'default', activeTurnMode: 'plan',
       hasPendingPlanImplementation: true,
       planImplementationRevision: 'abcdef0123456789abcd',
       controls: {
@@ -738,7 +742,7 @@ test('plan_ready cards offer one safe start action and hide the mode toggle', ()
   assert.equal(submit.type, 'default');
   assert.equal(implement.text.content, '开始执行');
   assert.equal(implement.type, 'primary_filled');
-  assert.equal(implement.width, 'fill');
+  assert.equal(implement.width, 'default');
   assert.deepEqual(
     buttons.filter((button) => button.type === 'primary_filled').map((button) => button.name),
     ['implement_task_link_plan'],
@@ -750,7 +754,10 @@ test('plan_ready cards offer one safe start action and hide the mode toggle', ()
   const planIndex = card.body.elements.findIndex((element) => (
     element.tag === 'markdown' && element.content.startsWith('**计划**')
   ));
-  assert.deepEqual(bodyTags.slice(planIndex, planIndex + 4), ['markdown', 'button', 'hr', 'form']);
+  assert.deepEqual(bodyTags.slice(planIndex, planIndex + 4), ['markdown', 'column_set', 'hr', 'form']);
+  const implementRow = card.body.elements[planIndex + 1];
+  assert.equal(implementRow.horizontal_align, 'center');
+  assert.deepEqual(implementRow.columns.map((column) => column.width), ['auto']);
   assert.doesNotMatch(JSON.stringify(card), /计划已生成。可直接开始执行/);
   assert.deepEqual(implement.behaviors[0].value, {
     namespace: 'feishu_bridge', version: 1, action: 'task_link_implement_plan',
@@ -766,6 +773,53 @@ test('plan_ready cards offer one safe start action and hide the mode toggle', ()
   assert.equal(release.text.content, '断开');
   assert.equal(release.type, 'danger');
   assert.equal(bridgeCardAction({ actionValue: release.behaviors[0].value }).action, 'task_link_release');
+});
+
+test('plan_ready cards preserve plans beyond the former 3000-character display cap', () => {
+  const plan = `# 长计划\n\n${'完整计划步骤。'.repeat(620)}\n\n计划末尾唯一标记`;
+  assert.ok(plan.length > 3000);
+  const fitted = fitProgressCardToRequestBudget({
+    status: 'plan_ready',
+    title: '长计划任务',
+    taskLink: {
+      taskKey: '0123456789abcdef0123', linkState: 'active', turnState: 'plan_ready',
+      turnOwner: 'none', actionRequired: 'feishu', nextTurnMode: 'default', activeTurnMode: 'plan',
+      hasPendingPlanImplementation: true,
+      planImplementationRevision: 'abcdef0123456789abcd',
+      controls: { canSend: true, canImplementPlan: true, canRelease: true },
+    },
+    progress: { phase: '等待开始执行', detail: '计划已生成。', plan },
+  });
+  const rendered = cardElements(fitted.card, 'markdown')
+    .map((element) => element.content)
+    .join('');
+  assert.equal(fitted.complete, true);
+  assert.match(rendered, /计划末尾唯一标记/);
+  assert.equal(rendered.split('完整计划步骤。').length - 1, 620);
+  assert.ok(cardElements(fitted.card, 'markdown').filter((element) => (
+    element.content.includes('完整计划步骤')
+  )).length > 1);
+  assert.ok(cardRequestBytes(fitted.card) <= CARD_REQUEST_SAFE_BYTES);
+
+  const platformLimited = fitProgressCardToRequestBudget({
+    status: 'plan_ready',
+    title: '超大计划任务',
+    taskLink: {
+      taskKey: '0123456789abcdef0123', linkState: 'active', turnState: 'plan_ready',
+      turnOwner: 'none', actionRequired: 'feishu', nextTurnMode: 'default', activeTurnMode: 'plan',
+      hasPendingPlanImplementation: true,
+      planImplementationRevision: 'abcdef0123456789abcd',
+      controls: { canSend: true, canImplementPlan: true, canRelease: true },
+    },
+    progress: {
+      phase: '等待开始执行', detail: '计划已生成。',
+      plan: `${'超长计划内容。'.repeat(4200)}末尾`,
+    },
+  });
+  assert.equal(platformLimited.complete, false);
+  assert.equal(platformLimited.planComplete, false);
+  assert.ok(cardRequestBytes(platformLimited.card) <= CARD_REQUEST_SAFE_BYTES);
+  assert.match(JSON.stringify(platformLimited.card), /完整回复见后续文字消息/);
 });
 
 test('task controls without an input form keep disconnect in status and stop below content', () => {

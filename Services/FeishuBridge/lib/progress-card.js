@@ -1,5 +1,5 @@
 const CARD_ACTION_NAMESPACE = 'feishu_bridge';
-const TASK_LINK_CARD_REVISION = 36;
+const TASK_LINK_CARD_REVISION = 37;
 const FEISHU_CARD_REQUEST_MAX_BYTES = 30 * 1024;
 const CARD_REQUEST_RESERVE_BYTES = 512;
 const CARD_REQUEST_SAFE_BYTES = FEISHU_CARD_REQUEST_MAX_BYTES - CARD_REQUEST_RESERVE_BYTES;
@@ -98,6 +98,20 @@ function cardV2ControlRow(content, controls, { verticalAlign = 'center' } = {}) 
     flex_mode: 'none',
     horizontal_spacing: '8px',
     columns,
+  };
+}
+
+function cardV2CenteredControl(control) {
+  return {
+    tag: 'column_set',
+    flex_mode: 'none',
+    horizontal_align: 'center',
+    columns: [{
+      tag: 'column',
+      width: 'auto',
+      vertical_align: 'center',
+      elements: [control],
+    }],
   };
 }
 
@@ -526,7 +540,6 @@ function taskLinkImplementButton(taskLink) {
     name: 'implement_task_link_plan',
     text: '开始执行',
     type: 'primary_filled',
-    width: 'fill',
     action: bridgeAction('task_link_implement_plan', {
       taskKey: taskLink.taskKey,
       planRevision: taskLink.planImplementationRevision,
@@ -617,14 +630,14 @@ function taskLinkCardV2({
   const content = taskLinkContent(taskLink, status, detail, progress, Boolean(question));
   if (latestInput && (planText || content || question)) contentElements.push({ tag: 'hr' });
   if (planText) {
-    contentElements.push(...cardV2MarkdownElements(boundedText(planText, 3000), '', '计划'));
+    contentElements.push(...cardV2MarkdownElements(planText, '', '计划'));
     if ((content || question) && taskLink.turnState !== 'plan_ready') {
       contentElements.push({ tag: 'hr' });
     }
   }
   const implementPlan = taskLinkImplementButton(taskLink);
   if (implementPlan) {
-    contentElements.push(implementPlan);
+    contentElements.push(cardV2CenteredControl(implementPlan));
   }
   if (content) {
     const contentTitle = latestInput
@@ -747,18 +760,22 @@ function fitProgressCardToRequestBudget(state = {}) {
   const fullCard = progressCard(state);
   const fullBytes = cardRequestBytes(fullCard);
   if (fullBytes <= CARD_REQUEST_SAFE_BYTES) {
-    return { card: fullCard, complete: true, requestBytes: fullBytes };
+    return { card: fullCard, complete: true, planComplete: true, requestBytes: fullBytes };
   }
 
   const detail = String(state.detail || '').trim();
+  const hasPlan = Boolean(String(state.progress?.plan || '').trim());
   const codePoints = Array.from(detail);
   const suffix = `\n\n${CARD_OVERFLOW_NOTICE}`;
   const variants = [
-    state,
+    { state, planComplete: true },
     {
-      ...state,
-      latestInput: '',
-      progress: state.progress ? { ...state.progress, plan: '' } : state.progress,
+      state: {
+        ...state,
+        latestInput: '',
+        progress: state.progress ? { ...state.progress, plan: '' } : state.progress,
+      },
+      planComplete: !hasPlan,
     },
   ];
 
@@ -770,10 +787,16 @@ function fitProgressCardToRequestBudget(state = {}) {
       const middle = Math.floor((low + high) / 2);
       const prefix = codePoints.slice(0, middle).join('').trimEnd();
       const candidateDetail = prefix ? `${prefix}${suffix}` : CARD_OVERFLOW_NOTICE;
-      const candidate = progressCard({ ...variant, detail: candidateDetail });
+      const candidate = progressCard({ ...variant.state, detail: candidateDetail });
       const requestBytes = cardRequestBytes(candidate);
       if (requestBytes <= CARD_REQUEST_SAFE_BYTES) {
-        best = { card: candidate, complete: false, requestBytes, displayedCodePoints: middle };
+        best = {
+          card: candidate,
+          complete: false,
+          planComplete: variant.planComplete,
+          requestBytes,
+          displayedCodePoints: middle,
+        };
         low = middle + 1;
       } else {
         high = middle - 1;
@@ -782,7 +805,13 @@ function fitProgressCardToRequestBudget(state = {}) {
     if (best) return best;
   }
 
-  return { card: null, complete: false, requestBytes: fullBytes, displayedCodePoints: 0 };
+  return {
+    card: null,
+    complete: false,
+    planComplete: !hasPlan,
+    requestBytes: fullBytes,
+    displayedCodePoints: 0,
+  };
 }
 
 module.exports = {

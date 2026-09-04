@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "cardRevision": 36,
+  "cardRevision": 37,
   "taskHeader": {
     "primaryRow": ["taskTitle", "task_link_release"],
     "secondaryRow": ["context", "duration", "lease"],
@@ -35,6 +35,9 @@
     "plan_ready": {
       "topActions": ["task_link_release"],
       "primaryAction": "task_link_implement_plan",
+      "primaryActionWidth": "content",
+      "primaryActionAlignment": "center",
+      "oversizePlanDelivery": "threaded_text_parts",
       "formIntent": "修改计划",
       "formFields": ["followup"],
       "submitLabel": "提交修改"

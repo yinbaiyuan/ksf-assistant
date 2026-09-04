@@ -3446,6 +3446,7 @@ async function promoteVerifiedDefaultConversation({
         turnState: 'completed',
         turnOwner: 'none',
         actionRequired: 'none',
+        nextTurnMode: 'default',
         activeTurnId: '',
         lastDeliveredTurnId: snapshot.turnId || context.lastCodexTurnId || '',
         detailSummary: safeOneLine(result, 900),
@@ -4096,7 +4097,7 @@ function projectPlanReadyLink(link, snapshot) {
     actionRequired: 'feishu',
     activeTurnId: '',
     activeTurnMode: 'plan',
-    nextTurnMode: 'plan',
+    nextTurnMode: 'default',
     pendingPlanTurnId: pendingPlan.turnId,
     pendingPlanRevision,
     detailSummary: '计划已生成，等待开始执行。',
@@ -4127,19 +4128,50 @@ async function patchTaskLinkCard(
   latestInput = '',
   { questions = [], requireComplete = false, cardToken = '' } = {},
 ) {
-  return enqueueTaskLinkCardUpdate(link, () => {
+  let fitted = null;
+  const delivered = await enqueueTaskLinkCardUpdate(link, () => {
     const resolvedLatestInput = taskLinkLatestInputs.get(link.id) || latestInput || '';
     const resolvedDetail = taskLinkDisplayDetail(link, status, detail);
-    return fitProgressCardToRequestBudget({
+    fitted = fitProgressCardToRequestBudget({
       status,
       title: link.title,
-    detail: resolvedDetail,
-    taskLink: publicTaskLink(link),
-    progress: taskLinkCardProgress(link, progress),
+      detail: resolvedDetail,
+      taskLink: publicTaskLink(link),
+      progress: taskLinkCardProgress(link, progress),
       latestInput: resolvedLatestInput,
       questions,
     });
-  }, { requireComplete, cardToken });
+    return fitted;
+  }, { cardToken });
+  if (!delivered) return false;
+
+  const plan = String(taskLinkCardProgress(link, progress)?.plan || '').trim();
+  if (link.turnState === 'plan_ready' && link.rootMessageId
+    && plan && fitted?.planComplete === false) {
+    try {
+      const ids = await replyText(
+        link.rootMessageId,
+        '',
+        `完整计划（卡片空间有限，已分段显示）\n\n${plan}`,
+        { phase: `task-link-plan:${link.taskKey}:${link.pendingPlanRevision || 'current'}` },
+      );
+      if (ids.length) {
+        updateTaskLink(link.id, {
+          messageIds: [...new Set([...(link.messageIds || []), ...ids])],
+        });
+      }
+      return true;
+    } catch (error) {
+      appendMessageLog({
+        direction: 'task_link_plan_overflow_delivery_failed',
+        at: new Date().toISOString(),
+        taskKey: link.taskKey,
+        error: safeOneLine(error.message || String(error), 300),
+      });
+      return false;
+    }
+  }
+  return requireComplete ? Boolean(fitted?.complete) : true;
 }
 
 async function patchPreparedTaskLinkCard(link, card, { cardToken = '' } = {}) {
@@ -4622,7 +4654,7 @@ async function executeTaskLink(link, command, context) {
   const turnStartedAt = new Date().toISOString();
   let current = updateTaskLink(link.id, {
     turnState: 'running', turnOwner: 'bridge', actionRequired: 'none',
-    nextTurnMode,
+    nextTurnMode: 'default',
     activeTurnMode: nextTurnMode,
     pendingMessageId: '', pendingCleanupDir: '',
     progress: {
@@ -4716,6 +4748,7 @@ async function executeTaskLink(link, command, context) {
       cancelTaskLinkCardPush(current.id);
       current = updateTaskLink(current.id, {
         turnState: 'interrupted', turnOwner: 'none', actionRequired: 'none', activeTurnId: '',
+        nextTurnMode: 'default',
         detailSummary: '当前 Codex 轮次已停止，任务连接继续有效。',
         progress: {
           ...current.progress, phase: '已停止', detail: '当前 Codex 轮次已停止，任务连接继续有效。',
@@ -4756,6 +4789,7 @@ async function executeTaskLink(link, command, context) {
     cancelTaskLinkCardPush(current.id);
     current = updateTaskLink(current.id, {
       turnState: 'completed', turnOwner: 'none', actionRequired: 'none',
+      nextTurnMode: 'default',
       activeTurnId: '', lastDeliveredTurnId: result.turnId,
       detailSummary: safeOneLine(result.finalText, 900),
       progress: {
@@ -4801,6 +4835,7 @@ async function executeTaskLink(link, command, context) {
     } : {
       turnState: interrupted ? 'interrupted' : 'failed',
       turnOwner: 'none', actionRequired: 'none', activeTurnId: '',
+      nextTurnMode: 'default',
       detailSummary: safeOneLine(error.message, 300),
       progress: {
         ...current.progress,
@@ -4893,6 +4928,7 @@ async function processQueuedTaskLinks() {
     if (!inbound?.text || !inbound.chatId) {
       const failed = updateTaskLink(link.id, {
         turnState: 'failed', turnOwner: 'none', actionRequired: 'none',
+        nextTurnMode: 'default',
         pendingMessageId: '', progress: { ...link.progress, phase: '排队内容已失效', detail: '桥重启后无法恢复这条排队消息，请重新回复任务卡。' },
       });
       cleanupTaskLinkAssetDirectories(failed);
@@ -4999,6 +5035,7 @@ async function refreshTaskLinks(onlyLinkId = '') {
       const completed = updateTaskLink(link.id, {
         ...next,
         activeTurnId: '',
+        nextTurnMode: 'default',
         activeTurnMode: String(snapshot.journalTurn?.collaborationMode?.mode || link.activeTurnMode || ''),
         detailSummary: lastMessage ? publicProgressText(lastMessage) : link.detailSummary,
         progress: {
@@ -5816,6 +5853,7 @@ async function handleCardAction(data) {
       const startedAt = Date.parse(link.progress?.startedAt || '');
       const interrupted = updateTaskLink(link.id, {
         turnState: 'interrupted', turnOwner: 'none', actionRequired: 'none', activeTurnId: '',
+        nextTurnMode: 'default',
         pendingMessageId: '', inputCapture: null, progress: {
           ...link.progress, phase: '已停止', detail: '当前 Codex 轮次已停止，任务连接继续有效。',
           durationSeconds: Number.isFinite(startedAt)
