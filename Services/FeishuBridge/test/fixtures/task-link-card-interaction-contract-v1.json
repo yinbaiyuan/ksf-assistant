@@ -1,11 +1,12 @@
 {
   "schemaVersion": 1,
-  "cardRevision": 34,
+  "cardRevision": 35,
   "states": {
     "running": {
       "topActions": ["task_link_release"],
       "inputRow": ["task_link_interrupt", "followup", "task_link_followup"],
-      "formIntent": "补充当前轮",
+      "formIntent": null,
+      "placeholder": "补充或修正",
       "formFields": ["followup"],
       "submitLabel": "发送"
     },

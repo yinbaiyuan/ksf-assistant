@@ -30,13 +30,15 @@ function cardElements(card, tag) {
   return matches;
 }
 
-test('language-neutral task-link card contract freezes revision 34 interactions', () => {
+test('language-neutral task-link card contract freezes revision 35 interactions', () => {
   assert.equal(taskLinkCardContract.schemaVersion, 1);
   assert.equal(taskLinkCardContract.cardRevision, TASK_LINK_CARD_REVISION);
   assert.deepEqual(taskLinkCardContract.states.running.topActions, ['task_link_release']);
   assert.deepEqual(taskLinkCardContract.states.running.inputRow, [
     'task_link_interrupt', 'followup', 'task_link_followup',
   ]);
+  assert.equal(taskLinkCardContract.states.running.formIntent, null);
+  assert.equal(taskLinkCardContract.states.running.placeholder, '补充或修正');
   assert.deepEqual(taskLinkCardContract.states.completed.formFields, ['turnMode', 'followup']);
   assert.deepEqual(taskLinkCardContract.states.completed.turnModes, ['default', 'plan']);
   assert.equal(taskLinkCardContract.states.plan_ready.primaryAction, 'task_link_implement_plan');
@@ -572,7 +574,8 @@ test('task-link reply controls and compact metadata follow authoritative turn co
     action: 'task_link_interrupt', taskId: '', taskKey: '0123456789abcdef0123',
   });
   assert.equal(cardElements(running, 'select_static').length, 0);
-  assert.equal(cardElements(running, 'input')[0].label.content, '补充当前轮');
+  assert.equal(cardElements(running, 'input')[0].label, undefined);
+  assert.equal(cardElements(running, 'input')[0].placeholder.content, '补充或修正');
   const runningTopControls = running.body.elements[0].columns[1].elements;
   assert.equal(runningTopControls.length, 1);
   assert.equal(runningTopControls[0].name, 'release_task_link');

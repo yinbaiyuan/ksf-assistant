@@ -1,5 +1,5 @@
 const CARD_ACTION_NAMESPACE = 'feishu_bridge';
-const TASK_LINK_CARD_REVISION = 34;
+const TASK_LINK_CARD_REVISION = 35;
 const FEISHU_CARD_REQUEST_MAX_BYTES = 30 * 1024;
 const CARD_REQUEST_RESERVE_BYTES = 512;
 const CARD_REQUEST_SAFE_BYTES = FEISHU_CARD_REQUEST_MAX_BYTES - CARD_REQUEST_RESERVE_BYTES;
@@ -520,12 +520,12 @@ function taskLinkQuickReplyForm(taskLink) {
     ? '修改计划'
     : controls.canAnswer
     ? '回答 Codex'
-    : controls.canSteer ? '补充当前轮' : '';
+    : '';
   const placeholder = taskLink.turnState === 'plan_ready'
     ? '输入需要调整的内容'
     : controls.canAnswer
     ? '输入对当前问题的回答'
-    : controls.canSteer ? '输入一句补充或修正' : '输入下一步问题或要求';
+    : controls.canSteer ? '补充或修正' : '输入下一步问题或要求';
   const newTurnState = ['idle', 'completed', 'failed', 'interrupted'].includes(taskLink.turnState);
   const interrupt = ['running', 'waiting_input'].includes(taskLink.turnState)
     ? taskLinkInterruptButton(taskLink) : null;
