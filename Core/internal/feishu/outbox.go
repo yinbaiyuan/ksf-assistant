@@ -18,6 +18,7 @@ type MessageSender interface {
 
 type OutboxRequest struct {
 	ID                    string         `json:"id"`
+	OperationID           string         `json:"operationId,omitempty"`
 	Type                  string         `json:"type"`
 	Target                MessageTarget  `json:"target"`
 	Text                  string         `json:"text,omitempty"`
@@ -32,6 +33,7 @@ type OutboxRequest struct {
 
 type OutboxResult struct {
 	ID          string         `json:"id"`
+	OperationID string         `json:"operationId,omitempty"`
 	Status      string         `json:"status"`
 	Target      MessageTarget  `json:"target,omitempty"`
 	MessageIDs  []string       `json:"messageIds,omitempty"`
@@ -63,7 +65,8 @@ func (box *Outbox) Submit(request OutboxRequest) error {
 	if err := box.repository.migrateLegacy(box.queuePath(), box.resultPath(), box.statePath()); err != nil {
 		return err
 	}
-	conflictKey := "im/" + request.Target.Type + ":" + AuditFingerprint(request.Target.ID)
+	definition, _ := CapabilityByID("im.sdk.message.send")
+	conflictKey := workConflictKey(definition, outboxCapabilityInput(box.dataRoot, request))
 	return box.repository.enqueue(request.ID, request, conflictKey, "go-sdk", "standard", "never", request.CreatedAt)
 }
 
@@ -172,12 +175,13 @@ func (box *Outbox) Process(ctx context.Context, sender MessageSender, globalDryR
 }
 
 func (box *Outbox) processClaimed(ctx context.Context, item WorkItemV3, sender MessageSender, globalDryRun bool) error {
+	ctx = context.WithValue(ctx, executionWorkKey{}, executionWork{repository: box.repository, item: item})
 	var request OutboxRequest
 	result := OutboxResult{ID: item.ID, CompletedAt: time.Now().UTC()}
 	if err := json.Unmarshal(item.Request, &request); err != nil {
 		result.Status, result.Error = "invalid", "invalid_json"
 	} else {
-		result = box.processRequest(ctx, sender, request, globalDryRun)
+		result = box.executeGoverned(ctx, sender, request, globalDryRun)
 	}
 	if err := box.repository.finish(item, result, result.Error); err != nil {
 		return err
@@ -193,7 +197,7 @@ func (box *Outbox) processClaimed(ctx context.Context, item WorkItemV3, sender M
 }
 
 func (box *Outbox) processRequest(ctx context.Context, sender MessageSender, request OutboxRequest, globalDryRun bool) OutboxResult {
-	result := OutboxResult{ID: request.ID, Target: request.Target, Source: request.Source, Trace: request.Trace, CompletedAt: time.Now().UTC()}
+	result := OutboxResult{ID: request.ID, OperationID: request.OperationID, Target: request.Target, Source: request.Source, Trace: request.Trace, CompletedAt: time.Now().UTC()}
 	if err := box.validate(request); err != nil {
 		result.Status, result.Error = "invalid", err.Error()
 		return result
@@ -210,18 +214,41 @@ func (box *Outbox) processRequest(ctx context.Context, sender MessageSender, req
 		result.Status, result.DryRun = "dry_run", true
 		return result
 	}
+	input := outboxCapabilityInput(box.dataRoot, request)
+	if boundary, ok := ctx.Value(executionBoundaryKey{}).(executionBoundary); ok {
+		if value, exists := boundary.input["dry-run"]; exists {
+			input["dry-run"] = value
+		}
+	}
+	if err := validateDirectBinding(ctx, "im.sdk.message.send", input, request.OperationID); err != nil {
+		result.Status, result.Error = "failed", err.Error()
+		return result
+	}
 	if sender == nil {
 		result.Status, result.Error = "failed", "message_sender_unavailable"
 		return result
 	}
 	for index, part := range parts {
+		if err := beforeRemoteWrite(ctx); err != nil {
+			result.Status, result.Error = "failed", err.Error()
+			if len(result.MessageIDs) > 0 {
+				result.Status = "partial_sent"
+			}
+			return result
+		}
 		value := part
 		if request.Type == "image" || request.Type == "file" {
 			value = request.FilePath
 		}
-		messageID, err := sender.Send(ctx, request.Target, request.Type, value, request.ID+"-"+strconv.Itoa(index+1))
+		partID := request.ID + "-" + strconv.Itoa(index+1)
+		partCtx := context.WithValue(ctx, executionMessagePartKey{}, executionMessagePart{target: request.Target, format: request.Type, value: value, id: partID})
+		messageID, err := sender.Send(partCtx, request.Target, request.Type, value, partID)
 		if err != nil {
 			result.Error = safeCommandError(err.Error())
+			if isUncertainExecutionError(err) {
+				result.Status = string(OperationOutcomeUnknown)
+				return result
+			}
 			break
 		}
 		result.MessageIDs = append(result.MessageIDs, messageID)

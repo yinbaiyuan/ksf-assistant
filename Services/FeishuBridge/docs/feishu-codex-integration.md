@@ -1,6 +1,6 @@
 # 飞书 x Codex 对接说明（AI 接手版）
 
-> 迁移期维护者参考：本文描述 Node 兼容实现，不是 CodexAssistant
+> 迁移期维护者参考：本文描述 Node 兼容实现，不是 KSFAssistant
 > 普通用户配置说明；用户配置只在软件内完成。
 
 ## 目标
@@ -406,7 +406,7 @@ ws client ready
 默认传输策略为 `CODEX_TRANSPORT=auto`：
 
 ```text
-- CodexAssistant 托管的普通根消息和后台任务固定使用短生命周期独立 `codex app-server`，不经过 proxy，也不自动启动 daemon。
+- KSFAssistant 托管的普通根消息和后台任务固定使用短生命周期独立 `codex app-server`，不经过 proxy，也不自动启动 daemon。
 - 初始化最多等待 5 秒；失败立即更新失败卡，禁止在不确定状态下重复创建 Thread 或 Turn。
 - 新 Thread 命名复用同一短连接并限制为 1 秒，失败仅记录安全诊断，不阻塞轮次结果。
 ```
@@ -424,7 +424,7 @@ ws client ready
   -> 回复飞书
 ```
 
-CodexAssistant 显式连接的既有 Desktop 任务采用独立链路：权威快照读取以及 `start / steer / interrupt` 均通过当前用户私有 Desktop IPC 定向交给目标任务的 Desktop 所有者。桥以标准本地 rollout 中的 `task_started / task_complete / turn_aborted` 作为轮次生命周期证据。这样不会由第二个 app-server `thread/resume` 已加载任务，也不会创建替代 thread。目标任务暂时没有所有者时，桥打开准确任务并等待 Desktop 接管后再提交。
+KSFAssistant 显式连接的既有 Desktop 任务采用独立链路：权威快照读取以及 `start / steer / interrupt` 均通过当前用户私有 Desktop IPC 定向交给目标任务的 Desktop 所有者。桥以标准本地 rollout 中的 `task_started / task_complete / turn_aborted` 作为轮次生命周期证据。这样不会由第二个 app-server `thread/resume` 已加载任务，也不会创建替代 thread。目标任务暂时没有所有者时，桥打开准确任务并等待 Desktop 接管后再提交。
 
 效果：
 

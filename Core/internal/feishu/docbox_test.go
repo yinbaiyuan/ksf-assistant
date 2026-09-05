@@ -1,7 +1,6 @@
 package feishu
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -30,7 +29,10 @@ esac
 		t.Fatal(err)
 	}
 	request := DocumentRequest{ID: "DOC-test", Type: "document_task", Action: "update_document", Identity: "user", Target: &DocumentTarget{Kind: "docx_token", Value: "doc_test"}, Content: DocumentContent{Format: "markdown", Text: "new"}, Instruction: "update", ExplicitAuthorization: true, Source: "test", VersionPolicy: "official_before_update", UpdateMode: "append", CreatedAt: time.Now().UTC()}
-	result := executeDocumentRequest(context.Background(), CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root}, request, false)
+	capabilityID, input := documentCapabilityInput(request)
+	ctx, operationID := reviewRunningBoundary(t, root, capabilityID, input)
+	request.OperationID = operationID
+	result := executeDocumentRequest(ctx, CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root}, request, false)
 	if result.Status != "completed" || result.Verified || result.VerificationState != string(VerificationInconclusive) || result.Verification == nil {
 		t.Fatalf("unexpected result: %#v", result)
 	}
@@ -70,7 +72,10 @@ esac
 		t.Fatal(err)
 	}
 	request := DocumentRequest{ID: "DOC-unknown", Type: "document_task", Action: "update_document", Identity: "user", Target: &DocumentTarget{Kind: "docx_token", Value: "doc_test"}, Content: DocumentContent{Format: "markdown", Text: "new"}, Instruction: "update", ExplicitAuthorization: true, Source: "test", VersionPolicy: "official_before_update", UpdateMode: "append", CreatedAt: time.Now().UTC()}
-	result := executeDocumentRequest(context.Background(), CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root}, request, false)
+	capabilityID, input := documentCapabilityInput(request)
+	ctx, operationID := reviewRunningBoundary(t, root, capabilityID, input)
+	request.OperationID = operationID
+	result := executeDocumentRequest(ctx, CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root}, request, false)
 	if result.Status != string(OperationOutcomeUnknown) || result.FailurePhase != "verification" || result.Verified || result.Error == "" {
 		t.Fatalf("unexpected result: %#v", result)
 	}

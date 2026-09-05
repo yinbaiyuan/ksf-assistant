@@ -13,6 +13,6 @@
 - 自动更新、Linux 桌面端、移动端
 - 任意飞书 OpenAPI/EventKey、Approval 事件、实时会议控制
 - 无界后台抓取、群成员/权限管理、秘密中继
-- 手工拼装运行时或脱离 CodexAssistant 独立常驻飞书桥
+- 手工拼装运行时或脱离 KSFAssistant 独立常驻飞书桥
 
 一般问题可在未来公开仓库创建 Issue，并附版本、操作系统、架构、复现步骤和脱敏诊断。安全问题按 [SECURITY.md](SECURITY.md) 私下报告。预览版按尽力原则维护，不承诺商业 SLA。

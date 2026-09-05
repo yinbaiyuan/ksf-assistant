@@ -412,12 +412,12 @@ test('task-link answer options render as mobile-safe rows with optional bounded 
 test('project task cards use the project as the header and promote the task identity above muted metadata', () => {
   const card = progressCard({
     status: 'completed',
-    title: 'CodexAssistant · 飞书任务',
+    title: 'KSFAssistant · 飞书任务',
     detail: '项目任务已完成。',
     taskLink: {
       taskKey: '0123456789abcdef0123',
-      title: 'CodexAssistant · 飞书任务',
-      projectName: 'CodexAssistant',
+      title: 'KSFAssistant · 飞书任务',
+      projectName: 'KSFAssistant',
       linkState: 'active',
       turnState: 'completed',
       turnOwner: 'none',
@@ -426,12 +426,12 @@ test('project task cards use the project as the header and promote the task iden
     progress: { phase: '完成', detail: '项目任务已完成。' },
   });
 
-  assert.equal(card.header.title.content, 'CodexAssistant');
+  assert.equal(card.header.title.content, 'KSFAssistant');
   const identityRow = card.body.elements[0];
   assert.equal(identityRow.tag, 'column_set');
   assert.deepEqual(identityRow.columns.map((column) => column.width), ['weighted', 'auto']);
   assert.deepEqual(identityRow.columns.map((column) => column.vertical_align), ['top', 'top']);
-  assert.equal(identityRow.columns[0].elements[0].content, '**CodexAssistant · 飞书任务**');
+  assert.equal(identityRow.columns[0].elements[0].content, '**KSFAssistant · 飞书任务**');
   assert.equal(identityRow.columns[1].elements[0].text.content, '断开');
   assert.equal(identityRow.columns[1].elements[0].type, 'danger');
   assert.equal(card.body.elements[1].tag, 'hr');
@@ -446,7 +446,7 @@ test('task-link headers preserve long task identity space and hide generic progr
     taskLink: {
       taskKey: '0123456789abcdef0123',
       title: longTitle,
-      projectName: 'CodexAssistant',
+      projectName: 'KSFAssistant',
       linkState: 'active',
       turnState: 'running',
       turnOwner: 'desktop',
@@ -473,7 +473,7 @@ test('completed task-link cards keep one reply and offer quick text plus native 
   const finalReply = '收到。任务已经完成，并且结果只应该出现一次。';
   const card = progressCard({
     status: 'completed',
-    title: 'CodexAssistant 到飞书',
+    title: 'KSFAssistant 到飞书',
     detail: finalReply,
     taskLink: {
       taskKey: '0123456789abcdef0123',
@@ -497,7 +497,7 @@ test('completed task-link cards keep one reply and offer quick text plus native 
   const { header } = card;
   assert.equal(card.body.elements.includes(header), false);
   assert.equal(header.template, 'green');
-  assert.equal(header.title.content, 'CodexAssistant 到飞书');
+  assert.equal(header.title.content, 'KSFAssistant 到飞书');
   assert.equal(header.padding, undefined);
   assert.deepEqual(header.text_tag_list, [
     { tag: 'text_tag', text: { tag: 'plain_text', content: '已完成' }, color: 'green' },

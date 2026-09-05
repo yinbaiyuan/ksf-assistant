@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"codexusagebar/core/internal/domain"
+	"ksfassistant/core/internal/domain"
 )
 
 func TestObservationsExcludePresentationAndPreserveWaitingFlags(t *testing.T) {

@@ -14,10 +14,10 @@ const goOutput = execFileSync('go', ['list', '-m', '-json', 'all'], { cwd: path.
 const goModules = [...goOutput.matchAll(/\{(?:[^{}]|\{[^{}]*\})*\}/gs)].map((match) => JSON.parse(match[0]));
 const lock = JSON.parse(readFileSync(path.join(root, 'Windows', 'package-lock.json'), 'utf8'));
 const packages = [{
-  SPDXID: 'SPDXRef-Application', name: 'CodexAssistant', versionInfo: '0.10.0-preview.1',
+  SPDXID: 'SPDXRef-Application', name: 'KSFAssistant', versionInfo: '0.10.0-preview.1',
   downloadLocation: 'NOASSERTION', filesAnalyzed: false, licenseConcluded: 'MIT', licenseDeclared: 'MIT',
 }];
-for (const module of goModules.filter((item) => item.Path !== 'codexusagebar/core')) {
+for (const module of goModules.filter((item) => item.Path !== 'ksfassistant/core')) {
   packages.push({
     SPDXID: `SPDXRef-Go-${stableID(module.Path)}`, name: module.Path, versionInfo: module.Version || 'unknown',
     downloadLocation: module.Version ? `https://proxy.golang.org/${module.Path}/@v/${module.Version}.zip` : 'NOASSERTION',
@@ -36,8 +36,8 @@ for (const [location, metadata] of Object.entries(lock.packages || {})) {
 packages.sort((left, right) => left.SPDXID.localeCompare(right.SPDXID));
 const document = {
   spdxVersion: 'SPDX-2.3', dataLicense: 'CC0-1.0', SPDXID: 'SPDXRef-DOCUMENT',
-  name: `CodexAssistant-${revision.slice(0, 12)}`,
-  documentNamespace: `https://codexassistant.invalid/spdx/${revision}`,
+  name: `KSFAssistant-${revision.slice(0, 12)}`,
+  documentNamespace: `https://ksfassistant.invalid/spdx/${revision}`,
   creationInfo: { created: timestamp, creators: ['Tool: scripts/generate-sbom.mjs'] },
   packages,
   relationships: packages.slice(1).map((item) => ({
@@ -46,7 +46,7 @@ const document = {
 };
 const output = path.join(root, 'dist', 'sbom');
 mkdirSync(output, { recursive: true });
-writeFileSync(path.join(output, 'CodexAssistant.spdx.json'), `${JSON.stringify(document, null, 2)}\n`);
+writeFileSync(path.join(output, 'KSFAssistant.spdx.json'), `${JSON.stringify(document, null, 2)}\n`);
 console.log(`Generated SPDX 2.3 SBOM with ${packages.length} packages.`);
 
 function stableID(value) {

@@ -43,7 +43,7 @@ Copy-Item .env.example .env.local
 
 编辑 `.env.local`。保留业务开关、事件目录和入站权限；建议不填写路径项，让平台层选择 Windows 私有目录。Windows 会强制日志、三类队列、事件、目录缓存和临时出站媒体位于 `FEISHU_BRIDGE_DATA_DIR` 内；任何逃逸路径都会让主进程和写命令 fail-closed，并由 `doctor` 报出字段名。
 
-初始化凭据时，可创建专用飞书应用或复用既有应用。二维码 OAuth 只能授权已经配置到本机的应用，不能把既有应用的 App Secret 从飞书平台取回；迁移期开发者可通过安全导入或既有 `lark-cli` profile 准备测试凭据，普通用户由 CodexAssistant 软件内向导完成。
+初始化凭据时，可创建专用飞书应用或复用既有应用。二维码 OAuth 只能授权已经配置到本机的应用，不能把既有应用的 App Secret 从飞书平台取回；迁移期开发者可通过安全导入或既有 `lark-cli` profile 准备测试凭据，普通用户由 KSFAssistant 软件内向导完成。
 
 本机安全导入从 stdin 或私有 JSON 文件读取 Secret，不把 Secret 放进命令行、`.env.local`、Skill 或版本化文件，并会同步写入当前 Windows 用户 DPAPI，供官方 SDK 长连接使用：
 

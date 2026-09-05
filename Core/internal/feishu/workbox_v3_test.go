@@ -34,7 +34,7 @@ func TestWorkRepositoryMigratesLegacyQueueOnceWithoutReplayingProcessedSideEffec
 		t.Fatal(err)
 	}
 	index, err := box.repository.readIndex()
-	if err != nil || index.Pending != 1 || index.Running != 0 || index.Terminal != 2 || index.Processed != 2 {
+	if err != nil || index.Pending != 0 || index.Running != 0 || index.Terminal != 3 || index.Processed != 3 {
 		t.Fatalf("index=%#v err=%v", index, err)
 	}
 	var completed ActionResult
@@ -45,9 +45,9 @@ func TestWorkRepositoryMigratesLegacyQueueOnceWithoutReplayingProcessedSideEffec
 	if found, err := box.repository.findResult(requests[1].ID, &missingResult); err != nil || !found || missingResult.Status != string(OperationOutcomeUnknown) || missingResult.Error != "legacy_result_missing" {
 		t.Fatalf("missing result=%#v found=%v err=%v", missingResult, found, err)
 	}
-	var pending WorkItemV3
-	if missing, err := readPrivateJSON(box.repository.path("pending", requests[2].ID), &pending); err != nil || missing || len(pending.Request) == 0 {
-		t.Fatalf("pending=%#v missing=%v err=%v", pending, missing, err)
+	var rejected ActionResult
+	if found, err := box.repository.findResult(requests[2].ID, &rejected); err != nil || !found || rejected.Error != "legacy_authorization_unverified" {
+		t.Fatalf("unconfirmed legacy request was not quarantined: %#v %v", rejected, err)
 	}
 	legacyRoot := filepath.Join(root, "private-cache", "workbox-v3", "legacy-v2", "actionbox")
 	for _, path := range []string{box.queuePath(), box.resultPath(), box.statePath(), box.queuePath() + ".lock", box.resultPath() + ".lock"} {

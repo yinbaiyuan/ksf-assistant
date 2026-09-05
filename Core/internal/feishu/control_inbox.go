@@ -5,12 +5,15 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 )
 
 const controlInboxSchema = 1
+
+var controlIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{8,128}$`)
 
 type ControlRequest struct {
 	SchemaVersion int       `json:"schemaVersion"`
@@ -37,71 +40,60 @@ func NewControlInbox(dataRoot string) *ControlInbox {
 func NewControlID() (string, error) { return newQueueID("CTL") }
 
 func (inbox *ControlInbox) Submit(request ControlRequest) error {
-	request.SchemaVersion = controlInboxSchema
-	request.ID = strings.TrimSpace(request.ID)
-	request.TaskKey = strings.TrimSpace(request.TaskKey)
-	if !controlIDPattern.MatchString(request.ID) || request.Operation != "taskLink.interrupt" || request.TaskKey == "" || len(request.TaskKey) > 256 {
-		return errors.New("invalid_bridge_control_request")
-	}
-	if request.CreatedAt.IsZero() {
-		request.CreatedAt = time.Now().UTC()
-	} else {
-		request.CreatedAt = request.CreatedAt.UTC()
-	}
-	if err := ensurePrivateDirectory(inbox.root); err != nil {
-		return err
-	}
-	path := inbox.requestPath(request.ID)
-	return withProcessFileLock(inbox.lockPath(), func() error {
-		if _, err := os.Lstat(path); err == nil {
-			return errors.New("duplicate_bridge_control_request")
-		} else if !os.IsNotExist(err) {
-			return err
-		}
-		return writePrivateJSON(path, request)
-	})
+	return errors.New("legacy_control_inbox_retired_use_core_gateway")
 }
 
-func (inbox *ControlInbox) Process(ctx context.Context, handler func(context.Context, ControlRequest) error) error {
-	if handler == nil {
-		return errors.New("missing_bridge_control_handler")
-	}
-	if err := ensurePrivateDirectory(inbox.root); err != nil {
+func (inbox *ControlInbox) Retire(ctx context.Context) error {
+	if _, err := os.Lstat(inbox.root); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
 		return err
 	}
 	return withProcessFileLock(inbox.lockPath(), func() error {
+		marker := filepath.Join(inbox.root, "retired-v2.json")
+		var completed map[string]bool
+		missing, err := readPrivateJSON(marker, &completed)
+		if err != nil {
+			return err
+		}
+		if !missing && completed["completed"] {
+			return nil
+		}
 		entries, err := os.ReadDir(inbox.root)
 		if err != nil {
 			return err
 		}
-		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+		sort.Slice(entries, func(left, right int) bool { return entries[left].Name() < entries[right].Name() })
 		for _, entry := range entries {
-			if ctx.Err() != nil {
-				return ctx.Err()
+			if err := ctx.Err(); err != nil {
+				return err
 			}
 			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".request.json") {
 				continue
 			}
-			requestPath := filepath.Join(inbox.root, entry.Name())
 			var request ControlRequest
-			missing, readErr := readPrivateJSON(requestPath, &request)
-			if readErr != nil || missing || request.SchemaVersion != controlInboxSchema || !controlIDPattern.MatchString(request.ID) || request.Operation != "taskLink.interrupt" || strings.TrimSpace(request.TaskKey) == "" {
-				return errors.New("invalid_persisted_bridge_control")
+			missing, err := readPrivateJSON(filepath.Join(inbox.root, entry.Name()), &request)
+			if err != nil || missing || request.SchemaVersion != controlInboxSchema || !controlIDPattern.MatchString(request.ID) {
+				return errors.New("invalid_legacy_control_request")
 			}
-			result := ControlResult{SchemaVersion: controlInboxSchema, ID: request.ID, Status: "succeeded", CompletedAt: time.Now().UTC()}
-			if callErr := handler(ctx, request); callErr != nil {
-				result.Status = "failed"
-				result.ErrorClass = "control_failed"
-			}
-			if err := writePrivateJSON(inbox.resultPath(request.ID), result); err != nil {
+			var prior ControlResult
+			missing, err = readPrivateJSON(inbox.resultPath(request.ID), &prior)
+			if err != nil {
 				return err
 			}
-			if err := os.Remove(requestPath); err != nil && !os.IsNotExist(err) {
-				return err
+			if missing {
+				result := ControlResult{SchemaVersion: controlInboxSchema, ID: request.ID, Status: "failed", ErrorClass: "legacy_request_requires_reconfirmation", CompletedAt: time.Now().UTC()}
+				if err := writePrivateJSON(inbox.resultPath(request.ID), result); err != nil {
+					return err
+				}
 			}
 		}
-		return nil
+		return writePrivateJSON(marker, map[string]bool{"completed": true})
 	})
+}
+
+func (inbox *ControlInbox) Process(ctx context.Context, _ func(context.Context, ControlRequest) error) error {
+	return inbox.Retire(ctx)
 }
 
 func (inbox *ControlInbox) TakeResult(id string) (ControlResult, bool, error) {

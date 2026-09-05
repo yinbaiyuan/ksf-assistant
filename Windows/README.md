@@ -1,6 +1,6 @@
-# CodexAssistant for Windows
+# KSFAssistant for Windows
 
-Windows 10/11 system-tray host for the shared CodexAssistant core.
+Windows 10/11 system-tray host for the shared KSFAssistant core.
 
 This page is for source contributors. Packaged-app users follow the repository
 README and configure everything in the application.

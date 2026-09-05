@@ -36,14 +36,14 @@ test('Windows package copies only Go Feishu production dependencies', () => {
 
 test('Windows and macOS both inject only the native bridge and lark-cli', () => {
   const windowsMain = fs.readFileSync(path.join(repoRoot, 'Windows', 'src', 'main.cjs'), 'utf8');
-  const macClient = fs.readFileSync(path.join(repoRoot, 'Sources', 'CodexUsageBar', 'CoreServiceProcessClient.swift'), 'utf8');
-	assert.match(windowsMain, /CODEX_USAGE_BAR_LARK_CLI:\s*runtime\.larkCLI/);
-	assert.match(windowsMain, /CODEX_USAGE_BAR_FEISHU_BRIDGE:\s*runtime\.bridge/);
-	assert.doesNotMatch(windowsMain, /CODEX_USAGE_BAR_NODE|CODEX_USAGE_BAR_FEISHU_SERVICE_ROOT|FEISHU_GO_PREVIEW/);
-  assert.match(macClient, /environment\["CODEX_USAGE_BAR_FEISHU_BRIDGE"\] = runtime\.bridge\.path/);
-  assert.match(macClient, /environment\["CODEX_USAGE_BAR_LARK_CLI"\] = runtime\.larkCLI\.path/);
-  assert.doesNotMatch(macClient, /CODEX_USAGE_BAR_NODE/);
-  assert.doesNotMatch(macClient, /CODEX_USAGE_BAR_FEISHU_SERVICE_ROOT/);
+  const macClient = fs.readFileSync(path.join(repoRoot, 'Sources', 'KSFAssistant', 'CoreServiceProcessClient.swift'), 'utf8');
+	assert.match(windowsMain, /KSF_ASSISTANT_LARK_CLI:\s*runtime\.larkCLI/);
+	assert.match(windowsMain, /KSF_ASSISTANT_FEISHU_BRIDGE:\s*runtime\.bridge/);
+	assert.doesNotMatch(windowsMain, /KSF_ASSISTANT_NODE|KSF_ASSISTANT_FEISHU_SERVICE_ROOT|FEISHU_GO_PREVIEW/);
+  assert.match(macClient, /environment\["KSF_ASSISTANT_FEISHU_BRIDGE"\] = runtime\.bridge\.path/);
+  assert.match(macClient, /environment\["KSF_ASSISTANT_LARK_CLI"\] = runtime\.larkCLI\.path/);
+  assert.doesNotMatch(macClient, /KSF_ASSISTANT_NODE/);
+  assert.doesNotMatch(macClient, /KSF_ASSISTANT_FEISHU_SERVICE_ROOT/);
 });
 
 test('macOS package has no Node build or runtime dependency', () => {
@@ -51,5 +51,5 @@ test('macOS package has no Node build or runtime dependency', () => {
   assert.doesNotMatch(buildScript, /node\s+"\$repo_root\/scripts\//);
   assert.doesNotMatch(buildScript, /runtime\/node\/darwin/);
   assert.doesNotMatch(buildScript, /services\/feishu-bridge\/scripts\/bridge-client\.js/);
-  assert.match(buildScript, /go run \.\/cmd\/codex-build-assets/);
+  assert.match(buildScript, /go run \.\/cmd\/ksf-assistant-build-assets/);
 });

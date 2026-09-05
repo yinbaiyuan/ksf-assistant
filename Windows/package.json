@@ -1,9 +1,9 @@
 {
-  "name": "codexassistant-windows",
+  "name": "ksfassistant-windows",
   "version": "0.10.0-preview.1",
   "private": true,
-  "description": "Windows system-tray host for CodexAssistant",
-  "author": "CodexAssistant contributors",
+  "description": "Windows system-tray host for KSFAssistant",
+  "author": "KSFAssistant contributors",
   "license": "MIT",
   "main": "src/main.cjs",
   "scripts": {
@@ -20,8 +20,8 @@
     "electron-builder": "26.15.3"
   },
   "build": {
-    "appId": "com.codexassistant.desktop",
-    "productName": "CodexAssistant",
+    "appId": "com.ksfassistant.desktop",
+    "productName": "KSFAssistant",
     "asar": true,
     "files": [
       "src/**/*",
@@ -32,12 +32,12 @@
       {
         "from": "../dist/core/windows-${arch}",
         "to": "core/windows-${arch}",
-        "filter": ["codex-usage-core.exe"]
+        "filter": ["ksf-assistant-core.exe"]
       },
       {
         "from": "../dist/runtime/feishu-bridge/windows-${arch}",
         "to": "runtime/feishu-bridge/windows-${arch}",
-        "filter": ["codex-feishu-bridge.exe"]
+        "filter": ["ksf-assistant-feishu-bridge.exe"]
       },
       {
         "from": "../dist/runtime/lark-cli/windows-${arch}",
@@ -53,14 +53,14 @@
         "to": "THIRD_PARTY_NOTICES.md"
       },
       {
-        "from": "../dist/sbom/CodexAssistant.spdx.json",
-        "to": "CodexAssistant.spdx.json"
+        "from": "../dist/sbom/KSFAssistant.spdx.json",
+        "to": "KSFAssistant.spdx.json"
       }
     ],
     "win": {
       "icon": "assets/app-icon.png",
       "target": "nsis",
-      "artifactName": "CodexAssistant-${version}-Windows-${arch}.${ext}"
+      "artifactName": "KSFAssistant-${version}-Windows-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -68,7 +68,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": false,
       "createStartMenuShortcut": true,
-      "shortcutName": "CodexAssistant",
+      "shortcutName": "KSFAssistant",
       "deleteAppDataOnUninstall": false
     }
   }

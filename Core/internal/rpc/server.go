@@ -4,13 +4,15 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
 	"time"
 
-	managedfeishu "codexusagebar/core/internal/feishu"
-	"codexusagebar/core/internal/service"
+	managedfeishu "ksfassistant/core/internal/feishu"
+	"ksfassistant/core/internal/privateipc"
+	"ksfassistant/core/internal/service"
 )
 
 type request struct {
@@ -28,8 +30,9 @@ type response struct {
 }
 
 type responseError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 type Server struct {
@@ -86,7 +89,13 @@ func (server *Server) handle(parent context.Context, line []byte) {
 		return
 	}
 	if err != nil {
-		server.write(response{JSONRPC: "2.0", ID: call.ID, Error: &responseError{Code: -32000, Message: err.Error()}})
+		failure := &responseError{Code: -32000, Message: err.Error()}
+		var privateError *privateipc.RPCError
+		if errors.As(err, &privateError) && privateError.Code == -32063 {
+			failure.Code = privateError.Code
+			failure.Data = privateError.Data
+		}
+		server.write(response{JSONRPC: "2.0", ID: call.ID, Error: failure})
 		return
 	}
 	server.write(response{JSONRPC: "2.0", ID: call.ID, Result: result})

@@ -59,7 +59,7 @@ components:
     width: 336px
 ---
 
-# CodexAssistant visual system
+# KSFAssistant visual system
 
 ## Overview
 

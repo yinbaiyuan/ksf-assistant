@@ -95,7 +95,7 @@ function readManagedSettings(filePath) {
 function loadRuntimeEnvironment(projectRoot, { env = process.env, homeDir = os.homedir() } = {}) {
   const local = readEnvironmentFile(path.join(projectRoot, '.env.local'));
   const initial = { ...local, ...env };
-  if (initial.CODEX_USAGE_BAR_MANAGED !== '1') return initial;
+  if (initial.KSF_ASSISTANT_MANAGED !== '1') return initial;
   const dataRoot = initial.FEISHU_BRIDGE_DATA_DIR
     ? path.resolve(initial.FEISHU_BRIDGE_DATA_DIR)
     : path.join(homeDir, '.config', 'feishu-bridge');

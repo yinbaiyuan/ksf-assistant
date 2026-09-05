@@ -4,7 +4,7 @@ import (
 	"os"
 	"time"
 
-	"codexusagebar/core/internal/domain"
+	"ksfassistant/core/internal/domain"
 )
 
 type transition struct {

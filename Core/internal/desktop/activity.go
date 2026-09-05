@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"codexusagebar/core/internal/domain"
+	"ksfassistant/core/internal/domain"
 )
 
 const maxFrameBytes = 64 * 1024 * 1024
@@ -113,12 +113,12 @@ func DefaultEndpoint(home string) string {
 }
 
 func New(endpoint string) *ActivityClient {
-	return NewWithClientType(endpoint, "codex-usage-bar")
+	return NewWithClientType(endpoint, "ksf-assistant")
 }
 
 func NewWithClientType(endpoint, clientType string) *ActivityClient {
 	if strings.TrimSpace(clientType) == "" {
-		clientType = "codex-usage-bar"
+		clientType = "ksf-assistant"
 	}
 	return &ActivityClient{endpoint: endpoint, clientType: clientType, availability: "loading", followedBy: map[taskKey]map[string]bool{}, owners: map[taskKey]string{}, observations: map[taskKey]domain.TaskObservation{}, pendingOwners: map[string]taskKey{}, ownerWaiters: map[string]chan string{}, requestWaiters: map[string]chan error{}, responseWaiters: map[string]chan ipcCallResponse{}, candidateKeys: map[taskKey]bool{}, states: map[taskKey]map[string]any{}, snapshotWaiters: map[snapshotKey][]snapshotWaiter{}}
 }
@@ -1099,7 +1099,7 @@ func (client *ActivityClient) nextID(prefix string) string {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	client.sequence++
-	return fmt.Sprintf("codex-usage-core-%s-%d", prefix, client.sequence)
+	return fmt.Sprintf("ksf-assistant-core-%s-%d", prefix, client.sequence)
 }
 
 func (client *ActivityClient) connectionEnded(connection net.Conn) {

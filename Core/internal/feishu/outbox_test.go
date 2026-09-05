@@ -21,6 +21,16 @@ func TestOutboxProcessesSplitMessageAndPersistsState(t *testing.T) {
 	sender := &recordingSender{}
 	request := OutboxRequest{ID: "OUT-test", Type: "text", Target: MessageTarget{Type: "open_id", ID: "ou_test"}, Text: string(make([]byte, 0)), ExplicitAuthorization: true, Source: "test", CreatedAt: time.Now().UTC()}
 	request.Text = "hello"
+	_, operationID := reviewRunningBoundary(t, root, "im.sdk.message.send", outboxCapabilityInput(root, request))
+	operations := NewOperationService(root, NewCapabilityPolicyStore(root), nil)
+	if err := operations.update(operationID, func(record *OperationRecord) error {
+		record.Status = OperationQueued
+		record.AttemptCount = 0
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	request.OperationID = operationID
 	if err := box.Submit(request); err != nil {
 		t.Fatal(err)
 	}

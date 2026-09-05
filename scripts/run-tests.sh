@@ -3,8 +3,16 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+if ! /usr/bin/xcrun --sdk macosx --show-sdk-platform-path >/dev/null 2>&1; then
+    echo "Swift tests require a macOS SDK with Swift Package Manager test support. Configure the developer toolchain; legacy standalone fallback tests are no longer supported." >&2
+    exit 1
+fi
+
 build_dir="$repo_root/.build/direct-tests"
 mkdir -p "$build_dir"
+
+node "$repo_root/scripts/check-product-identity.mjs"
+bash "$repo_root/scripts/test-identity-migration.sh"
 
 (cd "$repo_root/Core" && go test ./...)
 (cd "$repo_root/Services/FeishuBridge" && npm test)
@@ -19,111 +27,23 @@ esac
     -emit-library \
     -static \
     -emit-module \
-    -module-name CodexUsageCore \
+    -module-name KSFAssistantCore \
     -target "$host_arch-apple-macos13.0" \
-    "$repo_root"/Sources/CodexUsageCore/*.swift \
-    -o "$build_dir/libCodexUsageCore.a" \
-    -emit-module-path "$build_dir/CodexUsageCore.swiftmodule"
+    "$repo_root"/Sources/KSFAssistantCore/*.swift \
+    -o "$build_dir/libKSFAssistantCore.a" \
+    -emit-module-path "$build_dir/KSFAssistantCore.swiftmodule"
 /usr/bin/swiftc \
     -parse-as-library \
     -target "$host_arch-apple-macos13.0" \
     -I "$build_dir" \
     -L "$build_dir" \
-    -lCodexUsageCore \
-    "$repo_root/Sources/CodexUsageBar/FeishuModels.swift" \
-    "$repo_root/Sources/CodexUsageBar/CoreServiceProcessClient.swift" \
+    -lKSFAssistantCore \
+    "$repo_root/Sources/KSFAssistant/FeishuModels.swift" \
+    "$repo_root/Sources/KSFAssistant/CoreServiceProcessClient.swift" \
     "$repo_root/Tests/CoreServiceProcessStandalone/main.swift" \
     -o "$build_dir/core-service-process-tests"
 "$build_dir/core-service-process-tests"
 bash "$repo_root/scripts/test-quit-lifecycle.sh"
 
-if /usr/bin/xcrun --sdk macosx --show-sdk-platform-path >/dev/null 2>&1; then
-    /usr/bin/swift test --package-path "$repo_root"
-    "$repo_root/scripts/build-app.sh"
-    exit 0
-fi
-
-echo "Command Line Tools cannot provide SDK PlatformPath; using the Swift 5.8 direct-compile test fallback."
-
-/usr/bin/swiftc \
-    -parse-as-library \
-    -target arm64-apple-macos13.0 \
-    "$repo_root"/Sources/CodexUsageCore/*.swift \
-    "$repo_root/Tests/Standalone/main.swift" \
-    -o "$build_dir/model-tests"
-"$build_dir/model-tests"
-
-/usr/bin/swiftc \
-    -parse-as-library \
-    -target arm64-apple-macos13.0 \
-    "$repo_root"/Sources/CodexUsageCore/*.swift \
-    "$repo_root/Tests/ProjectStandalone/main.swift" \
-    -o "$build_dir/project-workbench-tests"
-"$build_dir/project-workbench-tests"
-
-/usr/bin/swiftc \
-    -emit-library \
-    -static \
-    -emit-module \
-    -module-name CodexUsageCore \
-    -target arm64-apple-macos13.0 \
-    "$repo_root"/Sources/CodexUsageCore/*.swift \
-    -o "$build_dir/libCodexUsageCore.a" \
-    -emit-module-path "$build_dir/CodexUsageCore.swiftmodule"
-/usr/bin/swiftc \
-    -parse-as-library \
-    -target arm64-apple-macos13.0 \
-    -I "$build_dir" \
-    -L "$build_dir" \
-    -lCodexUsageCore \
-    "$repo_root/Sources/CodexUsageBar/CodexTaskOpener.swift" \
-    "$repo_root/Tests/TaskOpeningStandalone/main.swift" \
-    -framework AppKit \
-    -o "$build_dir/task-opening-tests"
-"$build_dir/task-opening-tests"
-
-view_model_test_app="$build_dir/UsageViewModelTests.app"
-view_model_test_binary="$view_model_test_app/Contents/MacOS/CodexUsageBar"
-mkdir -p "$view_model_test_app/Contents/MacOS"
-cp "$repo_root/Resources/Info.plist" "$view_model_test_app/Contents/Info.plist"
-/usr/bin/swiftc \
-    -parse-as-library \
-    -target arm64-apple-macos13.0 \
-    -I "$build_dir" \
-    -L "$build_dir" \
-    -lCodexUsageCore \
-    "$repo_root/Sources/CodexUsageBar/AppConfiguration.swift" \
-    "$repo_root/Sources/CodexUsageBar/CodexTaskOpener.swift" \
-    "$repo_root/Sources/CodexUsageBar/FeishuModels.swift" \
-    "$repo_root/Sources/CodexUsageBar/LegacyWeChatDataCleaner.swift" \
-    "$repo_root/Sources/CodexUsageBar/ProjectUsageStore.swift" \
-    "$repo_root/Sources/CodexUsageBar/CoreServiceProcessClient.swift" \
-    "$repo_root/Sources/CodexUsageBar/SnapshotStore.swift" \
-    "$repo_root/Sources/CodexUsageBar/SystemServices.swift" \
-    "$repo_root/Sources/CodexUsageBar/TerminalActionLauncher.swift" \
-    "$repo_root/Sources/CodexUsageBar/UsageViewModel.swift" \
-    "$repo_root/Tests/UsageViewModelStandalone/main.swift" \
-    -framework AppKit \
-    -framework Security \
-    -framework ServiceManagement \
-    -framework UserNotifications \
-    -o "$view_model_test_binary"
-"$view_model_test_binary"
-
-/usr/bin/swiftc \
-    -parse-as-library \
-    -target arm64-apple-macos13.0 \
-    "$repo_root/Sources/CodexUsageBar/StatusItemImageRenderer.swift" \
-    "$repo_root/Tests/StatusItemImageStandalone/main.swift" \
-    -framework AppKit \
-    -o "$build_dir/status-item-image-tests"
-"$build_dir/status-item-image-tests"
-
-/usr/bin/swiftc \
-    -parse-as-library \
-    -target arm64-apple-macos13.0 \
-    "$repo_root/Tests/UILayoutStandalone/main.swift" \
-    -o "$build_dir/ui-layout-tests"
-"$build_dir/ui-layout-tests" "$repo_root/Sources/CodexUsageBar/UsagePopoverView.swift"
-
+/usr/bin/swift test --package-path "$repo_root"
 "$repo_root/scripts/build-app.sh"

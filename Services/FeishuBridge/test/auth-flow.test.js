@@ -134,7 +134,7 @@ process.stdout.write(JSON.stringify({ ok: true, data: { users: [{ open_id: 'ou_p
     cwd: path.join(__dirname, '..'),
     env: {
       ...process.env,
-      CODEX_USAGE_BAR_MANAGED: '1',
+      KSF_ASSISTANT_MANAGED: '1',
       FEISHU_BRIDGE_DATA_DIR: dir,
       LARK_CLI_BIN: fakeCliPath,
     },

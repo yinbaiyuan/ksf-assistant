@@ -107,7 +107,7 @@ Source: [Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin)
 Referenced version: 2.4.6  
 Retrieved: 2026-08-30
 
-CodexAssistant's native Swift iLink adapter is an independent implementation informed by the public protocol and behavior of Tencent's `openclaw-weixin` project. The upstream project is distributed under the MIT License.
+KSFAssistant's native Swift iLink adapter is an independent implementation informed by the public protocol and behavior of Tencent's `openclaw-weixin` project. The upstream project is distributed under the MIT License.
 
 ```text
 Copyright (C) 2026 Tencent. All rights reserved.

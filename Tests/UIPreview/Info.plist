@@ -5,13 +5,13 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleExecutable</key>
-    <string>CodexUsageBarPreview</string>
+    <string>KSFAssistantPreview</string>
     <key>CFBundleIdentifier</key>
-    <string>com.codexassistant.desktop.preview</string>
+    <string>com.ksfassistant.desktop.preview</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>CodexAssistant Preview</string>
+    <string>KSFAssistant Preview</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

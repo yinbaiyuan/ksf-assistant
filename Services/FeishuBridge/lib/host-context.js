@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const PROTOCOL = 'codexassistant-host-context-v1';
+const PROTOCOL = 'ksfassistant-host-context-v1';
 const SCHEMA_VERSION = 1;
 const STATES = new Set(['not_configured', 'ready', 'invalid']);
 const MAX_BYTES = 64 * 1024;
@@ -17,30 +17,30 @@ class HostContextError extends Error {
 function readHostContext(filePath, { platform = process.platform, dataRoot = '' } = {}) {
   const configuredPath = String(filePath || '').trim();
   if (!path.isAbsolute(configuredPath)) {
-    throw new HostContextError('host_context_unavailable', 'CodexAssistant 宿主上下文不可用，请重新启动应用。');
+    throw new HostContextError('host_context_unavailable', 'KSFAssistant 宿主上下文不可用，请重新启动应用。');
   }
-  if (dataRoot && path.resolve(configuredPath) !== path.join(path.resolve(dataRoot), 'codexassistant-host-context-v1.json')) {
-    throw new HostContextError('host_context_unsafe', 'CodexAssistant 宿主上下文路径越界。');
+  if (dataRoot && path.resolve(configuredPath) !== path.join(path.resolve(dataRoot), 'ksfassistant-host-context-v1.json')) {
+    throw new HostContextError('host_context_unsafe', 'KSFAssistant 宿主上下文路径越界。');
   }
   let stat;
   try {
     stat = fs.lstatSync(configuredPath);
   } catch {
-    throw new HostContextError('host_context_unavailable', 'CodexAssistant 宿主上下文不可用，请重新启动应用。');
+    throw new HostContextError('host_context_unavailable', 'KSFAssistant 宿主上下文不可用，请重新启动应用。');
   }
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_BYTES
     || (platform !== 'win32' && (stat.mode & 0o077) !== 0)) {
-    throw new HostContextError('host_context_unsafe', 'CodexAssistant 宿主上下文不安全，请重新启动应用。');
+    throw new HostContextError('host_context_unsafe', 'KSFAssistant 宿主上下文不安全，请重新启动应用。');
   }
   let value;
   try {
     value = JSON.parse(fs.readFileSync(configuredPath, 'utf8'));
   } catch {
-    throw new HostContextError('host_context_invalid', 'CodexAssistant 宿主上下文已损坏，请重新启动应用。');
+    throw new HostContextError('host_context_invalid', 'KSFAssistant 宿主上下文已损坏，请重新启动应用。');
   }
   const state = String(value?.ksf?.state || '');
   if (value?.protocol !== PROTOCOL || value?.schemaVersion !== SCHEMA_VERSION || !STATES.has(state)) {
-    throw new HostContextError('host_context_invalid', 'CodexAssistant 宿主上下文无法识别，请重新启动应用。');
+    throw new HostContextError('host_context_invalid', 'KSFAssistant 宿主上下文无法识别，请重新启动应用。');
   }
   if (state === 'ready') {
     const root = String(value.ksf.root || '');
@@ -52,7 +52,7 @@ function readHostContext(filePath, { platform = process.platform, dataRoot = '' 
     } catch {
       throw new HostContextError(
         'ksf_invalid',
-        'KSF 目录已失效。请在 CodexAssistant → 设置 → KSF 知识库重新选择目录，然后重新发送本消息。',
+        'KSF 目录已失效。请在 KSFAssistant → 设置 → KSF 知识库重新选择目录，然后重新发送本消息。',
       );
     }
     return { ...value, ksf: { state, root: realRoot } };
@@ -72,7 +72,7 @@ function resolveRootMessageWorkspace({
   if (context.ksf.state === 'invalid') {
     throw new HostContextError(
       'ksf_invalid',
-      'KSF 目录已失效。请在 CodexAssistant → 设置 → KSF 知识库重新选择目录，然后重新发送本消息。',
+      'KSF 目录已失效。请在 KSFAssistant → 设置 → KSF 知识库重新选择目录，然后重新发送本消息。',
     );
   }
   if (context.ksf.state === 'ready') {

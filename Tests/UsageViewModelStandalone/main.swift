@@ -1,4 +1,4 @@
-import CodexUsageCore
+import KSFAssistantCore
 import Foundation
 
 private struct TestFailure: Error, CustomStringConvertible {
@@ -33,8 +33,8 @@ private enum UsageViewModelStandaloneTestRunner {
             }
 
             try await MainActor.run {
-                guard AppConfiguration.bundleIdentifier == "com.codexassistant.desktop",
-                      AppConfiguration.applicationSupportDirectory().lastPathComponent == "com.codexassistant.desktop"
+                guard AppConfiguration.bundleIdentifier == "com.ksfassistant.desktop",
+                      AppConfiguration.applicationSupportDirectory().lastPathComponent == "com.ksfassistant.desktop"
                 else {
                     throw TestFailure(description: "team application identity is not isolated from the personal build")
                 }

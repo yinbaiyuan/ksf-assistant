@@ -586,7 +586,7 @@ test('managed clients never fall back to an external service manager while the s
   const start = source.indexOf('async function ensureBridgeRunning');
   const end = source.indexOf('function docboxSourceAllowed', start);
   const body = source.slice(start, end);
-  const managedGuard = body.indexOf("runtime.env.CODEX_USAGE_BAR_MANAGED === '1'");
+  const managedGuard = body.indexOf("runtime.env.KSF_ASSISTANT_MANAGED === '1'");
   const serviceFallback = body.indexOf('controlBridgeService');
   assert.ok(managedGuard >= 0);
   assert.ok(serviceFallback > managedGuard);

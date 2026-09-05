@@ -49,7 +49,7 @@ function buildTrayStatus(snapshot) {
   const waiting = Math.max(0, Math.floor(snapshot?.activity?.waitingCount || 0));
   const tokens = formatTokens(snapshot?.usage?.localDailyUsage?.tokens);
   const lines = [
-    'CodexAssistant',
+    'KSFAssistant',
     remainingPercent == null ? '额度暂不可用' : `通用额度剩余 ${remainingPercent}%`,
     `${running} 个运行中，${waiting} 个等待`,
   ];

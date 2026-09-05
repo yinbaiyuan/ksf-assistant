@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"codexusagebar/core/internal/privateipc"
+	"ksfassistant/core/internal/privateipc"
 )
 
 func TestManagedSupervisorStartsAndStopsChildWithPublicState(t *testing.T) {
@@ -36,6 +36,7 @@ func TestManagedSupervisorStartsAndStopsChildWithPublicState(t *testing.T) {
 
 func TestManagedSupervisorRestartsThreeTimesThenDegrades(t *testing.T) {
 	supervisor := newTestSupervisor(t, "crash")
+	defer supervisor.Stop(context.Background())
 	supervisor.restartDelays = []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 15 * time.Millisecond}
 	supervisor.restartWindow = time.Second
 	supervisor.healthyReset = time.Hour
@@ -46,7 +47,7 @@ func TestManagedSupervisorRestartsThreeTimesThenDegrades(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		status := supervisor.Status()
-		if status.State == StateDegraded {
+		if status.State == StateDegraded && status.PID == 0 {
 			if status.RestartCount != 3 || !strings.Contains(status.LastError, "exit status") {
 				t.Fatalf("unexpected degraded status: %#v", status)
 			}
@@ -77,15 +78,21 @@ func TestManagedSupervisorOwnsBidirectionalPrivateRPC(t *testing.T) {
 }
 
 func TestFeishuSupervisorHelperProcess(t *testing.T) {
-	if os.Getenv("CODEX_USAGE_BAR_TEST_BRIDGE") != "1" {
+	if os.Getenv("KSF_ASSISTANT_TEST_BRIDGE") != "1" {
 		return
 	}
-	mode := os.Getenv("CODEX_USAGE_BAR_TEST_BRIDGE_MODE")
+	mode := os.Getenv("KSF_ASSISTANT_TEST_BRIDGE_MODE")
 	if mode == "crash" {
 		os.Exit(7)
 	}
 	if mode == "rpc" {
-		peer := privateipc.NewPeer(os.Stdin, os.Stdout, privateipc.HandlerFunc(func(_ context.Context, method string, params json.RawMessage) (any, error) {
+		var peer *privateipc.Peer
+		peer = privateipc.NewPeer(os.Stdin, os.Stdout, privateipc.HandlerFunc(func(ctx context.Context, method string, params json.RawMessage) (any, error) {
+			if method == "bridge/test/callback" {
+				var result map[string]uint64
+				err := peer.Call(ctx, "core/test/epoch", nil, &result)
+				return result, err
+			}
 			if method != "bridge/test/echo" {
 				return nil, privateipc.ErrMethodNotFound
 			}
@@ -94,6 +101,11 @@ func TestFeishuSupervisorHelperProcess(t *testing.T) {
 			return value, nil
 		}))
 		_ = peer.Serve(context.Background())
+		os.Exit(0)
+	}
+	if mode == "eof" {
+		_ = os.Stdout.Close()
+		_, _ = io.Copy(io.Discard, os.Stdin)
 		os.Exit(0)
 	}
 	_, _ = io.Copy(io.Discard, os.Stdin)
@@ -111,8 +123,8 @@ func newTestSupervisor(t *testing.T, mode string) *Supervisor {
 		DataRoot:   t.TempDir(),
 		Arguments:  []string{"-test.run=TestFeishuSupervisorHelperProcess"},
 		Environment: []string{
-			"CODEX_USAGE_BAR_TEST_BRIDGE=1",
-			"CODEX_USAGE_BAR_TEST_BRIDGE_MODE=" + mode,
+			"KSF_ASSISTANT_TEST_BRIDGE=1",
+			"KSF_ASSISTANT_TEST_BRIDGE_MODE=" + mode,
 		},
 	})
 }

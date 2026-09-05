@@ -1,4 +1,4 @@
-import CodexUsageCore
+import KSFAssistantCore
 import Foundation
 
 private struct TestFailure: Error, CustomStringConvertible {

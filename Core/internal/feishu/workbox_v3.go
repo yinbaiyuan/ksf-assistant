@@ -14,9 +14,13 @@ import (
 	"time"
 )
 
-const WorkItemSchemaVersion = 3
+const WorkItemSchemaVersion = 4
 
-type WorkItemV3 struct {
+type WorkItemV3 = WorkItemV4
+
+type WorkItemV4 struct {
+	OperationID    string          `json:"operationId,omitempty"`
+	ExecutionPhase string          `json:"executionPhase"`
 	SchemaVersion  int             `json:"schemaVersion"`
 	Kind           string          `json:"kind"`
 	ID             string          `json:"id"`
@@ -32,7 +36,9 @@ type WorkItemV3 struct {
 	CompletedAt    *time.Time      `json:"completedAt,omitempty"`
 }
 
-type WorkIndexV3 struct {
+type WorkIndexV3 = WorkIndexV4
+
+type WorkIndexV4 struct {
 	SchemaVersion int       `json:"schemaVersion"`
 	Revision      uint64    `json:"revision"`
 	Pending       int       `json:"pending"`
@@ -132,6 +138,8 @@ func (repo workRepository) enqueue(id string, request any, conflictKey, backend,
 		retryClass = "never"
 	}
 	item := WorkItemV3{SchemaVersion: WorkItemSchemaVersion, Kind: repo.kind, ID: id, State: "pending", ConflictKey: conflictKey, Backend: backend, ExecutionClass: executionClass, RetryClass: retryClass, Request: payload, CreatedAt: createdAt.UTC()}
+	bindWorkOperation(&item)
+	item.ExecutionPhase = "queued"
 	err = withProcessFileLock(repo.lockPath(), func() error {
 		for _, state := range []string{"pending", "running", "terminal"} {
 			if info, statErr := os.Lstat(repo.path(state, id)); statErr == nil {
@@ -143,10 +151,11 @@ func (repo workRepository) enqueue(id string, request any, conflictKey, backend,
 				return statErr
 			}
 		}
-		if err := writePrivateJSON(repo.path("pending", id), item); err != nil {
+		if err := writeWorkJSON(repo.path("pending", id), item); err != nil {
 			return err
 		}
-		return repo.updateIndexLocked(func(index *WorkIndexV3) { index.Pending++ })
+		_ = repo.updateIndexLocked(func(index *WorkIndexV3) { index.Pending++ })
+		return nil
 	})
 	if err == nil {
 		signalWork(repo.dataRoot)
@@ -181,8 +190,23 @@ func (repo workRepository) pendingHeads() ([]WorkItemV3, error) {
 			}
 			id := strings.TrimSuffix(entry.Name(), ".json")
 			var item WorkItemV3
-			missing, readErr := readPrivateJSON(repo.path("pending", id), &item)
-			if missing || readErr != nil || item.SchemaVersion != WorkItemSchemaVersion || item.Kind != repo.kind || item.ID != id || item.State != "pending" {
+			missing, readErr := readWorkJSON(repo.path("pending", id), &item)
+			if readErr != nil {
+				return readErr
+			}
+			if !missing && (item.ID != id || item.Kind != repo.kind) {
+				return errors.New("invalid work item binding")
+			}
+			if item.SchemaVersion == 3 {
+				eligible, err := repo.upgradePendingLocked(&item)
+				if err != nil {
+					return err
+				}
+				if !eligible {
+					continue
+				}
+			}
+			if missing || item.SchemaVersion != WorkItemSchemaVersion || item.Kind != repo.kind || item.ID != id || item.State != "pending" {
 				continue
 			}
 			if item.ConflictKey == "" {
@@ -218,23 +242,37 @@ func (repo workRepository) claimID(id string) (WorkItemV3, bool, error) {
 	found := false
 	err := withProcessFileLock(repo.lockPath(), func() error {
 		path := repo.path("pending", id)
-		missing, readErr := readPrivateJSON(path, &claimed)
+		missing, readErr := readWorkJSON(path, &claimed)
 		if missing {
 			return nil
 		}
 		if readErr != nil {
 			return readErr
 		}
+		if _, err := repo.readIndex(); err != nil {
+			if repairErr := repo.rebuildIndexLocked(); repairErr == nil {
+				signalWork(repo.dataRoot)
+				return err
+			}
+		}
+		if claimed.SchemaVersion == 3 {
+			eligible, err := repo.upgradePendingLocked(&claimed)
+			if err != nil || !eligible {
+				return err
+			}
+		}
 		if claimed.SchemaVersion != WorkItemSchemaVersion || claimed.Kind != repo.kind || claimed.ID != id || claimed.State != "pending" {
 			return errors.New("invalid pending work item")
 		}
 		now := time.Now().UTC()
-		claimed.State, claimed.StartedAt = "running", &now
+		claimed.State, claimed.StartedAt, claimed.ExecutionPhase = "running", &now, "queue_claimed"
+		bindWorkOperation(&claimed)
 		runningPath := repo.path("running", id)
 		if err := os.Rename(path, runningPath); err != nil {
 			return err
 		}
-		if err := writePrivateJSON(runningPath, claimed); err != nil {
+		if err := writeWorkJSON(runningPath, claimed); err != nil {
+			_ = os.Rename(runningPath, path)
 			return err
 		}
 		if err := repo.updateIndexLocked(func(index *WorkIndexV3) {
@@ -243,7 +281,7 @@ func (repo workRepository) claimID(id string) (WorkItemV3, bool, error) {
 			}
 			index.Running++
 		}); err != nil {
-			return err
+			_ = repo.rebuildIndexLocked()
 		}
 		found = true
 		return nil
@@ -262,7 +300,7 @@ func (repo workRepository) finish(item WorkItemV3, result any, lastError string)
 	err = withProcessFileLock(repo.lockPath(), func() error {
 		path := repo.path("running", item.ID)
 		var current WorkItemV3
-		missing, err := readPrivateJSON(path, &current)
+		missing, err := readWorkJSON(path, &current)
 		if missing {
 			return errors.New("running work item not found")
 		}
@@ -270,16 +308,17 @@ func (repo workRepository) finish(item WorkItemV3, result any, lastError string)
 			return err
 		}
 		now := time.Now().UTC()
-		current.State, current.CompletedAt = "terminal", &now
+		current.State, current.CompletedAt, current.ExecutionPhase = "terminal", &now, "terminal"
+		bindWorkOperation(&current)
 		current.Request = nil
 		current.Result = payload
-		if err := writePrivateJSON(path, current); err != nil {
+		if err := writeWorkJSON(path, current); err != nil {
 			return err
 		}
 		if err := os.Rename(path, repo.path("terminal", item.ID)); err != nil {
 			return err
 		}
-		return repo.updateIndexLocked(func(index *WorkIndexV3) {
+		_ = repo.updateIndexLocked(func(index *WorkIndexV3) {
 			if index.Running > 0 {
 				index.Running--
 			}
@@ -287,6 +326,7 @@ func (repo workRepository) finish(item WorkItemV3, result any, lastError string)
 			index.Processed++
 			index.LastError = safeCommandError(lastError)
 		})
+		return nil
 	})
 	if err == nil {
 		notifyWorkCompleted(repo, item.ID)
@@ -370,15 +410,23 @@ func (repo workRepository) recoverRunning(limit int) (int, error) {
 			id := strings.TrimSuffix(entry.Name(), ".json")
 			path := repo.path("running", id)
 			var item WorkItemV3
-			missing, readErr := readPrivateJSON(path, &item)
+			missing, readErr := readWorkJSON(path, &item)
 			if missing || readErr != nil || item.ID != id {
 				continue
 			}
+			bindWorkOperation(&item)
+			if err := repo.backupV3("running", item); err != nil {
+				return err
+			}
+			item.SchemaVersion = WorkItemSchemaVersion
+			if err := repo.reconcileWorkOperation(item); err != nil {
+				return err
+			}
 			if item.State != "terminal" || len(item.Result) == 0 {
 				now := time.Now().UTC()
-				item.State, item.Request, item.CompletedAt = "terminal", nil, &now
-				item.Result, _ = json.Marshal(map[string]any{"id": id, "status": string(OperationOutcomeUnknown), "error": "worker_interrupted", "completedAt": now})
-				if err := writePrivateJSON(path, item); err != nil {
+				item.State, item.Request, item.CompletedAt, item.ExecutionPhase = "terminal", nil, &now, "terminal"
+				item.Result, _ = json.Marshal(repo.recoveryResult(item, "worker_interrupted"))
+				if err := writeWorkJSON(path, item); err != nil {
 					return err
 				}
 			}
@@ -388,7 +436,7 @@ func (repo workRepository) recoverRunning(limit int) (int, error) {
 			recovered++
 		}
 		if recovered > 0 {
-			return repo.updateIndexLocked(func(index *WorkIndexV3) {
+			_ = repo.updateIndexLocked(func(index *WorkIndexV3) {
 				index.Running -= recovered
 				if index.Running < 0 {
 					index.Running = 0
@@ -411,7 +459,10 @@ func (repo workRepository) markOutcomeUnknown(item WorkItemV3, errorCode string)
 	if errorCode == "" {
 		errorCode = "worker_interrupted"
 	}
-	result := map[string]any{"id": item.ID, "status": string(OperationOutcomeUnknown), "error": errorCode, "completedAt": time.Now().UTC()}
+	if err := repo.reconcileWorkOperation(item); err != nil {
+		return err
+	}
+	result := repo.recoveryResult(item, errorCode)
 	return repo.finish(item, result, errorCode)
 }
 
@@ -420,14 +471,14 @@ func (repo workRepository) findResult(id string, target any) (bool, error) {
 		return false, errors.New("invalid work item id")
 	}
 	var item WorkItemV3
-	missing, err := readPrivateJSON(repo.path("terminal", id), &item)
+	missing, err := readWorkJSON(repo.path("terminal", id), &item)
 	if missing {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	if item.SchemaVersion != WorkItemSchemaVersion || item.Kind != repo.kind || item.ID != id || item.State != "terminal" {
+	if (item.SchemaVersion != WorkItemSchemaVersion && item.SchemaVersion != 3) || item.Kind != repo.kind || item.ID != id || item.State != "terminal" {
 		return false, errors.New("invalid terminal work item")
 	}
 	if len(item.Result) == 0 {
@@ -457,7 +508,7 @@ func (repo workRepository) recentResults(limit int) ([]map[string]any, error) {
 			continue
 		}
 		var item WorkItemV3
-		missing, readErr := readPrivateJSON(filepath.Join(repo.stateDir("terminal"), entry.Name()), &item)
+		missing, readErr := readWorkJSON(filepath.Join(repo.stateDir("terminal"), entry.Name()), &item)
 		if missing || readErr != nil || len(item.Result) == 0 {
 			continue
 		}
@@ -487,19 +538,29 @@ func (repo workRepository) readIndex() (WorkIndexV3, error) {
 func (repo workRepository) updateIndexLocked(update func(*WorkIndexV3)) error {
 	index, err := repo.readIndex()
 	if err != nil {
-		return err
+		return repo.rebuildIndexLocked()
 	}
 	update(&index)
 	index.SchemaVersion = WorkItemSchemaVersion
 	index.Revision++
 	index.UpdatedAt = time.Now().UTC()
-	return writePrivateJSON(repo.indexPath(), index)
+	if err := writePrivateJSON(repo.indexPath(), index); err != nil {
+		return repo.rebuildIndexLocked()
+	}
+	return nil
 }
 
 // migrateLegacy imports a v2 append-only queue once. It is intentionally
 // called before a producer or consumer uses v3; failure leaves the v2 files in
 // place and prevents writes, so two storage engines can never consume together.
 func (repo workRepository) migrateLegacy(queuePath, resultPath, statePath string) error {
+	if err := repo.migrateLegacyV2(queuePath, resultPath, statePath); err != nil {
+		return err
+	}
+	return repo.migrateV3()
+}
+
+func (repo workRepository) migrateLegacyV2(queuePath, resultPath, statePath string) error {
 	if err := repo.ensure(); err != nil {
 		return err
 	}
@@ -542,17 +603,26 @@ func (repo workRepository) migrateLegacy(queuePath, resultPath, statePath string
 			if _, found := results[header.ID]; found {
 				return nil
 			}
-			item := WorkItemV3{SchemaVersion: WorkItemSchemaVersion, Kind: repo.kind, ID: header.ID, State: "pending", ConflictKey: repo.kind, Backend: "legacy-v2", ExecutionClass: "standard", RetryClass: "never", Request: append(json.RawMessage(nil), raw...), CreatedAt: header.CreatedAt}
+			item := WorkItemV3{SchemaVersion: WorkItemSchemaVersion, Kind: repo.kind, ID: header.ID, State: "pending", ExecutionPhase: "queued", ConflictKey: repo.kind, Backend: "legacy-v2", ExecutionClass: "standard", RetryClass: "never", Request: append(json.RawMessage(nil), raw...), CreatedAt: header.CreatedAt}
 			if item.CreatedAt.IsZero() {
 				item.CreatedAt = time.Now().UTC()
 			}
-			if line <= legacyState.ProcessedLineCount {
+			bindWorkOperation(&item)
+			unauthorized := repo.validateLegacyPending(item) != nil
+			if line <= legacyState.ProcessedLineCount || unauthorized {
 				now := time.Now().UTC()
 				item.State, item.Request, item.CompletedAt = "terminal", nil, &now
-				item.Result, _ = json.Marshal(map[string]any{"id": header.ID, "status": string(OperationOutcomeUnknown), "error": "legacy_result_missing", "completedAt": now})
-				return writePrivateJSON(repo.path("terminal", header.ID), item)
+				code := "legacy_result_missing"
+				if line > legacyState.ProcessedLineCount {
+					code = "legacy_authorization_unverified"
+				}
+				item.Result, _ = json.Marshal(map[string]any{"id": header.ID, "operationId": item.OperationID, "status": string(OperationOutcomeUnknown), "error": code, "completedAt": now})
+				if err := repo.reconcileWorkOperation(item); err != nil {
+					return err
+				}
+				return writeWorkJSON(repo.path("terminal", header.ID), item)
 			}
-			return writePrivateJSON(repo.path("pending", header.ID), item)
+			return writeWorkJSON(repo.path("pending", header.ID), item)
 		}); err != nil {
 			return err
 		}
@@ -566,13 +636,11 @@ func (repo workRepository) migrateLegacy(queuePath, resultPath, statePath string
 				}
 			}
 			item := WorkItemV3{SchemaVersion: WorkItemSchemaVersion, Kind: repo.kind, ID: id, State: "terminal", ConflictKey: repo.kind, Backend: "legacy-v2", ExecutionClass: "standard", RetryClass: "never", Result: raw, CreatedAt: completed, CompletedAt: &completed}
-			if err := writePrivateJSON(repo.path("terminal", id), item); err != nil {
+			if err := writeWorkJSON(repo.path("terminal", id), item); err != nil {
 				return err
 			}
 		}
-		if err := repo.rebuildIndexLocked(); err != nil {
-			return err
-		}
+		_ = repo.rebuildIndexLocked()
 		if err := repo.archiveLegacy(queuePath, resultPath, statePath); err != nil {
 			return err
 		}

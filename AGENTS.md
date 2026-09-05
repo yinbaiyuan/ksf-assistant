@@ -1,4 +1,4 @@
-# CodexAssistant engineering guide
+# KSFAssistant engineering guide
 
 ## Optional KSF context
 

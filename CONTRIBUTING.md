@@ -1,6 +1,6 @@
 # 贡献指南
 
-感谢你改进 CodexAssistant。提交变更即表示你有权按本项目 MIT License 提供相关内容。
+感谢你改进 KSFAssistant。提交变更即表示你有权按本项目 MIT License 提供相关内容。
 
 ## 开始前
 

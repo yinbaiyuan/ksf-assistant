@@ -1,6 +1,6 @@
 package service
 
-import "codexusagebar/core/internal/domain"
+import "ksfassistant/core/internal/domain"
 
 func resolveProjectLaunchActions(projects []domain.Project) map[string]domain.ProjectLaunchAction {
 	result := map[string]domain.ProjectLaunchAction{}

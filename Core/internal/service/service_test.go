@@ -10,24 +10,22 @@ import (
 	"strings"
 	"testing"
 
-	"codexusagebar/core/internal/corebridge"
-	"codexusagebar/core/internal/desktop"
-	"codexusagebar/core/internal/domain"
-	managedfeishu "codexusagebar/core/internal/feishu"
-	"codexusagebar/core/internal/privateipc"
+	"ksfassistant/core/internal/corebridge"
+	"ksfassistant/core/internal/desktop"
+	"ksfassistant/core/internal/domain"
+	managedfeishu "ksfassistant/core/internal/feishu"
+	"ksfassistant/core/internal/feishuprotocol"
+	"ksfassistant/core/internal/integration"
+	"ksfassistant/core/internal/privateipc"
 )
 
 func TestPrivateBridgeCapabilitiesDegradeIndependently(t *testing.T) {
 	root := t.TempDir()
 	service := &Service{
-		hostContextStore: managedfeishu.NewHostContextStore(root),
+		hostContextStore: integration.NewHostContextStore(root),
 		desktop:          desktop.New(""),
 	}
-	result, err := service.HandlePrivateRPC(context.Background(), corebridge.MethodCapabilitiesRead, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	capabilities := result.(corebridge.Capabilities)
+	capabilities := service.privateCapabilities()
 	if capabilities.Protocol != corebridge.Protocol {
 		t.Fatalf("unexpected protocol: %s", capabilities.Protocol)
 	}
@@ -37,16 +35,17 @@ func TestPrivateBridgeCapabilitiesDegradeIndependently(t *testing.T) {
 }
 
 func TestCorePrivateRPCRejectsUnknownAndUnexpectedParams(t *testing.T) {
-	service := &Service{hostContextStore: managedfeishu.NewHostContextStore(t.TempDir())}
+	service, _ := newServiceBridgeFixture(t, "normal")
+	ctx := managedfeishu.WithEpoch(context.Background(), service.managedFeishuSupervisor.Generation())
 	tests := []struct {
 		method string
 		params json.RawMessage
 	}{
-		{method: corebridge.MethodCapabilitiesRead, params: json.RawMessage(`{"unexpected":true}`)},
-		{method: corebridge.MethodProjectionRead, params: json.RawMessage(`{"runtimeOwner":"desktop","threadId":"thread","unexpected":true}`)},
+		{method: feishuprotocol.SnapshotPush, params: json.RawMessage(`{"revision":2,"unexpected":true}`)},
+		{method: feishuprotocol.EventDeliver, params: json.RawMessage(`{"id":"event","kind":"message","payload":{},"unexpected":true}`)},
 	}
 	for _, test := range tests {
-		_, err := service.HandlePrivateRPC(context.Background(), test.method, test.params)
+		_, err := service.HandlePrivateRPC(ctx, test.method, test.params)
 		var rpcErr *privateipc.RPCError
 		if !errors.As(err, &rpcErr) || rpcErr.Code != -32602 {
 			t.Fatalf("expected -32602, got %T %v", err, err)
@@ -55,16 +54,18 @@ func TestCorePrivateRPCRejectsUnknownAndUnexpectedParams(t *testing.T) {
 }
 
 func TestPrivateBridgeSnapshotRejectsStaleRevision(t *testing.T) {
-	service := &Service{}
-	ctx := context.Background()
-	newer, _ := json.Marshal(domain.FeishuSnapshot{Revision: 9, Availability: "ready", ProcessState: "running"})
-	older, _ := json.Marshal(domain.FeishuSnapshot{Revision: 8, Availability: "unavailable", ProcessState: "stopped"})
-	if _, err := service.HandlePrivateRPC(ctx, corebridge.MethodBridgeSnapshotPush, newer); err != nil {
+	service, _ := newServiceBridgeFixture(t, "normal")
+	ctx := managedfeishu.WithEpoch(context.Background(), service.managedFeishuSupervisor.Generation())
+	newer, _ := json.Marshal(feishuprotocol.Snapshot{Revision: 9, Availability: "ready", ProcessState: "running"})
+	older, _ := json.Marshal(feishuprotocol.Snapshot{Revision: 8, Availability: "unavailable", ProcessState: "stopped"})
+	if _, err := service.HandlePrivateRPC(ctx, feishuprotocol.SnapshotPush, newer); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.HandlePrivateRPC(ctx, corebridge.MethodBridgeSnapshotPush, older); err != nil {
+	if _, err := service.HandlePrivateRPC(ctx, feishuprotocol.SnapshotPush, older); err != nil {
 		t.Fatal(err)
 	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
 	if service.lastFeishu.Revision != 9 || service.lastFeishu.Availability != "ready" {
 		t.Fatalf("stale snapshot replaced revision 9: %#v", service.lastFeishu)
 	}
@@ -194,6 +195,9 @@ func TestApplyPricingToHistoryAddsDailyAndSummaryCosts(t *testing.T) {
 }
 
 func TestRepriceOnlyUsesLoadedHistoryWithoutScanningOrRefreshingServer(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("FEISHU_BRIDGE_DATA_DIR", t.TempDir())
+	t.Setenv("KSF_ASSISTANT_FEISHU_BRIDGE", "")
 	service := New()
 	service.lastTokenHistoryDays = 30
 	service.lastTokenHistory = []domain.DailyUsageBucket{{
@@ -373,7 +377,7 @@ func TestConfigureCodexProcessEnvironmentDiscoversUserInstallWithoutPATH(t *test
 	}
 }
 
-func TestCodexAssistantSupportRootUsesTheCurrentUserConfigurationDirectory(t *testing.T) {
+func TestKSFAssistantSupportRootUsesTheCurrentUserConfigurationDirectory(t *testing.T) {
 	home := t.TempDir()
 	configured := filepath.Join(home, "configured-support")
 	if runtime.GOOS == "windows" {
@@ -383,8 +387,8 @@ func TestCodexAssistantSupportRootUsesTheCurrentUserConfigurationDirectory(t *te
 	} else {
 		t.Setenv("XDG_CONFIG_HOME", configured)
 	}
-	root := codexAssistantSupportRoot(home)
-	if !filepath.IsAbs(root) || filepath.Base(root) != "CodexUsageBar" {
-		t.Fatalf("unexpected CodexAssistant support root: %q", root)
+	root := ksfAssistantSupportRoot(home)
+	if !filepath.IsAbs(root) || filepath.Base(root) != "KSFAssistant" {
+		t.Fatalf("unexpected KSFAssistant support root: %q", root)
 	}
 }

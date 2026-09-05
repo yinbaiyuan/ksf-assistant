@@ -3,24 +3,23 @@
 import PackageDescription
 
 let package = Package(
-    name: "CodexUsageBar",
+    name: "KSFAssistant",
     platforms: [
         .macOS(.v13),
     ],
     products: [
-        .library(name: "CodexUsageCore", targets: ["CodexUsageCore"]),
-        .executable(name: "CodexUsageBar", targets: ["CodexUsageBar"]),
+        .library(name: "KSFAssistantCore", targets: ["KSFAssistantCore"]),
+        .executable(name: "KSFAssistant", targets: ["KSFAssistant"]),
     ],
     targets: [
-        .target(name: "CodexUsageCore"),
+        .target(name: "KSFAssistantCore"),
         .executableTarget(
-            name: "CodexUsageBar",
-            dependencies: ["CodexUsageCore"]
+            name: "KSFAssistant",
+            dependencies: ["KSFAssistantCore"]
         ),
         .testTarget(
-            name: "CodexUsageCoreTests",
-            dependencies: ["CodexUsageCore"]
+            name: "KSFAssistantCoreTests",
+            dependencies: ["KSFAssistantCore"]
         ),
     ]
 )
-

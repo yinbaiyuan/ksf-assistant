@@ -12,17 +12,17 @@ const preload = fs.readFileSync(path.join(root, 'src', 'preload.cjs'), 'utf8');
 const main = fs.readFileSync(path.join(root, 'src', 'main.cjs'), 'utf8');
 const coreClient = fs.readFileSync(path.join(root, 'src', 'core-client.cjs'), 'utf8');
 
-test('formal product identity is CodexAssistant on both desktop hosts', () => {
+test('formal product identity is KSFAssistant on both desktop hosts', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   const macInfo = fs.readFileSync(path.join(root, '..', 'Resources', 'Info.plist'), 'utf8');
-  assert.equal(manifest.build.productName, 'CodexAssistant');
-  assert.equal(manifest.build.appId, 'com.codexassistant.desktop');
-  assert.match(macInfo, /<string>CodexAssistant<\/string>/);
-  assert.match(macInfo, /<string>com\.codexassistant\.desktop<\/string>/);
+  assert.equal(manifest.build.productName, 'KSFAssistant');
+  assert.equal(manifest.build.appId, 'com.ksfassistant.desktop');
+  assert.match(macInfo, /<string>KSFAssistant<\/string>/);
+  assert.match(macInfo, /<string>com\.ksfassistant\.desktop<\/string>/);
   assert.match(macInfo, /<string>0\.10\.0-preview\.1<\/string>/);
 });
 
-test('Windows host keeps business reads behind the CodexAssistant Core contract', () => {
+test('Windows host keeps business reads behind the KSFAssistant Core contract', () => {
   assert.match(main, /dashboard\/read/);
   assert.doesNotMatch(app, /spawn\(|readFileSync|\.codex/);
   assert.match(preload, /contextBridge\.exposeInMainWorld/);
@@ -88,12 +88,12 @@ test('interactive states and reduced motion are present', () => {
   assert.match(app, /data-action="task-detail"/);
 });
 
-test('explicit app exit waits for the CodexAssistant Core to stop the full server tree', () => {
+test('explicit app exit waits for the KSFAssistant Core to stop the full server tree', () => {
   assert.match(main, /event\.preventDefault\(\)/);
   assert.match(main, /Promise\.resolve\(core\?\.close\(\)\)/);
   assert.match(main, /finally\(\(\) => app\.exit\(0\)\)/);
   assert.match(fs.readFileSync(path.join(root, 'src', 'core-client.cjs'), 'utf8'), /taskkill\.exe/);
-  assert.match(app, /退出 CodexAssistant 将停止核心服务、飞书服务及其子进程/);
+  assert.match(app, /退出 KSFAssistant 将停止核心服务、飞书服务及其子进程/);
   assert.doesNotMatch(main, /installWindowsService/);
 });
 

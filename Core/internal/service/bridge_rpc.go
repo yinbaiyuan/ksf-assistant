@@ -10,59 +10,55 @@ import (
 	"strings"
 	"time"
 
-	"codexusagebar/core/internal/corebridge"
-	"codexusagebar/core/internal/desktop"
-	"codexusagebar/core/internal/domain"
-	managedfeishu "codexusagebar/core/internal/feishu"
-	"codexusagebar/core/internal/privateipc"
+	"ksfassistant/core/internal/corebridge"
+	"ksfassistant/core/internal/desktop"
+	"ksfassistant/core/internal/domain"
+	managedfeishu "ksfassistant/core/internal/feishu"
+	"ksfassistant/core/internal/feishuprotocol"
+	"ksfassistant/core/internal/integration"
+	"ksfassistant/core/internal/privateipc"
 )
 
 var privateControlIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{8,128}$`)
 
-// HandlePrivateRPC is the only bridge-facing Core capability boundary. It
-// deliberately exposes fixed product operations rather than arbitrary Codex,
-// Desktop IPC, filesystem, or OpenAPI passthrough.
 func (service *Service) HandlePrivateRPC(ctx context.Context, method string, params json.RawMessage) (any, error) {
+	generation := managedfeishu.EpochFromContext(ctx)
+	if service.managedFeishuSupervisor == nil || !service.managedFeishuSupervisor.IsCurrentGeneration(generation) {
+		return nil, managedfeishu.ErrStaleGeneration
+	}
 	switch method {
-	case corebridge.MethodCapabilitiesRead:
-		if err := requireNoPrivateParams(params); err != nil {
+	case feishuprotocol.EventDeliver:
+		var event feishuprotocol.Event
+		if err := decodePrivateParams(params, &event); err != nil {
 			return nil, err
 		}
-		return service.privateCapabilities(), nil
-	case corebridge.MethodKSFContextRead:
-		if err := requireNoPrivateParams(params); err != nil {
+		if service.integrationRuntime == nil {
+			return nil, errors.New("Core integration unavailable")
+		}
+		return service.integrationRuntime.AcceptEvent(ctx, event)
+	case feishuprotocol.SnapshotPush:
+		var wire feishuprotocol.Snapshot
+		if err := decodePrivateParams(params, &wire); err != nil {
 			return nil, err
 		}
-		value, err := service.hostContextStore.Load()
+		encoded, err := json.Marshal(wire)
 		if err != nil {
-			return corebridge.KSFContext{State: "unavailable"}, nil
-		}
-		return corebridge.KSFContext{State: value.KSF.State, Root: value.KSF.Root}, nil
-	case corebridge.MethodProjectionRead:
-		var request corebridge.ProjectionRequest
-		if err := decodePrivateParams(params, &request); err != nil {
 			return nil, err
 		}
-		return service.privateProjection(ctx, request)
-	case corebridge.MethodCodexControl:
-		var request corebridge.ControlRequest
-		if err := decodePrivateParams(params, &request); err != nil {
-			return nil, err
-		}
-		return service.privateControl(ctx, request)
-	case corebridge.MethodBridgeSnapshotPush:
 		var snapshot domain.FeishuSnapshot
-		if err := decodePrivateParams(params, &snapshot); err != nil {
+		if err := json.Unmarshal(encoded, &snapshot); err != nil {
 			return nil, err
 		}
-		snapshot = normalizedFeishuSnapshot(snapshot)
 		service.mu.Lock()
+		defer service.mu.Unlock()
+		if generation != service.feishuGeneration {
+			return nil, managedfeishu.ErrStaleGeneration
+		}
 		if snapshot.Revision > service.lastFeishu.Revision {
-			service.lastFeishu = snapshot
+			service.lastFeishu = normalizedFeishuSnapshot(snapshot)
 			service.lastFeishuAt = time.Now()
 		}
-		service.mu.Unlock()
-		return map[string]bool{"accepted": true}, nil
+		return feishuprotocol.Accepted{Accepted: true}, nil
 	default:
 		return nil, privateipc.ErrMethodNotFound
 	}
@@ -285,17 +281,17 @@ func (service *Service) submitDesktopUserInput(ctx context.Context, request core
 		return corebridge.ControlResult{}, errors.New("desktop_user_input_request_stale")
 	}
 	target.TurnID = turnID
-	expectedRevision := managedfeishu.PendingQuestionRevisionScoped(request.TaskKey, turnID, target.OwnerClientID, requestRef.Raw, definition.Questions)
+	expectedRevision := integration.PendingQuestionRevisionScoped(request.TaskKey, turnID, target.OwnerClientID, requestRef.Raw, definition.Questions)
 	if request.QuestionRevision == "" || request.QuestionRevision != expectedRevision {
 		return corebridge.ControlResult{}, errors.New("desktop_user_input_request_stale")
 	}
-	_ = managedfeishu.NewAuditLog(service.feishuDataRoot).Record("desktop_user_input_submit_started", map[string]any{
+	_ = (integrationFeishuPort{service}).Record("desktop_user_input_submit_started", map[string]any{
 		"task": managedfeishu.AuditFingerprint(request.TaskKey), "turn": managedfeishu.AuditFingerprint(turnID),
 		"owner": managedfeishu.AuditFingerprint(target.OwnerClientID), "requestType": requestRef.Kind,
 		"requestFingerprint": requestRef.Fingerprint(), "beforeRevision": managedfeishu.AuditFingerprint(target.SnapshotRevision),
 	})
 	if err := session.Submit(ctx, target, map[string]any{"answers": answers}); err != nil {
-		_ = managedfeishu.NewAuditLog(service.feishuDataRoot).Record("desktop_user_input_submit_rejected", map[string]any{"task": managedfeishu.AuditFingerprint(request.TaskKey), "requestType": requestRef.Kind, "requestFingerprint": requestRef.Fingerprint(), "resultType": "error"})
+		_ = (integrationFeishuPort{service}).Record("desktop_user_input_submit_rejected", map[string]any{"task": managedfeishu.AuditFingerprint(request.TaskKey), "requestType": requestRef.Kind, "requestFingerprint": requestRef.Fingerprint(), "resultType": "error"})
 		return corebridge.ControlResult{}, err
 	}
 	verifyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -304,10 +300,10 @@ func (service *Service) submitDesktopUserInput(ctx context.Context, request core
 	if verifyErr != nil {
 		backgroundVerification = true
 		go service.continueDesktopUserInputVerification(session, target, request)
-		_ = managedfeishu.NewAuditLog(service.feishuDataRoot).Record("desktop_user_input_verifying", map[string]any{"task": managedfeishu.AuditFingerprint(request.TaskKey), "requestType": requestRef.Kind, "requestFingerprint": requestRef.Fingerprint(), "resultType": "accepted", "beforeRevision": managedfeishu.AuditFingerprint(target.SnapshotRevision)})
+		_ = (integrationFeishuPort{service}).Record("desktop_user_input_verifying", map[string]any{"task": managedfeishu.AuditFingerprint(request.TaskKey), "requestType": requestRef.Kind, "requestFingerprint": requestRef.Fingerprint(), "resultType": "accepted", "beforeRevision": managedfeishu.AuditFingerprint(target.SnapshotRevision)})
 		return corebridge.ControlResult{}, errors.New("desktop_user_input_outcome_unknown")
 	}
-	_ = managedfeishu.NewAuditLog(service.feishuDataRoot).Record("desktop_user_input_consumed", map[string]any{"task": managedfeishu.AuditFingerprint(request.TaskKey), "requestType": requestRef.Kind, "requestFingerprint": requestRef.Fingerprint(), "resultType": "accepted", "afterRevision": managedfeishu.AuditFingerprint(verification.SnapshotRevision), "requestConsumed": verification.RequestConsumed, "turnRunning": verification.TurnRunning})
+	_ = (integrationFeishuPort{service}).Record("desktop_user_input_consumed", map[string]any{"task": managedfeishu.AuditFingerprint(request.TaskKey), "requestType": requestRef.Kind, "requestFingerprint": requestRef.Fingerprint(), "resultType": "accepted", "afterRevision": managedfeishu.AuditFingerprint(verification.SnapshotRevision), "requestConsumed": verification.RequestConsumed, "turnRunning": verification.TurnRunning})
 	return corebridge.ControlResult{RequestID: requestRef.CompatibilityString(), RequestIDRaw: append(json.RawMessage(nil), requestRef.Raw...)}, nil
 }
 
@@ -343,14 +339,13 @@ func (service *Service) continueDesktopUserInputVerification(session *desktop.Us
 		outcome.State = "succeeded"
 		outcome.ErrorCode = ""
 	}
-	_ = managedfeishu.NewAuditLog(service.feishuDataRoot).Record("desktop_user_input_"+outcome.State, map[string]any{
+	_ = (integrationFeishuPort{service}).Record("desktop_user_input_"+outcome.State, map[string]any{
 		"task": managedfeishu.AuditFingerprint(request.TaskKey), "requestType": target.RequestID.Kind,
 		"requestFingerprint": target.RequestID.Fingerprint(), "beforeRevision": managedfeishu.AuditFingerprint(target.SnapshotRevision),
 		"afterRevision": managedfeishu.AuditFingerprint(verification.SnapshotRevision), "requestConsumed": verification.RequestConsumed, "turnRunning": verification.TurnRunning,
 	})
-	if service.managedFeishuSupervisor != nil {
-		var response map[string]any
-		_ = service.managedFeishuSupervisor.Call(context.Background(), corebridge.MethodInputOutcome, outcome, &response)
+	if service.integrationRuntime != nil {
+		_ = service.integrationRuntime.ApplyInputOutcome(context.Background(), outcome)
 	}
 }
 

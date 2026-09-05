@@ -8,7 +8,7 @@ const repoRoot = path.resolve(windowsRoot, '..');
 const coreRoot = path.join(repoRoot, 'Core');
 
 function locateGo() {
-  if (process.env.CODEX_USAGE_BAR_GO) return process.env.CODEX_USAGE_BAR_GO;
+  if (process.env.KSF_ASSISTANT_GO) return process.env.KSF_ASSISTANT_GO;
   if (process.platform === 'win32') {
     const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
     const standardInstall = path.join(programFiles, 'Go', 'bin', 'go.exe');
@@ -25,8 +25,8 @@ for (const arch of ['amd64', 'arm64']) {
   mkdirSync(outputDir, { recursive: true });
 	const result = spawnSync(go, [
     'build', '-trimpath', '-ldflags=-s -w',
-    '-o', path.join(outputDir, 'codex-usage-core.exe'),
-    './cmd/codex-usage-core',
+    '-o', path.join(outputDir, 'ksf-assistant-core.exe'),
+    './cmd/ksf-assistant-core',
   ], {
     cwd: coreRoot,
     stdio: 'inherit',
@@ -45,8 +45,8 @@ for (const arch of ['amd64', 'arm64']) {
 	mkdirSync(bridgeOutputDir, { recursive: true });
 	const bridgeResult = spawnSync(go, [
 		'build', '-trimpath', '-ldflags=-s -w',
-		'-o', path.join(bridgeOutputDir, 'codex-feishu-bridge.exe'),
-		'./cmd/codex-feishu-bridge',
+		'-o', path.join(bridgeOutputDir, 'ksf-assistant-feishu-bridge.exe'),
+		'./cmd/ksf-assistant-feishu-bridge',
 	], {
 		cwd: coreRoot,
 		stdio: 'inherit',

@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"codexusagebar/core/internal/domain"
+	"ksfassistant/core/internal/domain"
 )
 
 const (

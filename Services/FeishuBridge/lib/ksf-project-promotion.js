@@ -104,7 +104,7 @@ function discoverPanelBridgeRoot({ env = process.env, homeDir = os.homedir() } =
   }
   throw new ProjectPromotionError(
     'project_catalog_unavailable',
-    '没有找到可用的 KSF 项目目录。请配置 KSF_PROJECT_ROOT，或先在 CodexAssistant 中启用 KSF。',
+    '没有找到可用的 KSF 项目目录。请配置 KSF_PROJECT_ROOT，或先在 KSFAssistant 中启用 KSF。',
   );
 }
 
@@ -203,7 +203,7 @@ class KSFProjectPromotionClient {
     if (!this.allowDiscovery) {
       throw new ProjectPromotionError(
         'project_catalog_unavailable',
-        'KSF 尚未在 CodexAssistant 中配置，无法识别项目。',
+        'KSF 尚未在 KSFAssistant 中配置，无法识别项目。',
       );
     }
     return discoverPanelBridgeRoot({ env: this.env, homeDir: this.homeDir });
@@ -255,7 +255,7 @@ class KSFProjectPromotionClient {
     const available = availableProjectNames(projects);
     throw new ProjectPromotionError(
       'project_not_found',
-      `没有找到“${intent.projectQuery}”。请使用 CodexAssistant 中的完整项目名${available.length ? `，例如：${available.join('、')}` : ''}。`,
+      `没有找到“${intent.projectQuery}”。请使用 KSFAssistant 中的完整项目名${available.length ? `，例如：${available.join('、')}` : ''}。`,
     );
   }
 
@@ -288,7 +288,7 @@ class KSFProjectPromotionClient {
     if (current?.projectCard !== projectId) {
       throw new ProjectPromotionError(
         'project_binding_missing',
-        'Codex 已完成本轮，但尚未形成可验证的项目归属。当前对话仍保留为默认对话，请重试或在 CodexAssistant 中检查项目。',
+        'Codex 已完成本轮，但尚未形成可验证的项目归属。当前对话仍保留为默认对话，请重试或在 KSFAssistant 中检查项目。',
       );
     }
     return current;

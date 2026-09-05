@@ -5,7 +5,7 @@
 ## 依赖
 
 - Go 1.23+
-- macOS 构建：Swift 5.8+ Command Line Tools
+- macOS 构建：Swift 5.8+；正式测试还要求工具链提供支持 `swift test` 的 macOS SDK PlatformPath
 - Windows Electron 宿主构建及冻结 Node 回放基线：Node.js 20+ 与 npm
 - 仅使用 KSF 开发集成时：Ruby 3.2+
 
@@ -13,8 +13,13 @@ macOS 与 Windows 安装包都会携带运行所需的 Go 飞书服务和固定�
 
 ## 验证
 
+统一入口为 `bash scripts/run-tests.sh`。Swift 测试只支持 Swift Package Manager / XCTest，不再支持缺少 SDK PlatformPath 时的旧 standalone 兜底分支；工具链不满足要求时立即报错，不切换旧测试。身份迁移、Core 管道和 AppKit 退出链路的独立隔离测试仍是正式测试，继续保留。应用包本身的构建方式不因测试入口收敛而改变。
+
+产品身份与迁移边界见 [产品身份与升级](architecture/product-identity-migration.md)。改名回归先运行 `node scripts/check-product-identity.mjs` 与 `bash scripts/test-identity-migration.sh`。
+
 ```bash
-cd Core && go test ./... && go test -race ./internal/feishu ./internal/service
+cd Core && go test ./... && go vet ./...
+go test -race ./internal/feishu ./internal/integration ./internal/privateipc ./internal/localipc ./internal/service ./internal/feishucli ./internal/feishucommands ./cmd/ksf-assistant-feishu-bridge -timeout 180s
 cd .. && swift test
 npm --prefix Windows test
 scripts/build-core.sh
@@ -35,3 +40,5 @@ npm run dist:win
 ```
 
 预览包可以未签名/未公证，但发布说明必须明确系统拦截风险并提供 SHA-256。真实硬件验收结果不可用交叉编译替代。
+
+飞书统一服务的边界、运行时迁移与回退见 [v2 迁移说明](architecture/feishu-service-v2-migration.md)，工程结果及旧 Swift 兜底退役说明见 [验收记录](architecture/feishu-service-v2-validation.md)。测试使用隔离目录和假传输；不要用真实凭据、生产队列或真实消息替代测试夹具。

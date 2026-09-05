@@ -1,10 +1,9 @@
 // Package privateipc implements the bounded, bidirectional JSON-RPC transport
-// used exclusively between the CodexAssistant Core and its managed Feishu child.
+// used by KSFAssistant's managed child pipes and private local gateway.
 package privateipc
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,19 +12,27 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const MaxFrameBytes = 4 * 1024 * 1024
+
+const MaxConcurrentHandlers = 32
+const MaxPendingCalls = 64
+const MaxQueuedWrites = 64
+const WriteTimeout = 5 * time.Second
 
 var (
 	ErrPeerClosed     = errors.New("private IPC peer closed")
 	ErrFrameTooLarge  = errors.New("private IPC frame exceeds 4 MiB")
 	ErrMethodNotFound = NewError(-32601, "method not found")
+	ErrBusy           = NewError(-32029, "private IPC capacity exceeded")
 )
 
 type RPCError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 func (err *RPCError) Error() string {
@@ -45,6 +52,16 @@ type Handler interface {
 
 type HandlerFunc func(context.Context, string, json.RawMessage) (any, error)
 
+type connectionContextKey struct{}
+
+func ConnectionContext(ctx context.Context) (context.Context, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	connection, ok := ctx.Value(connectionContextKey{}).(context.Context)
+	return connection, ok
+}
+
 func (handler HandlerFunc) HandlePrivateRPC(ctx context.Context, method string, params json.RawMessage) (any, error) {
 	return handler(ctx, method, params)
 }
@@ -62,18 +79,26 @@ type pendingCall struct {
 	response chan frame
 }
 
+type writeRequest struct {
+	ctx  context.Context
+	data []byte
+	done chan error
+}
+
 type Peer struct {
 	reader  io.Reader
 	writer  io.Writer
 	handler Handler
 
-	writeMu sync.Mutex
-	mu      sync.Mutex
-	pending map[string]pendingCall
-	active  map[string]context.CancelFunc
-	closed  chan struct{}
-	close   sync.Once
-	nextID  atomic.Uint64
+	writes      chan writeRequest
+	writerStart sync.Once
+	slots       chan struct{}
+	mu          sync.Mutex
+	pending     map[string]pendingCall
+	active      map[string]context.CancelFunc
+	closed      chan struct{}
+	close       sync.Once
+	nextID      atomic.Uint64
 }
 
 func NewPeer(reader io.Reader, writer io.Writer, handler Handler) *Peer {
@@ -84,12 +109,23 @@ func NewPeer(reader io.Reader, writer io.Writer, handler Handler) *Peer {
 		pending: map[string]pendingCall{},
 		active:  map[string]context.CancelFunc{},
 		closed:  make(chan struct{}),
+		writes:  make(chan writeRequest, MaxQueuedWrites),
+		slots:   make(chan struct{}, MaxConcurrentHandlers),
 	}
 }
 
 func (peer *Peer) Serve(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ctx = context.WithValue(ctx, connectionContextKey{}, ctx)
+	stop := context.AfterFunc(ctx, peer.closePeer)
+	defer stop()
+	go func() {
+		<-peer.closed
+		cancel()
+	}()
 	scanner := bufio.NewScanner(peer.reader)
-	scanner.Buffer(make([]byte, 64*1024), MaxFrameBytes)
+	scanner.Buffer(make([]byte, 64*1024), MaxFrameBytes+2)
 	defer peer.closePeer()
 	for scanner.Scan() {
 		line := append([]byte(nil), scanner.Bytes()...)
@@ -108,6 +144,9 @@ func (peer *Peer) Serve(ctx context.Context) error {
 }
 
 func (peer *Peer) Call(ctx context.Context, method string, params any, target any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if method == "" {
 		return errors.New("private IPC method is required")
 	}
@@ -124,11 +163,15 @@ func (peer *Peer) Call(ctx context.Context, method string, params any, target an
 		return ErrPeerClosed
 	default:
 	}
+	if len(peer.pending) >= MaxPendingCalls {
+		peer.mu.Unlock()
+		return ErrBusy
+	}
 	peer.pending[id] = pendingCall{response: response}
 	peer.mu.Unlock()
 
 	rawID, _ := json.Marshal(id)
-	if err := peer.write(frame{JSONRPC: "2.0", ID: rawID, Method: method, Params: encoded}); err != nil {
+	if err := peer.write(ctx, frame{JSONRPC: "2.0", ID: rawID, Method: method, Params: encoded}); err != nil {
 		peer.removePending(id)
 		return err
 	}
@@ -146,7 +189,8 @@ func (peer *Peer) Call(ctx context.Context, method string, params any, target an
 		return nil
 	case <-ctx.Done():
 		peer.removePending(id)
-		_ = peer.Notify(context.Background(), "$/cancelRequest", map[string]string{"id": id})
+		encoded, _ := json.Marshal(map[string]string{"id": id})
+		peer.enqueue(frame{JSONRPC: "2.0", Method: "$/cancelRequest", Params: encoded})
 		return ctx.Err()
 	case <-peer.closed:
 		peer.removePending(id)
@@ -164,19 +208,17 @@ func (peer *Peer) Notify(ctx context.Context, method string, params any) error {
 	if err != nil {
 		return fmt.Errorf("encode private IPC notification: %w", err)
 	}
-	return peer.write(frame{JSONRPC: "2.0", Method: method, Params: encoded})
+	return peer.write(ctx, frame{JSONRPC: "2.0", Method: method, Params: encoded})
 }
 
 func (peer *Peer) accept(parent context.Context, line []byte) {
 	var incoming frame
-	decoder := json.NewDecoder(bytes.NewReader(line))
-	decoder.UseNumber()
-	if err := decoder.Decode(&incoming); err != nil {
-		_ = peer.write(frame{JSONRPC: "2.0", Error: NewError(-32700, "invalid JSON")})
+	if err := DecodeStrict(line, &incoming, true); err != nil {
+		peer.enqueue(frame{JSONRPC: "2.0", Error: NewError(-32700, "invalid JSON")})
 		return
 	}
 	if incoming.JSONRPC != "2.0" {
-		_ = peer.write(frame{JSONRPC: "2.0", ID: incoming.ID, Error: NewError(-32600, "invalid JSON-RPC request")})
+		peer.enqueue(frame{JSONRPC: "2.0", ID: incoming.ID, Error: NewError(-32600, "invalid JSON-RPC request")})
 		return
 	}
 	if incoming.Method == "" {
@@ -192,18 +234,35 @@ func (peer *Peer) accept(parent context.Context, line []byte) {
 		}
 		return
 	}
-	go peer.dispatch(parent, incoming)
+	select {
+	case peer.slots <- struct{}{}:
+	default:
+		if idKey(incoming.ID) != "" {
+			peer.enqueue(frame{JSONRPC: "2.0", ID: incoming.ID, Error: ErrBusy})
+		}
+		return
+	}
+	ctx, cancel := context.WithCancel(parent)
+	id := idKey(incoming.ID)
+	peer.mu.Lock()
+	if _, duplicate := peer.active[id]; id != "" && duplicate {
+		peer.mu.Unlock()
+		cancel()
+		<-peer.slots
+		peer.enqueue(frame{JSONRPC: "2.0", ID: incoming.ID, Error: NewError(-32600, "duplicate active request id")})
+		return
+	}
+	if id != "" {
+		peer.active[id] = cancel
+	}
+	peer.mu.Unlock()
+	go peer.dispatch(ctx, cancel, incoming)
 }
 
-func (peer *Peer) dispatch(parent context.Context, request frame) {
+func (peer *Peer) dispatch(ctx context.Context, cancel context.CancelFunc, request frame) {
 	id := idKey(request.ID)
-	ctx, cancel := context.WithCancel(parent)
-	if id != "" {
-		peer.mu.Lock()
-		peer.active[id] = cancel
-		peer.mu.Unlock()
-	}
 	defer func() {
+		<-peer.slots
 		cancel()
 		if id != "" {
 			peer.mu.Lock()
@@ -211,9 +270,12 @@ func (peer *Peer) dispatch(parent context.Context, request frame) {
 			peer.mu.Unlock()
 		}
 	}()
+	if ctx.Err() != nil {
+		return
+	}
 	if peer.handler == nil {
 		if id != "" {
-			_ = peer.write(frame{JSONRPC: "2.0", ID: request.ID, Error: ErrMethodNotFound})
+			_ = peer.write(ctx, frame{JSONRPC: "2.0", ID: request.ID, Error: ErrMethodNotFound})
 		}
 		return
 	}
@@ -226,18 +288,18 @@ func (peer *Peer) dispatch(parent context.Context, request frame) {
 		if !errors.As(err, &rpcErr) {
 			rpcErr = NewError(-32000, err.Error())
 		}
-		_ = peer.write(frame{JSONRPC: "2.0", ID: request.ID, Error: rpcErr})
+		_ = peer.write(ctx, frame{JSONRPC: "2.0", ID: request.ID, Error: rpcErr})
 		return
 	}
 	encoded, marshalErr := json.Marshal(result)
 	if marshalErr != nil {
-		_ = peer.write(frame{JSONRPC: "2.0", ID: request.ID, Error: NewError(-32603, "unable to encode result")})
+		_ = peer.write(ctx, frame{JSONRPC: "2.0", ID: request.ID, Error: NewError(-32603, "unable to encode result")})
 		return
 	}
-	_ = peer.write(frame{JSONRPC: "2.0", ID: request.ID, Result: encoded})
+	_ = peer.write(ctx, frame{JSONRPC: "2.0", ID: request.ID, Result: encoded})
 }
 
-func (peer *Peer) write(value frame) error {
+func (peer *Peer) write(ctx context.Context, value frame) error {
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return err
@@ -245,20 +307,93 @@ func (peer *Peer) write(value frame) error {
 	if len(encoded) > MaxFrameBytes {
 		return ErrFrameTooLarge
 	}
-	peer.writeMu.Lock()
-	defer peer.writeMu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, WriteTimeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	peer.writerStart.Do(func() { go peer.writeLoop() })
+	request := writeRequest{ctx: ctx, data: append(encoded, '\n'), done: make(chan error, 1)}
 	select {
+	case <-ctx.Done():
+		return ctx.Err()
 	case <-peer.closed:
 		return ErrPeerClosed
-	default:
+	case peer.writes <- request:
 	}
-	encoded = append(encoded, '\n')
-	_, err = peer.writer.Write(encoded)
-	if err != nil {
-		return fmt.Errorf("write private IPC frame: %w", err)
+	select {
+	case err := <-request.done:
+		return err
+	case <-ctx.Done():
+		peer.closePeer()
+		return ctx.Err()
+	case <-peer.closed:
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return ErrPeerClosed
 	}
-	return nil
 }
+
+func (peer *Peer) enqueue(value frame) {
+	encoded, err := json.Marshal(value)
+	if err != nil || len(encoded) > MaxFrameBytes {
+		peer.closePeer()
+		return
+	}
+	peer.writerStart.Do(func() { go peer.writeLoop() })
+	select {
+	case <-peer.closed:
+	case peer.writes <- writeRequest{ctx: context.Background(), data: append(encoded, '\n'), done: make(chan error, 1)}:
+	default:
+		peer.closePeer()
+	}
+}
+
+func (peer *Peer) writeLoop() {
+	for {
+		select {
+		case <-peer.closed:
+			return
+		case request := <-peer.writes:
+			select {
+			case <-peer.closed:
+				return
+			default:
+			}
+			if err := request.ctx.Err(); err != nil {
+				request.done <- err
+				continue
+			}
+			ctx, cancel := context.WithTimeout(request.ctx, WriteTimeout)
+			stop := context.AfterFunc(ctx, peer.closePeer)
+			if writer, ok := peer.writer.(interface{ SetWriteDeadline(time.Time) error }); ok {
+				deadline, _ := ctx.Deadline()
+				_ = writer.SetWriteDeadline(deadline)
+			}
+			written, err := peer.writer.Write(request.data)
+			if err == nil && written != len(request.data) {
+				err = io.ErrShortWrite
+			}
+			stop()
+			if ctx.Err() != nil {
+				err = ctx.Err()
+			} else if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+				err = context.DeadlineExceeded
+			}
+			cancel()
+			request.done <- err
+			if err != nil {
+				peer.closePeer()
+				return
+			}
+		}
+	}
+}
+
+func (peer *Peer) Close() error { peer.closePeer(); return nil }
+
+func (peer *Peer) Done() <-chan struct{} { return peer.closed }
 
 func (peer *Peer) deliver(reply frame) {
 	id := idKey(reply.ID)
@@ -297,6 +432,12 @@ func (peer *Peer) closePeer() {
 			delete(peer.active, id)
 		}
 		peer.mu.Unlock()
+		if reader, ok := peer.reader.(io.Closer); ok {
+			_ = reader.Close()
+		}
+		if writer, ok := peer.writer.(io.Closer); ok {
+			_ = writer.Close()
+		}
 	})
 }
 

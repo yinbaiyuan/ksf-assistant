@@ -11,16 +11,16 @@ const {
 const contract = require('./fixtures/host-task-routing-contract-v1.json');
 
 function fixture(value) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codexassistant-host-context-'));
-  const filePath = path.join(root, 'codexassistant-host-context-v1.json');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ksfassistant-host-context-'));
+  const filePath = path.join(root, 'ksfassistant-host-context-v1.json');
   fs.writeFileSync(filePath, JSON.stringify(value), { mode: 0o600 });
   return { root, filePath };
 }
 
 test('managed root messages use only the ready host KSF root', () => {
-  const ksfRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codexassistant-ksf-'));
+  const ksfRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ksfassistant-ksf-'));
   const item = fixture({
-    protocol: 'codexassistant-host-context-v1',
+    protocol: 'ksfassistant-host-context-v1',
     schemaVersion: 1,
     updatedAt: new Date().toISOString(),
     ksf: { state: 'ready', root: ksfRoot },
@@ -44,7 +44,7 @@ test('language-neutral host task routing contract remains reusable by the Go bri
 
 test('not configured uses managed generic workspace and invalid fails closed', () => {
   const unconfigured = fixture({
-    protocol: 'codexassistant-host-context-v1', schemaVersion: 1,
+    protocol: 'ksfassistant-host-context-v1', schemaVersion: 1,
     updatedAt: new Date().toISOString(), ksf: { state: 'not_configured' },
   });
   assert.deepEqual(resolveRootMessageWorkspace({
@@ -52,12 +52,12 @@ test('not configured uses managed generic workspace and invalid fails closed', (
   }), { cwd: '/managed', ksfState: 'not_configured', ksfRoot: '' });
 
   const invalid = fixture({
-    protocol: 'codexassistant-host-context-v1', schemaVersion: 1,
+    protocol: 'ksfassistant-host-context-v1', schemaVersion: 1,
     updatedAt: new Date().toISOString(), ksf: { state: 'invalid' },
   });
   assert.throws(() => resolveRootMessageWorkspace({
     managed: true, hostContextPath: invalid.filePath, fallbackWorkspace: '/managed', dataRoot: invalid.root,
-  }), /CodexAssistant → 设置 → KSF 知识库/);
+  }), /KSFAssistant → 设置 → KSF 知识库/);
 });
 
 test('Feishu task title normalizes and safely truncates user text', () => {

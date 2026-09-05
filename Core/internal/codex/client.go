@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"codexusagebar/core/internal/domain"
+	"ksfassistant/core/internal/domain"
 )
 
 type RPCError struct {
@@ -152,7 +152,7 @@ func (client *Client) Start(ctx context.Context) error {
 	go io.Copy(io.Discard, stderr)
 	go client.readLoop(stdout, command)
 	client.stateMu.Unlock()
-	_, initErr := client.callStarted(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "codex_usage_core", "title": "Codex Usage Core", "version": "0.10.0-preview.1"}})
+	_, initErr := client.callStarted(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "ksf_assistant_core", "title": "KSFAssistant Core", "version": "0.10.0-preview.1"}})
 	if initErr == nil {
 		initErr = client.notify("initialized", map[string]any{})
 	}
@@ -225,7 +225,7 @@ func (client *Client) CreateDraftThread(ctx context.Context, cwd, name string) (
 			ID string `json:"id"`
 		} `json:"thread"`
 	}
-	if err := client.Call(ctx, "thread/start", map[string]any{"cwd": cwd, "serviceName": "codex_usage_bar"}, &started); err != nil {
+	if err := client.Call(ctx, "thread/start", map[string]any{"cwd": cwd, "serviceName": "ksf_assistant"}, &started); err != nil {
 		return "", err
 	}
 	if started.Thread.ID == "" {

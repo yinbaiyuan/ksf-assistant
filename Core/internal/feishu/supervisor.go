@@ -3,6 +3,7 @@ package feishu
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"codexusagebar/core/internal/privateipc"
+	"ksfassistant/core/internal/privateipc"
 )
 
 const (
@@ -32,10 +33,12 @@ type SupervisorOptions struct {
 	Directory   string
 	DataRoot    string
 	Handler     privateipc.Handler
+	OnConnect   func(context.Context, uint64) error
 }
 
 type SupervisorStatus struct {
 	State                 string `json:"state"`
+	Generation            uint64 `json:"generation"`
 	Configured            bool   `json:"configured"`
 	PID                   int    `json:"pid"`
 	RestartCount          int    `json:"restartCount"`
@@ -46,25 +49,30 @@ type SupervisorStatus struct {
 }
 
 type Supervisor struct {
-	mu             sync.Mutex
-	options        SupervisorOptions
-	cmd            *exec.Cmd
-	stdin          io.WriteCloser
-	stdout         io.ReadCloser
-	peer           *privateipc.Peer
-	tree           processTree
-	state          string
-	configured     bool
-	stopping       bool
-	restartCount   int
-	lastError      string
-	lastDiagnostic SupervisorDiagnostic
-	startedAt      time.Time
-	restartTimer   *time.Timer
-	restartDelays  []time.Duration
-	restartWindow  time.Duration
-	healthyReset   time.Duration
-	firstFailureAt time.Time
+	mu               sync.Mutex
+	options          SupervisorOptions
+	cmd              *exec.Cmd
+	stdin            io.WriteCloser
+	stdout           io.ReadCloser
+	peer             *privateipc.Peer
+	generation       uint64
+	generationCtx    context.Context
+	generationCancel context.CancelFunc
+	done             chan struct{}
+	restartToken     uint64
+	tree             processTree
+	state            string
+	configured       bool
+	stopping         bool
+	restartCount     int
+	lastError        string
+	lastDiagnostic   SupervisorDiagnostic
+	startedAt        time.Time
+	restartTimer     *time.Timer
+	restartDelays    []time.Duration
+	restartWindow    time.Duration
+	healthyReset     time.Duration
+	firstFailureAt   time.Time
 }
 
 func NewSupervisor(options SupervisorOptions) *Supervisor {
@@ -80,8 +88,8 @@ func NewSupervisor(options SupervisorOptions) *Supervisor {
 func (supervisor *Supervisor) SetHandler(handler privateipc.Handler) error {
 	supervisor.mu.Lock()
 	defer supervisor.mu.Unlock()
-	if supervisor.cmd != nil {
-		return errors.New("cannot replace CodexAssistant Feishu private IPC handler while running")
+	if supervisor.cmd != nil || supervisor.restartTimer != nil {
+		return errors.New("cannot replace KSFAssistant Feishu private IPC handler while running")
 	}
 	supervisor.options.Handler = handler
 	return nil
@@ -91,7 +99,7 @@ func (supervisor *Supervisor) SetConfigured(configured bool) {
 	supervisor.mu.Lock()
 	defer supervisor.mu.Unlock()
 	supervisor.configured = configured
-	if supervisor.cmd != nil {
+	if supervisor.cmd != nil && !supervisor.stopping && supervisor.state != StateDegraded && supervisor.state != StateStarting {
 		if configured {
 			supervisor.state = StateRunning
 		} else {
@@ -104,8 +112,12 @@ func (supervisor *Supervisor) Start() error {
 	supervisor.mu.Lock()
 	defer supervisor.mu.Unlock()
 	if supervisor.cmd != nil {
+		if supervisor.stopping {
+			return errors.New("KSFAssistant Feishu is stopping")
+		}
 		return nil
 	}
+	supervisor.restartToken++
 	if supervisor.restartTimer != nil {
 		supervisor.restartTimer.Stop()
 		supervisor.restartTimer = nil
@@ -146,7 +158,7 @@ func (supervisor *Supervisor) startLocked() error {
 		_ = stdout.Close()
 		_ = stderr.Close()
 		supervisor.state = StateDegraded
-		supervisor.lastError = fmt.Sprintf("unable to start CodexAssistant Feishu: %v", err)
+		supervisor.lastError = fmt.Sprintf("unable to start KSFAssistant Feishu: %v", err)
 		return errors.New(supervisor.lastError)
 	}
 	tree, err := attachProcessTree(command)
@@ -157,13 +169,19 @@ func (supervisor *Supervisor) startLocked() error {
 		_ = stdout.Close()
 		_ = stderr.Close()
 		supervisor.state = StateDegraded
-		supervisor.lastError = fmt.Sprintf("unable to own CodexAssistant Feishu process tree: %v", err)
+		supervisor.lastError = fmt.Sprintf("unable to own KSFAssistant Feishu process tree: %v", err)
 		return errors.New(supervisor.lastError)
 	}
 	supervisor.cmd = command
 	supervisor.stdin = stdin
 	supervisor.stdout = stdout
-	supervisor.peer = privateipc.NewPeer(stdout, stdin, supervisor.options.Handler)
+	supervisor.generation++
+	generation := supervisor.generation
+	ctx, cancel := context.WithCancel(WithEpoch(context.Background(), generation))
+	supervisor.generationCtx = ctx
+	supervisor.generationCancel = cancel
+	supervisor.done = make(chan struct{})
+	supervisor.peer = privateipc.NewPeer(stdout, stdin, supervisor.bindHandler(generation, supervisor.options.Handler))
 	supervisor.tree = tree
 	supervisor.startedAt = time.Now()
 	if supervisor.configured {
@@ -173,8 +191,12 @@ func (supervisor *Supervisor) startLocked() error {
 	}
 	peer := supervisor.peer
 	go supervisor.drainStderr(command, stderr)
-	go supervisor.servePeer(command, peer)
+	go supervisor.servePeer(ctx, command, peer)
 	go supervisor.wait(command, tree)
+	if callback := supervisor.options.OnConnect; callback != nil {
+		supervisor.state = StateStarting
+		go supervisor.connected(ctx, generation, command, callback)
+	}
 	return nil
 }
 
@@ -202,27 +224,34 @@ func (supervisor *Supervisor) drainStderr(command *exec.Cmd, stderr io.ReadClose
 	}
 }
 
-func (supervisor *Supervisor) servePeer(command *exec.Cmd, peer *privateipc.Peer) {
-	if err := peer.Serve(context.Background()); err != nil && !errors.Is(err, privateipc.ErrPeerClosed) {
-		supervisor.mu.Lock()
-		if supervisor.cmd == command && !supervisor.stopping {
-			supervisor.lastError = "CodexAssistant Feishu private IPC stopped: " + err.Error()
-			supervisor.state = StateDegraded
+func (supervisor *Supervisor) servePeer(ctx context.Context, command *exec.Cmd, peer *privateipc.Peer) {
+	err := peer.Serve(ctx)
+	supervisor.mu.Lock()
+	defer supervisor.mu.Unlock()
+	if supervisor.cmd == command && !supervisor.stopping {
+		supervisor.generationCancel()
+		supervisor.lastError = "KSFAssistant Feishu private IPC closed"
+		if err != nil {
+			supervisor.lastError += ": " + err.Error()
 		}
-		supervisor.mu.Unlock()
+		supervisor.state = StateDegraded
+		killProcessTree(supervisor.tree, command)
 	}
 }
 
 func (supervisor *Supervisor) wait(command *exec.Cmd, tree processTree) {
 	err := command.Wait()
-	closeProcessTree(tree)
 	now := time.Now()
 
 	supervisor.mu.Lock()
 	defer supervisor.mu.Unlock()
+	closeProcessTree(tree)
 	if supervisor.cmd != command {
 		return
 	}
+	supervisor.generationCancel()
+	_ = supervisor.peer.Close()
+	close(supervisor.done)
 	supervisor.cmd = nil
 	supervisor.stdin = nil
 	supervisor.stdout = nil
@@ -241,7 +270,7 @@ func (supervisor *Supervisor) wait(command *exec.Cmd, tree processTree) {
 		supervisor.firstFailureAt = now
 	}
 	if err == nil {
-		supervisor.lastError = "CodexAssistant Feishu exited unexpectedly"
+		supervisor.lastError = "KSFAssistant Feishu exited unexpectedly"
 	} else {
 		supervisor.lastError = err.Error()
 	}
@@ -249,9 +278,7 @@ func (supervisor *Supervisor) wait(command *exec.Cmd, tree processTree) {
 		supervisor.state = StateDegraded
 		return
 	}
-	delay := supervisor.restartDelays[supervisor.restartCount]
-	supervisor.state = StateStarting
-	supervisor.restartTimer = time.AfterFunc(delay, supervisor.restart)
+	supervisor.scheduleRestartLocked()
 }
 
 // Call invokes one whitelisted operation on the managed child over its
@@ -259,23 +286,49 @@ func (supervisor *Supervisor) wait(command *exec.Cmd, tree processTree) {
 func (supervisor *Supervisor) Call(ctx context.Context, method string, params any, target any) error {
 	supervisor.mu.Lock()
 	peer := supervisor.peer
+	generation := supervisor.generation
+	valid := supervisor.currentGenerationLocked(generation)
 	supervisor.mu.Unlock()
-	if peer == nil {
-		return errors.New("CodexAssistant Feishu private IPC is unavailable")
+	if epoch := EpochFromContext(ctx); epoch != 0 && (epoch != generation || !valid) {
+		return ErrStaleGeneration
 	}
-	return peer.Call(ctx, method, params, target)
+	if !valid {
+		return errors.New("KSFAssistant Feishu private IPC is unavailable")
+	}
+	var result json.RawMessage
+	if err := peer.Call(ctx, method, params, &result); err != nil {
+		return err
+	}
+	if !supervisor.IsCurrentGeneration(generation) {
+		return ErrStaleGeneration
+	}
+	if target != nil && len(result) != 0 {
+		return privateipc.DecodeStrict(result, target, true)
+	}
+	return nil
 }
 
-func (supervisor *Supervisor) restart() {
-	supervisor.mu.Lock()
-	defer supervisor.mu.Unlock()
-	supervisor.restartTimer = nil
-	if supervisor.stopping || supervisor.cmd != nil {
+func (supervisor *Supervisor) scheduleRestartLocked() {
+	if supervisor.restartCount >= len(supervisor.restartDelays) {
+		supervisor.state = StateDegraded
 		return
 	}
+	supervisor.restartToken++
+	token := supervisor.restartToken
+	supervisor.state = StateStarting
+	supervisor.restartTimer = time.AfterFunc(supervisor.restartDelays[supervisor.restartCount], func() { supervisor.restart(token) })
+}
+
+func (supervisor *Supervisor) restart(token uint64) {
+	supervisor.mu.Lock()
+	defer supervisor.mu.Unlock()
+	if token != supervisor.restartToken || supervisor.stopping || supervisor.cmd != nil {
+		return
+	}
+	supervisor.restartTimer = nil
 	supervisor.restartCount++
-	if err := supervisor.startLocked(); err != nil && supervisor.restartCount >= len(supervisor.restartDelays) {
-		supervisor.state = StateDegraded
+	if err := supervisor.startLocked(); err != nil {
+		supervisor.scheduleRestartLocked()
 	}
 }
 
@@ -294,12 +347,12 @@ func (supervisor *Supervisor) Restart(ctx context.Context) error {
 func (supervisor *Supervisor) Stop(ctx context.Context) error {
 	supervisor.mu.Lock()
 	supervisor.stopping = true
+	supervisor.restartToken++
 	if supervisor.restartTimer != nil {
 		supervisor.restartTimer.Stop()
 		supervisor.restartTimer = nil
 	}
 	command := supervisor.cmd
-	stdin := supervisor.stdin
 	tree := supervisor.tree
 	if command == nil {
 		supervisor.state = StateStopped
@@ -307,33 +360,35 @@ func (supervisor *Supervisor) Stop(ctx context.Context) error {
 		return nil
 	}
 	supervisor.state = StateStopping
-	supervisor.mu.Unlock()
-
-	if stdin != nil {
-		_ = stdin.Close()
-	}
+	supervisor.generationCancel()
+	_ = supervisor.peer.Close()
+	done := supervisor.done
 	interruptProcessTree(tree, command)
+	supervisor.mu.Unlock()
 
 	deadline := time.NewTimer(5 * time.Second)
 	defer deadline.Stop()
-	ticker := time.NewTicker(20 * time.Millisecond)
-	defer ticker.Stop()
-	for {
+	kill := func() {
 		supervisor.mu.Lock()
-		stopped := supervisor.cmd == nil
-		supervisor.mu.Unlock()
-		if stopped {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
+		defer supervisor.mu.Unlock()
+		if supervisor.cmd == command {
 			killProcessTree(tree, command)
-			return ctx.Err()
-		case <-deadline.C:
-			killProcessTree(tree, command)
-			return nil
-		case <-ticker.C:
 		}
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		kill()
+		return ctx.Err()
+	case <-deadline.C:
+		kill()
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -342,6 +397,7 @@ func (supervisor *Supervisor) Status() SupervisorStatus {
 	defer supervisor.mu.Unlock()
 	status := SupervisorStatus{
 		State:        supervisor.state,
+		Generation:   supervisor.generation,
 		Configured:   supervisor.configured,
 		RestartCount: supervisor.restartCount,
 		LastError:    supervisor.lastError,
@@ -360,15 +416,15 @@ func (supervisor *Supervisor) Status() SupervisorStatus {
 func validateExecutable(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return "", errors.New("CodexAssistant Feishu executable is not configured")
+		return "", errors.New("KSFAssistant Feishu executable is not configured")
 	}
 	absolute, err := filepath.Abs(value)
 	if err != nil {
-		return "", errors.New("CodexAssistant Feishu executable path is invalid")
+		return "", errors.New("KSFAssistant Feishu executable path is invalid")
 	}
 	info, err := os.Stat(absolute)
 	if err != nil || !info.Mode().IsRegular() {
-		return "", errors.New("CodexAssistant Feishu executable is unavailable")
+		return "", errors.New("KSFAssistant Feishu executable is unavailable")
 	}
 	return absolute, nil
 }

@@ -10,15 +10,26 @@ import (
 	"strings"
 	"testing"
 
-	managedfeishu "codexusagebar/core/internal/feishu"
-	"codexusagebar/core/internal/service"
+	"ksfassistant/core/internal/integration"
+	"ksfassistant/core/internal/service"
 )
 
 func TestServerPublishesVersionedInitializeContract(t *testing.T) {
-	t.Setenv("FEISHU_BRIDGE_DATA_DIR", t.TempDir())
+	root := t.TempDir()
+	t.Setenv("FEISHU_BRIDGE_DATA_DIR", root)
+	t.Setenv("HOME", root)
+	t.Setenv("USERPROFILE", root)
+	t.Setenv("KSF_ASSISTANT_FEISHU_BRIDGE", "")
+	fakeCodex := filepath.Join(root, "unexecutable-codex-fixture")
+	if err := os.WriteFile(fakeCodex, []byte("test-only: no process or credentials"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_BIN", fakeCodex)
 	input := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` + "\n")
 	var output bytes.Buffer
-	server := New(service.New(), input, &output)
+	core := service.New()
+	t.Cleanup(core.Close)
+	server := New(core, input, &output)
 	if err := server.Serve(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +43,7 @@ func TestServerPublishesVersionedInitializeContract(t *testing.T) {
 	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Result.Protocol != "codex-usage-core-v2" || response.Result.Version == "" {
+	if response.Result.Protocol != "ksf-assistant-core-v2" || response.Result.Version == "" {
 		t.Fatalf("unexpected contract: %#v", response.Result)
 	}
 	if !response.Result.Capabilities["tokenHistory"] || !response.Result.Capabilities["tokenHistoryComparison"] || !response.Result.Capabilities["tokenCostEstimate"] || !response.Result.Capabilities["feishuTaskLinks"] || !response.Result.Capabilities["feishuCapabilityGovernance"] {
@@ -52,7 +63,7 @@ func TestServerUpdatesPrivateHostIntegrationContext(t *testing.T) {
 	if !strings.Contains(output.String(), `"state":"ready"`) || !strings.Contains(output.String(), ksfRoot) {
 		t.Fatalf("unexpected integration response: %s", output.String())
 	}
-	stored, err := os.ReadFile(filepath.Join(dataRoot, managedfeishu.HostContextFilename))
+	stored, err := os.ReadFile(filepath.Join(dataRoot, integration.HostContextFilename))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,9 +130,11 @@ func TestServerPublishesFeishuGovernanceMethodsWithoutRawPassthrough(t *testing.
 	}
 }
 
-func TestServerReadsAndUpdatesPrivateFeishuSettingsWithoutSecrets(t *testing.T) {
-	t.Setenv("FEISHU_BRIDGE_DATA_DIR", t.TempDir())
-	t.Setenv("CODEX_USAGE_BAR_FEISHU_SERVICE_ROOT", "")
+func TestServerSettingsRequireFeishuServiceAndNeverWriteOffline(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("FEISHU_BRIDGE_DATA_DIR", root)
+	t.Setenv("KSF_ASSISTANT_FEISHU_BRIDGE", "")
+	t.Setenv("KSF_ASSISTANT_FEISHU_SERVICE_ROOT", "")
 	input := strings.NewReader(`{"jsonrpc":"2.0","id":4,"method":"feishu/settings/update","params":{"version":1,"profile":"primary","group":{"enabled":false},"outbound":{"enabled":true,"dryRun":true},"directory":{"enabled":false},"groupDirectory":{"enabled":false},"docbox":{"enabled":false,"dryRun":true},"actionbox":{"enabled":false,"dryRun":true},"codex":{"defaultThreadTitle":"飞书默认对话"}}}` + "\n")
 	var output bytes.Buffer
 	if err := New(service.New(), input, &output).Serve(context.Background()); err != nil {
@@ -131,19 +144,18 @@ func TestServerReadsAndUpdatesPrivateFeishuSettingsWithoutSecrets(t *testing.T) 
 		t.Fatalf("settings response leaked a secret field: %s", output.String())
 	}
 	var response struct {
-		Result struct {
-			Version  int    `json:"version"`
-			Profile  string `json:"profile"`
-			Outbound struct {
-				Enabled bool `json:"enabled"`
-				DryRun  bool `json:"dryRun"`
-			} `json:"outbound"`
-		} `json:"result"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Result.Version != 1 || response.Result.Profile != "primary" || !response.Result.Outbound.Enabled || !response.Result.Outbound.DryRun {
-		t.Fatalf("unexpected settings response: %#v", response.Result)
+	if response.Error == nil || !strings.Contains(response.Error.Message, "unavailable") {
+		t.Fatalf("expected explicit unavailable response: %s", output.String())
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("offline settings mutated data root: %v %v", entries, err)
 	}
 }

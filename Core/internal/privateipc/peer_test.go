@@ -1,10 +1,12 @@
 package privateipc
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -100,13 +102,21 @@ func TestPeerRejectsOversizedAndMalformedFrames(t *testing.T) {
 		t.Fatalf("expected frame-too-large error, got %v", err)
 	}
 
-	output.Reset()
-	peer = NewPeer(strings.NewReader("not-json\n"), &output, nil)
-	if err := peer.Serve(context.Background()); err != nil {
-		t.Fatalf("malformed request should produce a protocol response, got %v", err)
+	local, remote := net.Pipe()
+	defer remote.Close()
+	peer = NewPeer(local, local, nil)
+	defer peer.Close()
+	go peer.Serve(context.Background())
+	_ = remote.SetDeadline(time.Now().Add(time.Second))
+	if _, err := io.WriteString(remote, "not-json\n"); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), `"code":-32700`) {
-		t.Fatalf("expected JSON parse error response, got %s", output.String())
+	reply, err := bufio.NewReader(remote).ReadBytes('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(reply), `"code":-32700`) {
+		t.Fatalf("expected JSON parse error response, got %s", reply)
 	}
 }
 

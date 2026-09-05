@@ -14,7 +14,7 @@ import (
 )
 
 func TestRunKillsGrandchildrenWhenContextExpires(t *testing.T) {
-	mode := os.Getenv("CODEX_USAGE_BAR_TRANSIENT_HELPER")
+	mode := os.Getenv("KSF_ASSISTANT_TRANSIENT_HELPER")
 	if mode == "child" {
 		for {
 			time.Sleep(time.Hour)
@@ -22,11 +22,11 @@ func TestRunKillsGrandchildrenWhenContextExpires(t *testing.T) {
 	}
 	if mode == "parent" {
 		command := exec.Command(os.Args[0], "-test.run=TestRunKillsGrandchildrenWhenContextExpires")
-		command.Env = replaceEnvironmentValue(os.Environ(), "CODEX_USAGE_BAR_TRANSIENT_HELPER", "child")
+		command.Env = replaceEnvironmentValue(os.Environ(), "KSF_ASSISTANT_TRANSIENT_HELPER", "child")
 		if err := command.Start(); err != nil {
 			os.Exit(2)
 		}
-		if err := os.WriteFile(os.Getenv("CODEX_USAGE_BAR_TRANSIENT_PID_FILE"), []byte(strconv.Itoa(command.Process.Pid)), 0o600); err != nil {
+		if err := os.WriteFile(os.Getenv("KSF_ASSISTANT_TRANSIENT_PID_FILE"), []byte(strconv.Itoa(command.Process.Pid)), 0o600); err != nil {
 			os.Exit(3)
 		}
 		for {
@@ -35,8 +35,8 @@ func TestRunKillsGrandchildrenWhenContextExpires(t *testing.T) {
 	}
 
 	pidFile := t.TempDir() + "/child.pid"
-	t.Setenv("CODEX_USAGE_BAR_TRANSIENT_HELPER", "parent")
-	t.Setenv("CODEX_USAGE_BAR_TRANSIENT_PID_FILE", pidFile)
+	t.Setenv("KSF_ASSISTANT_TRANSIENT_HELPER", "parent")
+	t.Setenv("KSF_ASSISTANT_TRANSIENT_PID_FILE", pidFile)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	_, err := run(ctx, ".", os.Args[0], []string{"-test.run=TestRunKillsGrandchildrenWhenContextExpires"}, nil)

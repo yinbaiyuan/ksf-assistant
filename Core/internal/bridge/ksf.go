@@ -10,7 +10,7 @@ import (
 	"runtime"
 	"time"
 
-	"codexusagebar/core/internal/domain"
+	"ksfassistant/core/internal/domain"
 )
 
 type KSFClient struct{}

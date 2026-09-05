@@ -37,6 +37,7 @@ type DocumentRequest struct {
 }
 type DocumentResult struct {
 	ID                string         `json:"id"`
+	OperationID       string         `json:"operationId,omitempty"`
 	Status            string         `json:"status"`
 	Action            string         `json:"action,omitempty"`
 	Error             string         `json:"error,omitempty"`
@@ -67,13 +68,19 @@ func (box *Docbox) Submit(request DocumentRequest) error {
 	if err := validateDocumentRequest(request); err != nil {
 		return err
 	}
+	if request.OperationID != "" {
+		operations := NewOperationService(box.dataRoot, NewCapabilityPolicyStore(box.dataRoot), nil)
+		id, input := documentCapabilityInput(request)
+		if _, err := boundQueueInput(operations, request.OperationID, id, input); err != nil {
+			return err
+		}
+	}
 	if err := box.repository.migrateLegacy(box.queuePath(), box.resultPath(), box.statePath()); err != nil {
 		return err
 	}
-	conflictKey := "docs/create"
-	if request.Target != nil {
-		conflictKey = "docs/" + request.Target.Kind + ":" + AuditFingerprint(request.Target.Value)
-	}
+	capabilityID, input := documentCapabilityInput(request)
+	definition, _ := CapabilityByID(capabilityID)
+	conflictKey := workConflictKey(definition, input)
 	return box.repository.enqueue(request.ID, request, conflictKey, "lark-cli", "standard", "never", request.CreatedAt)
 }
 func validateDocumentRequest(request DocumentRequest) error {
@@ -144,12 +151,13 @@ func (box *Docbox) ProcessOne(ctx context.Context, executor CapabilityExecutor, 
 }
 
 func (box *Docbox) processClaimed(ctx context.Context, item WorkItemV3, executor CapabilityExecutor, globalDryRun bool) error {
+	ctx = context.WithValue(ctx, executionWorkKey{}, executionWork{repository: box.repository, item: item})
 	var request DocumentRequest
 	result := DocumentResult{ID: item.ID, CompletedAt: time.Now().UTC()}
 	if err := json.Unmarshal(item.Request, &request); err != nil {
 		result.Status, result.Error = "invalid", "invalid_json"
 	} else {
-		result = executeDocumentRequest(ctx, executor, request, globalDryRun)
+		result = box.executeGoverned(ctx, executor, request, globalDryRun)
 	}
 	if err := box.repository.finish(item, result, result.Error); err != nil {
 		return err
@@ -163,7 +171,11 @@ func (box *Docbox) processClaimed(ctx context.Context, item WorkItemV3, executor
 }
 
 func executeDocumentRequest(ctx context.Context, executor CapabilityExecutor, request DocumentRequest, globalDryRun bool) DocumentResult {
-	result := DocumentResult{ID: request.ID, Action: request.Action, VerificationState: string(VerificationInconclusive), CompletedAt: time.Now().UTC()}
+	return executeDocumentTransport(ctx, executor, request, globalDryRun)
+}
+
+func executeDocumentTransport(ctx context.Context, executor DocumentExecutionTransport, request DocumentRequest, globalDryRun bool) DocumentResult {
+	result := DocumentResult{ID: request.ID, OperationID: request.OperationID, Action: request.Action, VerificationState: string(VerificationInconclusive), CompletedAt: time.Now().UTC()}
 	if err := validateDocumentRequest(request); err != nil {
 		result.Status, result.Error = "invalid", err.Error()
 		return result
@@ -172,34 +184,54 @@ func executeDocumentRequest(ctx context.Context, executor CapabilityExecutor, re
 		result.Status = "dry_run"
 		return result
 	}
+	if err := validateDocumentExecution(ctx, request); err != nil {
+		result.Status, result.Error = "failed", err.Error()
+		return result
+	}
 	if request.Action == "create_document" {
-		response, err := executor.documentCreate(ctx, request)
+		if err := beforeRemoteWrite(ctx); err != nil {
+			result.Status, result.Error = "failed", err.Error()
+			return result
+		}
+		response, err := executor.DocumentCreate(ctx, request)
 		if err != nil {
-			result.Status, result.Error = "failed", safeCommandError(err.Error())
+			result.Status, result.Error, result.FailurePhase = string(OperationOutcomeUnknown), safeCommandError(err.Error()), "write"
 			return result
 		}
 		result.Status, result.Response = "completed", response
 		return result
 	}
-	preflight, err := executor.documentFetch(ctx, *request.Target)
+	if err := checkExecutionBoundary(ctx); err != nil {
+		result.Status, result.Error = "failed", err.Error()
+		return result
+	}
+	preflight, err := executor.DocumentFetch(ctx, *request.Target)
 	if err != nil {
 		result.Status, result.Error = "failed", safeCommandError(err.Error())
 		return result
 	}
 	result.Preflight = preflight
-	version, err := executor.documentVersion(ctx, *request.Target, preflight, request.ID)
+	if err := beforeRemoteWrite(ctx); err != nil {
+		result.Status, result.Error = "failed", err.Error()
+		return result
+	}
+	version, err := executor.DocumentVersion(ctx, *request.Target, preflight, request.ID)
 	if err != nil {
-		result.Status, result.Error = "failed", safeCommandError(err.Error())
+		result.Status, result.Error, result.FailurePhase = string(OperationOutcomeUnknown), safeCommandError(err.Error()), "write"
 		return result
 	}
 	result.Version = version
-	response, err := executor.documentUpdate(ctx, request)
+	if err := beforeRemoteWrite(ctx); err != nil {
+		result.Status, result.Error, result.FailurePhase = string(OperationOutcomeUnknown), err.Error(), "write"
+		return result
+	}
+	response, err := executor.DocumentUpdate(ctx, request)
 	if err != nil {
 		result.Status, result.Error, result.FailurePhase = string(OperationOutcomeUnknown), safeCommandError(err.Error()), "write"
 		return result
 	}
 	result.Response = response
-	verification, err := executor.documentFetch(ctx, *request.Target)
+	verification, err := executor.DocumentFetch(ctx, *request.Target)
 	if err != nil {
 		result.Status, result.Error, result.FailurePhase = string(OperationOutcomeUnknown), safeCommandError(err.Error()), "verification"
 		result.VerificationState = string(VerificationInconclusive)

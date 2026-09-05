@@ -13,22 +13,22 @@ build_core() {
     (
         cd "$core_root"
         GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags="-s -w" \
-            -o "$repo_root/dist/core/$output_dir/$filename" ./cmd/codex-usage-core
+            -o "$repo_root/dist/core/$output_dir/$filename" ./cmd/ksf-assistant-core
         mkdir -p "$repo_root/dist/runtime/feishu-bridge/$output_dir"
-        local bridge_filename="codex-feishu-bridge"
-        [[ "$goos" == "windows" ]] && bridge_filename="codex-feishu-bridge.exe"
+        local bridge_filename="ksf-assistant-feishu-bridge"
+        [[ "$goos" == "windows" ]] && bridge_filename="ksf-assistant-feishu-bridge.exe"
         GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags="-s -w" \
-            -o "$repo_root/dist/runtime/feishu-bridge/$output_dir/$bridge_filename" ./cmd/codex-feishu-bridge
+            -o "$repo_root/dist/runtime/feishu-bridge/$output_dir/$bridge_filename" ./cmd/ksf-assistant-feishu-bridge
     )
 }
 
 targets="${CORE_TARGETS:-darwin-arm64 darwin-x64 windows-x64 windows-arm64}"
 for target in $targets; do
     case "$target" in
-        darwin-arm64) build_core darwin arm64 darwin-arm64 codex-usage-core ;;
-        darwin-x64) build_core darwin amd64 darwin-x64 codex-usage-core ;;
-        windows-x64) build_core windows amd64 windows-x64 codex-usage-core.exe ;;
-        windows-arm64) build_core windows arm64 windows-arm64 codex-usage-core.exe ;;
+        darwin-arm64) build_core darwin arm64 darwin-arm64 ksf-assistant-core ;;
+        darwin-x64) build_core darwin amd64 darwin-x64 ksf-assistant-core ;;
+        windows-x64) build_core windows amd64 windows-x64 ksf-assistant-core.exe ;;
+        windows-arm64) build_core windows arm64 windows-arm64 ksf-assistant-core.exe ;;
         *) echo "Unsupported core target: $target" >&2; exit 1 ;;
     esac
 done

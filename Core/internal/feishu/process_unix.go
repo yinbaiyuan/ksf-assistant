@@ -34,4 +34,8 @@ func killProcessTree(tree processTree, command *exec.Cmd) {
 	_ = command.Process.Kill()
 }
 
-func closeProcessTree(processTree) {}
+func closeProcessTree(tree processTree) {
+	if tree.processGroupID > 0 {
+		_ = syscall.Kill(-tree.processGroupID, syscall.SIGKILL)
+	}
+}

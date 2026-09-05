@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"codexusagebar/core/internal/domain"
+	"ksfassistant/core/internal/domain"
 )
 
 func TestCatalogContainsSevenOfficialPlansAndDefault(t *testing.T) {

@@ -1,7 +1,6 @@
 'use strict';
 
-const fs = require('node:fs');
-const path = require('node:path');
+const { readSettings, remapProjectPins, writeSettingsAtomic } = require('./identity-migration.cjs');
 
 const DEFAULTS = Object.freeze({
   ksfRoot: '',
@@ -22,6 +21,8 @@ const BUILTIN_PRICING_IDS = new Set([
 ]);
 
 class ConfigStore {
+  #diskValue;
+
   constructor(filePath) {
     this.filePath = filePath;
     this.value = this.#load();
@@ -32,21 +33,28 @@ class ConfigStore {
   }
 
   update(patch) {
-    const next = sanitize({ ...this.value, ...patch });
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-    const temporary = `${this.filePath}.${process.pid}.tmp`;
-    fs.writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-    fs.renameSync(temporary, this.filePath);
+    const allowed = Object.fromEntries(Object.keys(DEFAULTS)
+      .filter((key) => patch && Object.prototype.hasOwnProperty.call(patch, key))
+      .map((key) => [key, patch[key]]));
+    const next = sanitize(remapProjectPins({ ...this.value, ...allowed }));
+    const previousPlans = Array.isArray(this.#diskValue.customPricingPlans) ? this.#diskValue.customPricingPlans : [];
+    const diskValue = {
+      ...this.#diskValue,
+      ...next,
+      customPricingPlans: next.customPricingPlans.map((plan) => ({
+        ...previousPlans.find((previous) => previous && previous.id === plan.id),
+        ...plan,
+      })),
+    };
+    writeSettingsAtomic(this.filePath, diskValue, { overwrite: true });
+    this.#diskValue = diskValue;
     this.value = next;
     return this.get();
   }
 
   #load() {
-    try {
-      return sanitize(JSON.parse(fs.readFileSync(this.filePath, 'utf8')));
-    } catch {
-      return sanitize(DEFAULTS);
-    }
+    this.#diskValue = readSettings(this.filePath) ?? {};
+    return sanitize(remapProjectPins(this.#diskValue));
   }
 }
 

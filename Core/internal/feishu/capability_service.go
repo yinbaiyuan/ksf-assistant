@@ -150,6 +150,9 @@ func (service *CapabilityService) Confirm(ctx context.Context, id, challenge str
 		return PreparedOperation{Operation: view}, err
 	}
 	_ = service.auditGovernance("operation_confirmed", view)
+	if record.InputProfile == serviceMessageInputProfile {
+		return PreparedOperation{Operation: view}, nil
+	}
 	return service.dispatch(ctx, PreparedOperation{Operation: view})
 }
 
@@ -239,6 +242,15 @@ func (service *CapabilityService) ExpireAwaiting(limit int) error {
 }
 
 func (service *CapabilityService) RecoverInterrupted(limit int) error {
+	for _, kind := range []string{"actionbox", "outbox", "docbox"} {
+		repo := newWorkRepository(service.dataRoot, kind)
+		if _, err := repo.recoverRunning(limit); err != nil {
+			return err
+		}
+		if err := repo.reconcileTerminalOperations(); err != nil {
+			return err
+		}
+	}
 	return service.operations.RecoverInterrupted(limit)
 }
 
@@ -295,7 +307,7 @@ func validateCapabilityRuntimeGate(definition CapabilityDefinition, settings Set
 	if definition.Risk != "read" && !settings.Actionbox.Enabled {
 		return errors.New("actionbox_disabled")
 	}
-	if definition.Effect == "send" && !settings.Outbound.Enabled {
+	if capabilityUsesOutbound(definition) && !settings.Outbound.Enabled {
 		return errors.New("outbound_disabled")
 	}
 	if definition.Queue == "docbox" && !settings.Docbox.Enabled {
@@ -305,7 +317,11 @@ func validateCapabilityRuntimeGate(definition CapabilityDefinition, settings Set
 }
 
 func effectiveCapabilityDryRun(definition CapabilityDefinition, settings Settings) bool {
-	return definition.Risk != "read" && (settings.Actionbox.DryRun || definition.Effect == "send" && settings.Outbound.DryRun || definition.Queue == "docbox" && settings.Docbox.DryRun)
+	return definition.Risk != "read" && (settings.Actionbox.DryRun || capabilityUsesOutbound(definition) && settings.Outbound.DryRun || definition.Queue == "docbox" && settings.Docbox.DryRun)
+}
+
+func capabilityUsesOutbound(definition CapabilityDefinition) bool {
+	return definition.Effect == "send" || contains([]string{"im.message.edit", "im.messages.patch"}, definition.ID)
 }
 
 func (service *CapabilityService) auditGovernance(direction string, view OperationView) error {

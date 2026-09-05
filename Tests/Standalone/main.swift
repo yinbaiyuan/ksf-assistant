@@ -109,7 +109,7 @@ private func testMillionTokenFormatting() throws {
 private func testLocalTodayUsage() throws {
     let fileManager = FileManager.default
     let root = fileManager.temporaryDirectory
-        .appendingPathComponent("codex-usage-bar-\(UUID().uuidString)", isDirectory: true)
+        .appendingPathComponent("ksf-assistant-\(UUID().uuidString)", isDirectory: true)
     try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? fileManager.removeItem(at: root) }
 
@@ -269,7 +269,7 @@ private func testLocalTokenHistoryStoreKeepsMonotonicHistory() throws {
 
     let store = LocalTokenHistoryStore(ksfRootURL: root, fileManager: fileManager)
     let legacyURL = root
-        .appendingPathComponent(".agents/runtime-data/codex-usage-bar", isDirectory: true)
+        .appendingPathComponent(".agents/runtime-data/ksf-assistant", isDirectory: true)
         .appendingPathComponent("token-history-v1.json")
     try fileManager.createDirectory(at: legacyURL.deletingLastPathComponent(), withIntermediateDirectories: true)
     let legacyData = Data(#"{"protocol":"codex-local-token-history-v1","days":[]}"#.utf8)
@@ -296,7 +296,7 @@ private func testLocalTokenHistoryStoreKeepsMonotonicHistory() throws {
         600,
         "an incomplete smaller observation does not replace a complete cached split"
     )
-    try expect(store.fileURL.path.hasSuffix(".agents/runtime-data/codex-usage-bar/token-history-v2.json"), true, "history cache uses the KSF runtime path")
+    try expect(store.fileURL.path.hasSuffix(".agents/runtime-data/ksf-assistant/token-history-v2.json"), true, "history cache uses the KSF runtime path")
 
     let invalidLarger = DailyUsageBucket(
         startDate: "2026-08-30",

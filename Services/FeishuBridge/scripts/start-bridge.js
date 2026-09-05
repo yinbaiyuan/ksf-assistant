@@ -29,7 +29,7 @@ const env = {
   FEISHU_BRIDGE_DATA_DIR: runtimeEnv.FEISHU_BRIDGE_DATA_DIR || dataRoot,
   FEISHU_BRIDGE_LOG_DIR: runtimeEnv.FEISHU_BRIDGE_LOG_DIR || logDir,
   LARK_CLI_BIN: runtimeEnv.LARK_CLI_BIN
-    || runtimeEnv.CODEX_USAGE_BAR_LARK_CLI
+    || runtimeEnv.KSF_ASSISTANT_LARK_CLI
     || defaultLarkCliBin(projectRoot, { env: runtimeEnv }),
   LARK_CLI_AS: runtimeEnv.LARK_CLI_AS || 'bot',
   FEISHU_EVENT_CONSUMER_ENABLED: runtimeEnv.FEISHU_EVENT_CONSUMER_ENABLED || 'true',

@@ -1,39 +1,8 @@
-// Package corebridge defines the private, language-independent contract
-// between the CodexAssistant Core and CodexAssistant Feishu programs.
 package corebridge
 
 import "encoding/json"
 
-const Protocol = "codexassistant-core-bridge-v1"
-
-const (
-	MethodCapabilitiesRead = "core/capabilities/read"
-	MethodCodexControl     = "core/codex/control"
-	MethodProjectionRead   = "core/codex/projection/read"
-	MethodKSFContextRead   = "core/ksf/context/read"
-
-	MethodBridgeInitialize   = "bridge/initialize"
-	MethodBridgeSnapshotRead = "bridge/snapshot/read"
-	MethodBridgeSnapshotPush = "bridge/snapshot/push"
-	MethodTaskLinkCreate     = "bridge/taskLink/create"
-	MethodTaskLinkRelease    = "bridge/taskLink/release"
-	MethodTaskLinkInterrupt  = "bridge/taskLink/interrupt"
-	MethodMessageTest        = "bridge/message/test"
-	MethodProfileSet         = "bridge/profile/set"
-	MethodAuthConfigure      = "bridge/auth/configure"
-	MethodAuthStart          = "bridge/auth/start"
-	MethodAuthFinish         = "bridge/auth/finish"
-	MethodAuthEnsureUser     = "bridge/auth/ensureCurrentUser"
-	MethodPermissionsRead    = "bridge/permissions/read"
-	MethodSettingsReload     = "bridge/settings/reload"
-	MethodOperationPrepare   = "bridge/operation/prepare"
-	MethodOperationConfirm   = "bridge/operation/confirm"
-	MethodOperationCancel    = "bridge/operation/cancel"
-	MethodOperationStatus    = "bridge/operation/status"
-	MethodPolicyRead         = "bridge/policy/read"
-	MethodPolicyUpdate       = "bridge/policy/update"
-	MethodInputOutcome       = "bridge/taskLink/inputOutcome"
-)
+const Protocol = "ksfassistant-core-bridge-v1"
 
 type Capability struct {
 	State  string `json:"state"`

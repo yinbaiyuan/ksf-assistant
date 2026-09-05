@@ -1,4 +1,4 @@
-# CodexAssistant 公开预览发布清单
+# KSFAssistant 公开预览发布清单
 
 ## 源码与安全
 
@@ -11,7 +11,7 @@
 ## 构建与产物
 
 - macOS Universal App 同时包含 arm64/x86_64；Windows x64/arm64 安装包均已生成。
-- 四个平台包都携带匹配架构的 CodexAssistant 飞书服务和固定 `lark-cli 1.0.92`，普通用户安装后不下载运行组件。
+- 四个平台包都携带匹配架构的 KSFAssistant 飞书服务和固定 `lark-cli 1.0.92`，普通用户安装后不下载运行组件。
 - 产物包含 SHA-256、来源清单、第三方声明和 SPDX 2.3 SBOM。
 - 未签名或未公证的预览包明确标注 `preview`、系统拦截风险和校验方法，禁止描述为受信任发行版。
 

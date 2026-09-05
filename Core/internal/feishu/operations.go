@@ -48,6 +48,8 @@ type OperationRecord struct {
 	Reversibility        string               `json:"reversibility,omitempty"`
 	Input                map[string]any       `json:"input"`
 	InputFingerprint     string               `json:"inputFingerprint"`
+	InputProfile         string               `json:"inputProfile,omitempty"`
+	ExecutionIdentity    string               `json:"executionIdentity,omitempty"`
 	PreflightFingerprint string               `json:"preflightFingerprint,omitempty"`
 	Summary              string               `json:"summary"`
 	Source               string               `json:"source"`
@@ -105,6 +107,10 @@ func (service *OperationService) Prepare(_ context.Context, definition Capabilit
 }
 
 func (service *OperationService) PrepareWithEvidence(definition CapabilityDefinition, input map[string]any, source string, preflight map[string]any) (OperationView, string, error) {
+	return service.prepareWithProfile(definition, input, source, preflight, "")
+}
+
+func (service *OperationService) prepareWithProfile(definition CapabilityDefinition, input map[string]any, source string, preflight map[string]any, profile string) (OperationView, string, error) {
 	policy, err := service.policy.Load()
 	if err != nil {
 		return OperationView{}, "", err
@@ -128,7 +134,7 @@ func (service *OperationService) PrepareWithEvidence(definition CapabilityDefini
 	record := OperationRecord{
 		Version: OperationRecordVersion, ID: id, CapabilityID: definition.ID, Domain: definition.Domain,
 		Risk: definition.Risk, Effect: definition.Effect, Reversibility: definition.Reversibility,
-		Input: cloneInput(input), InputFingerprint: fingerprint,
+		Input: cloneInput(input), InputFingerprint: fingerprint, InputProfile: profile,
 		Summary: operationSummary(definition, input, fingerprint), Source: source,
 		PolicyRevision: policy.Revision, Permission: permission, CreatedAt: now, UpdatedAt: now,
 	}
@@ -137,6 +143,9 @@ func (service *OperationService) PrepareWithEvidence(definition CapabilityDefini
 		if err != nil {
 			return OperationView{}, "", err
 		}
+	}
+	if profile == serviceMessageInputProfile {
+		record.ExecutionIdentity = "bot"
 	}
 	var token string
 	if permission == CapabilityConfirmEach {
@@ -355,6 +364,9 @@ func (service *OperationService) MarkOutcomeUnknownWithResult(id, code string, r
 }
 
 func unknownOutcomeNextAction(record OperationRecord) string {
+	if record.InputProfile == serviceMessageInputProfile {
+		return "manual_review"
+	}
 	if record.VerificationAttempts >= 3 {
 		return "manual_review"
 	}
@@ -378,6 +390,47 @@ func (service *OperationService) ValidateQueuedRequest(id, capabilityID string, 
 		return ErrOperationRequestMismatch
 	}
 	return service.validateCurrentPolicy(record)
+}
+
+func (service *OperationService) ValidateExecution(id, capabilityID string, input map[string]any) error {
+	record, err := service.load(id)
+	if err != nil {
+		return err
+	}
+	fingerprint, err := operationFingerprint(capabilityID, input)
+	if err != nil {
+		return err
+	}
+	if record.ID != id || record.Version != OperationRecordVersion || record.Status != OperationRunning || record.CapabilityID != capabilityID || record.InputFingerprint != fingerprint || record.AttemptCount != 1 {
+		return ErrOperationRequestMismatch
+	}
+	if err := service.validateCurrentPolicy(record); err != nil {
+		return err
+	}
+	definition, ok := CapabilityByID(capabilityID)
+	if !ok || !CapabilityPublished(definition) {
+		return errors.New("capability_not_published")
+	}
+	settings, err := NewSettingsStore(filepath.Dir(service.root)).Load()
+	if err != nil {
+		return err
+	}
+	if err := validateCapabilityRuntimeGate(definition, settings); err != nil {
+		return err
+	}
+	if effectiveCapabilityDryRun(definition, settings) || input["dry-run"] == true {
+		return errors.New("execution_dry_run")
+	}
+	if record.InputProfile == serviceMessageInputProfile {
+		if record.ExecutionIdentity != "bot" {
+			return errors.New("invalid_service_execution_identity")
+		}
+		return validateServiceMessageInput(capabilityID, input)
+	}
+	if record.InputProfile != "" {
+		return errors.New("unsupported_operation_input_profile")
+	}
+	return ValidateCapabilityInput(capabilityID, input)
 }
 
 func (service *OperationService) ClaimExecution(id, capabilityID string, input map[string]any) (OperationView, error) {
@@ -458,12 +511,15 @@ func (service *OperationService) Complete(id string) (OperationView, error) {
 }
 
 func (service *OperationService) CompleteWithResult(id string, result map[string]any) (OperationView, error) {
-	view, err := service.transition(id, []OperationStatus{OperationRunning, OperationVerifying}, OperationSucceeded, "stop", "")
-	if err != nil || result == nil {
-		return view, err
-	}
-	err = service.update(id, func(record *OperationRecord) error {
-		record.Result = result
+	var view OperationView
+	err := service.update(id, func(record *OperationRecord) error {
+		if record.Status != OperationRunning && record.Status != OperationVerifying {
+			return errors.New("invalid_operation_transition")
+		}
+		record.Status, record.NextAction, record.LastError = OperationSucceeded, "stop", ""
+		record.Result = boundCapabilityResult(result)
+		service.cleanupOperationInput(*record)
+		record.Input = nil
 		record.UpdatedAt = service.now().UTC()
 		view = publicOperation(*record)
 		return nil
@@ -582,7 +638,8 @@ func (service *OperationService) Unknown(limit int) ([]OperationRecord, error) {
 		}
 		id := strings.TrimSuffix(name, ".json")
 		record, loadErr := service.load(id)
-		if loadErr == nil && record.Status == OperationOutcomeUnknown && record.VerificationAttempts < 3 {
+		definition, known := CapabilityByID(record.CapabilityID)
+		if loadErr == nil && record.InputProfile == "" && known && definition.Reread != nil && record.Status == OperationOutcomeUnknown && record.VerificationAttempts < 3 {
 			values = append(values, record)
 		}
 	}
@@ -637,7 +694,9 @@ func (service *OperationService) RecoverInterrupted(limit int) error {
 		if loadErr != nil || (record.Status != OperationRunning && record.Status != OperationVerifying) {
 			continue
 		}
-		_, _ = service.MarkOutcomeUnknown(id, "execution_interrupted")
+		if _, err := service.MarkOutcomeUnknown(id, "execution_interrupted"); err != nil {
+			return err
+		}
 		processed++
 	}
 	return nil
@@ -731,7 +790,7 @@ func (service *OperationService) save(record OperationRecord) error {
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		return writePrivateJSON(path, record)
+		return writeOperationRecord(path, record)
 	})
 	if err == nil {
 		signalMaintenance(filepath.Dir(service.root))
@@ -767,7 +826,7 @@ func (service *OperationService) update(id string, mutate func(*OperationRecord)
 			return err
 		}
 		mutateErr := mutate(&record)
-		if err := writePrivateJSON(path, record); err != nil {
+		if err := writeOperationRecord(path, record); err != nil {
 			return err
 		}
 		return mutateErr
@@ -785,6 +844,17 @@ func operationFingerprint(capabilityID string, input map[string]any) (string, er
 	}
 	digest := sha256.Sum256(data)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+func writeOperationRecord(path string, record OperationRecord) error {
+	data, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return err
+	}
+	if len(data)+1 > maximumPrivateJSONBytes {
+		return errors.New("operation_record_too_large")
+	}
+	return writePrivateJSON(path, record)
 }
 
 func evidenceFingerprint(value map[string]any) (string, error) {

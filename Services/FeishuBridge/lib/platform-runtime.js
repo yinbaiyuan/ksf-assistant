@@ -15,7 +15,7 @@ function defaultDataRoot({ platform = process.platform, env = process.env, homeD
 function defaultLogDir(projectRoot, options = {}) {
   const { platform = process.platform, env = process.env } = options;
   if (env.FEISHU_BRIDGE_LOG_DIR) return path.resolve(projectRoot, env.FEISHU_BRIDGE_LOG_DIR);
-  if (platform === 'win32' || env.CODEX_USAGE_BAR_MANAGED === '1' || env.FEISHU_BRIDGE_DATA_DIR) {
+  if (platform === 'win32' || env.KSF_ASSISTANT_MANAGED === '1' || env.FEISHU_BRIDGE_DATA_DIR) {
     return path.join(defaultDataRoot(options), 'logs');
   }
   const pathApi = platform === 'darwin' ? path.posix : path;
@@ -23,7 +23,7 @@ function defaultLogDir(projectRoot, options = {}) {
 }
 
 function defaultLarkCliBin(projectRoot, { platform = process.platform, env = process.env } = {}) {
-  const managedBinary = env.LARK_CLI_BIN || env.CODEX_USAGE_BAR_LARK_CLI;
+  const managedBinary = env.LARK_CLI_BIN || env.KSF_ASSISTANT_LARK_CLI;
   if (managedBinary) return path.resolve(projectRoot, managedBinary);
   return platform === 'win32'
     ? path.join(projectRoot, 'node_modules', '@larksuite', 'cli', 'scripts', 'run.js')
@@ -40,7 +40,7 @@ function defaultCodexWorkspaceRoot({
   homeDir = os.homedir(),
   dataRoot = defaultDataRoot({ platform, env, homeDir }),
 } = {}) {
-  const configured = env.CODEX_USAGE_BAR_MANAGED === '1'
+  const configured = env.KSF_ASSISTANT_MANAGED === '1'
     ? ''
     : String(env.CODEX_FEISHU_WORKSPACE_ROOT || env.KMS_ROOT || '').trim();
   const root = path.resolve(configured || path.join(dataRoot, 'codex-workspace'));

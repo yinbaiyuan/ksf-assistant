@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"codexusagebar/core/internal/domain"
+	"ksfassistant/core/internal/domain"
 )
 
 func TestResolveProjectLaunchActionAcceptsOnlySafeStartScript(t *testing.T) {

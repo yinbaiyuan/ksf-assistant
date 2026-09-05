@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { CoreClient } = require('./core-client.cjs');
 const { ConfigStore } = require('./config-store.cjs');
+const { migrateLegacySettings: migrateSettings } = require('./identity-migration.cjs');
 const { taskURL, clamp, isPathInside } = require('./security.cjs');
 const { buildTrayStatus, trayIconDataURL } = require('./tray-status.cjs');
 
@@ -19,19 +20,23 @@ let quitting = false;
 let shutdownStarted = false;
 let dashboardPromise = null;
 
-app.setAppUserModelId('com.codexassistant.desktop');
+app.setAppUserModelId('com.ksfassistant.desktop');
+app.setName('KSFAssistant');
+app.setPath('userData', path.join(app.getPath('appData'), 'KSFAssistant'));
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.exit(0);
 
 function coreExecutablePath() {
   if (app.isPackaged) {
     const arch = process.arch === 'arm64' ? 'windows-arm64' : 'windows-x64';
-    return path.join(process.resourcesPath, 'core', arch, 'codex-usage-core.exe');
+    return path.join(process.resourcesPath, 'core', arch, 'ksf-assistant-core.exe');
   }
   const repoRoot = path.resolve(__dirname, '..', '..');
   if (process.platform === 'win32') {
     const arch = process.arch === 'arm64' ? 'windows-arm64' : 'windows-x64';
-    return path.join(repoRoot, 'dist', 'core', arch, 'codex-usage-core.exe');
+    return path.join(repoRoot, 'dist', 'core', arch, 'ksf-assistant-core.exe');
   }
-  return path.join(repoRoot, 'dist', 'core', `darwin-${process.arch}`, 'codex-usage-core');
+  return path.join(repoRoot, 'dist', 'core', `darwin-${process.arch}`, 'ksf-assistant-core');
 }
 
 function createWindow() {
@@ -75,7 +80,7 @@ function createTray() {
   tray = new Tray(icon);
   updateTrayStatus(null);
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '打开 CodexAssistant', click: () => showWindow() },
+    { label: '打开 KSFAssistant', click: () => showWindow() },
     { type: 'separator' },
     { label: '退出', click: () => { quitting = true; app.quit(); } },
   ]));
@@ -86,8 +91,8 @@ function feishuRuntime() {
   const arch = process.arch === 'arm64' ? 'windows-arm64' : 'windows-x64';
   const repoRoot = path.resolve(__dirname, '..', '..');
   const bundledBridge = app.isPackaged
-    ? path.join(process.resourcesPath, 'runtime', 'feishu-bridge', arch, 'codex-feishu-bridge.exe')
-    : path.join(repoRoot, 'dist', 'runtime', 'feishu-bridge', arch, 'codex-feishu-bridge.exe');
+    ? path.join(process.resourcesPath, 'runtime', 'feishu-bridge', arch, 'ksf-assistant-feishu-bridge.exe')
+    : path.join(repoRoot, 'dist', 'runtime', 'feishu-bridge', arch, 'ksf-assistant-feishu-bridge.exe');
   const bundledLarkCLI = app.isPackaged
     ? path.join(process.resourcesPath, 'runtime', 'lark-cli', arch, 'lark-cli.exe')
     : path.join(repoRoot, 'dist', 'runtime', 'lark-cli', arch, 'lark-cli.exe');
@@ -123,7 +128,7 @@ function showWindow() {
   window.setPosition(x, clamp(y, area.y + 8, area.y + area.height - bounds.height - 8), false);
   window.show();
   window.focus();
-  window.webContents.send('usagebar:visible');
+  window.webContents.send('ksfassistant:visible');
 }
 
 function dashboardParams() {
@@ -302,26 +307,41 @@ function allowedLocalPath(targetPath) {
 }
 
 function migrateLegacySettings(currentSettingsPath) {
-  if (fs.existsSync(currentSettingsPath)) return;
-  const legacyProductName = ['Codex', ' Usage', ' Bar'].join('');
-  const legacySettings = path.join(app.getPath('appData'), legacyProductName, 'settings.json');
-  if (!fs.existsSync(legacySettings)) return;
-  fs.mkdirSync(path.dirname(currentSettingsPath), { recursive: true });
-  fs.copyFileSync(legacySettings, currentSettingsPath, fs.constants.COPYFILE_EXCL);
+  return migrateSettings(currentSettingsPath, app.getPath('appData'));
+}
+
+function assertLegacyAppStopped() {
+  if (process.platform !== 'win32') return;
+  const command = "$ErrorActionPreference = 'Stop'; $legacy = @(Get-Process | Where-Object { $_.ProcessName -in @('CodexAssistant', 'Codex Usage Bar', 'CodexUsageBar') }); if ($legacy.Count -gt 0) { exit 10 }; exit 0";
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+    windowsHide: true,
+    timeout: 5000,
+    stdio: 'ignore',
+  });
+  if (result.status === 10) throw new Error('请先退出旧版 CodexAssistant / Codex Usage Bar / CodexUsageBar，再启动 KSFAssistant。');
+  if (result.error || result.status !== 0) throw new Error('无法确认旧版应用已退出；为避免共享数据并发访问，已停止启动。请检查 PowerShell 后重试。');
 }
 
 app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) return;
   const settingsPath = path.join(app.getPath('userData'), 'settings.json');
-  migrateLegacySettings(settingsPath);
-	store = new ConfigStore(settingsPath);
+  try {
+    assertLegacyAppStopped();
+    migrateLegacySettings(settingsPath);
+    store = new ConfigStore(settingsPath);
+  } catch (error) {
+    dialog.showErrorBox('KSFAssistant 启动与设置检查失败', error.message);
+    app.exit(1);
+    return;
+  }
 	removeLegacyFeishuScheduledTask();
 	const runtime = feishuRuntime();
   core = new CoreClient({
     executablePath: coreExecutablePath(),
     env: {
-      CODEX_USAGE_BAR_MANAGED: '1',
-			CODEX_USAGE_BAR_FEISHU_BRIDGE: runtime.bridge,
-      CODEX_USAGE_BAR_LARK_CLI: runtime.larkCLI,
+      KSF_ASSISTANT_MANAGED: '1',
+			KSF_ASSISTANT_FEISHU_BRIDGE: runtime.bridge,
+      KSF_ASSISTANT_LARK_CLI: runtime.larkCLI,
       FEISHU_BRIDGE_DATA_DIR: path.join(os.homedir(), '.config', 'feishu-bridge'),
     },
     integrations: { ksfRoot: store.get().ksfRoot },
@@ -330,8 +350,8 @@ app.whenReady().then(async () => {
   createWindow();
   createTray();
   app.setLoginItemSettings({ openAtLogin: store.get().launchAtLogin, openAsHidden: true });
-  await core.start().catch((error) => window.webContents.once('did-finish-load', () => window.webContents.send('usagebar:core-error', error.message)));
-  if (!app.isPackaged || process.env.CODEX_USAGE_BAR_SHOW_ON_START === '1') {
+  await core.start().catch((error) => window.webContents.once('did-finish-load', () => window.webContents.send('ksfassistant:core-error', error.message)));
+  if (!app.isPackaged || process.env.KSF_ASSISTANT_SHOW_ON_START === '1') {
     showWindowWhenReady();
   }
 });

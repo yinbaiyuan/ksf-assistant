@@ -219,7 +219,7 @@ function buildGroupDirectoryService(runtime) {
 async function ensureBridgeRunning(runtime, config, { autoStart = true } = {}) {
   if (pidAlive(runtime)) return { alreadyRunning: true };
   if (!autoStart) throw new Error('bridge is not running');
-  if (runtime.env.CODEX_USAGE_BAR_MANAGED === '1') {
+  if (runtime.env.KSF_ASSISTANT_MANAGED === '1') {
     throw new Error('managed bridge is not ready');
   }
   const action = controlBridgeService(config, {
@@ -1628,11 +1628,11 @@ async function handleTaskLink(args, flags) {
   });
   const request = {
     id: requestId('OUT-LINK'), type: 'card', target: link.target,
-    text: JSON.stringify(card), source: 'codex-usage-bar',
+    text: JSON.stringify(card), source: 'ksf-assistant',
     explicitAuthorization: true,
     dryRun: parseBool(flags.dryRun),
-    reason: '用户在 CodexAssistant 中主动连接指定任务到飞书',
-    trace: { system: 'codex-usage-bar', code: link.taskKey }, createdAt: new Date().toISOString(),
+    reason: '用户在 KSFAssistant 中主动连接指定任务到飞书',
+    trace: { system: 'ksf-assistant', code: link.taskKey }, createdAt: new Date().toISOString(),
   };
   const result = await submitQueueRequest({
     kind: 'outbox', request, queuePath: runtime.outboxPath, resultsPath: runtime.outboxResultsPath,

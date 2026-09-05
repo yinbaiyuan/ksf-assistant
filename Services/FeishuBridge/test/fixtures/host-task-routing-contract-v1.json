@@ -1,8 +1,8 @@
 {
-  "protocol": "codexassistant-feishu-host-task-routing-v1",
+  "protocol": "ksfassistant-feishu-host-task-routing-v1",
   "schemaVersion": 1,
   "hostContext": {
-    "protocol": "codexassistant-host-context-v1",
+    "protocol": "ksfassistant-host-context-v1",
     "schemaVersion": 1,
     "states": ["not_configured", "ready", "invalid"],
     "readyRootField": "ksf.root"

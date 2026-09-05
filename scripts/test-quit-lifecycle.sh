@@ -4,17 +4,17 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 build_dir="$repo_root/.build/quit-lifecycle-tests"
 mkdir -p "$build_dir"
 sources=()
-for source in "$repo_root"/Sources/CodexUsageBar/*.swift; do
+for source in "$repo_root"/Sources/KSFAssistant/*.swift; do
     case "$source" in
-        */CodexUsageBarApp.swift|*/UsagePopoverView.swift|*/StatusItemImageRenderer.swift) ;;
+        */KSFAssistantApp.swift|*/UsagePopoverView.swift|*/StatusItemImageRenderer.swift) ;;
         *) sources+=("$source") ;;
     esac
 done
-/usr/bin/swiftc -emit-library -static -emit-module -module-name CodexUsageCore \
-    "$repo_root"/Sources/CodexUsageCore/*.swift \
-    -o "$build_dir/libCodexUsageCore.a" \
-    -emit-module-path "$build_dir/CodexUsageCore.swiftmodule"
-/usr/bin/swiftc -parse-as-library -I "$build_dir" -L "$build_dir" -lCodexUsageCore \
+/usr/bin/swiftc -emit-library -static -emit-module -module-name KSFAssistantCore \
+    "$repo_root"/Sources/KSFAssistantCore/*.swift \
+    -o "$build_dir/libKSFAssistantCore.a" \
+    -emit-module-path "$build_dir/KSFAssistantCore.swiftmodule"
+/usr/bin/swiftc -parse-as-library -I "$build_dir" -L "$build_dir" -lKSFAssistantCore \
     "${sources[@]}" "$repo_root/Tests/QuitLifecycleStandalone/main.swift" \
     -framework AppKit -framework SwiftUI -framework CoreImage -framework Security \
     -framework ServiceManagement -framework UserNotifications \

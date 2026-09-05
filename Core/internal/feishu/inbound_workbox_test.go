@@ -31,6 +31,7 @@ func TestInboundWorkIsRecoveredAfterHandlerFailure(t *testing.T) {
 	if err != nil || len(items) != 1 {
 		t.Fatalf("work was not retained: %v %#v", err, items)
 	}
+	processor.Close()
 	deferredCount := 0
 	deferred, err := NewInboundProcessor(root, DefaultSettings(), func(context.Context, InboundMessage) error { deferredCount++; return nil }, nil)
 	if err != nil {
@@ -42,6 +43,7 @@ func TestInboundWorkIsRecoveredAfterHandlerFailure(t *testing.T) {
 	if deferredCount != 0 {
 		t.Fatalf("future retry was executed early: %d", deferredCount)
 	}
+	deferred.Close()
 	past := time.Now().UTC().Add(-time.Second)
 	items[0].NextAttemptAt = &past
 	if err := writePrivateJSON(filepath.Join(processor.workbox.root, items[0].ID+".json"), items[0]); err != nil {
@@ -52,6 +54,7 @@ func TestInboundWorkIsRecoveredAfterHandlerFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer recovered.Close()
 	if err := recovered.Recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -61,50 +64,56 @@ func TestInboundWorkIsRecoveredAfterHandlerFailure(t *testing.T) {
 	}
 }
 
-func TestCardActionFailureIsSingleAttemptAndNeverRecovered(t *testing.T) {
+func TestCardDeliveryFailureRemainsPendingAndCanRecover(t *testing.T) {
 	root := t.TempDir()
-	config := DefaultClientConfig()
-	config.MessageTargets["owner"] = MessageTarget{Type: "open_id", ID: "ou_owner"}
-	config.DirectAllowedAliases = []string{"owner"}
-	if err := NewClientConfigStore(root).Save(config); err != nil {
-		t.Fatal(err)
-	}
-	payload, _ := json.Marshal(map[string]any{"header": map[string]any{"event_id": "evt_card_once"}, "event": map[string]any{"operator": map[string]any{"operator_id": map[string]any{"open_id": "ou_owner"}}, "context": map[string]any{"open_message_id": "om_card"}, "action": map[string]any{"value": map[string]any{"namespace": "feishu_bridge", "version": 1, "action": "task_link_answer", "taskKey": "0123456789abcdef0123", "linkId": "LINK-0123456789ABCDEF", "questionRevision": "0123456789abcdef0123", "questionId": "choice", "answer": "A"}}}})
+	deliveryConfig(t, root)
 	var attempts atomic.Int32
 	processor, err := NewInboundProcessor(root, DefaultSettings(), nil, func(context.Context, InboundCardAction) error {
-		attempts.Add(1)
-		return errors.New("temporary failure")
+		if attempts.Add(1) <= 3 {
+			return errors.New("Core ACK unavailable")
+		}
+		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := processor.Handle(context.Background(), "card.action.trigger", payload); err != nil {
+	defer processor.Close()
+	if err := processor.Handle(context.Background(), "card.action.trigger", deliveryCard("evt_card_retry")); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for attempts.Load() == 0 && time.Now().Before(deadline) {
+	deadline := time.Now().Add(3 * time.Second)
+	var work inboundWork
+	for time.Now().Before(deadline) {
+		items, err := processor.workbox.Pending()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) == 1 && items[0].AttemptCount == 3 {
+			work = items[0]
+			break
+		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if attempts.Load() != 1 {
-		t.Fatalf("card action attempts = %d, want 1", attempts.Load())
+	if work.ID == "" || work.Status != "pending" || work.LastError != "core_ack_unavailable" || len(work.Payload) == 0 {
+		t.Fatalf("card delivery was discarded instead of deferred: %#v", work)
 	}
 	if err := processor.Recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(50 * time.Millisecond)
-	if attempts.Load() != 1 {
-		t.Fatalf("failed card action was replayed: %d", attempts.Load())
+	if attempts.Load() != 3 {
+		t.Fatal("future retry was executed early")
 	}
-	files, err := filepath.Glob(filepath.Join(processor.workbox.root, "*.json"))
-	if err != nil || len(files) != 1 {
-		t.Fatalf("failed card action record missing: %v %v", err, files)
+	past := time.Now().Add(-time.Second)
+	work.NextAttemptAt = &past
+	if err := writePrivateJSON(filepath.Join(processor.workbox.root, work.ID+".json"), work); err != nil {
+		t.Fatal(err)
 	}
-	var work inboundWork
-	if missing, err := readPrivateJSON(files[0], &work); err != nil || missing {
-		t.Fatalf("read failed card action: missing=%v err=%v", missing, err)
+	if err := processor.Recover(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	if work.Status != "failed" || work.AttemptCount != 1 {
-		t.Fatalf("unexpected failed card action: %#v", work)
+	waitDeliveryDrained(t, processor)
+	if attempts.Load() != 4 {
+		t.Fatalf("card ACK was not retried: %d", attempts.Load())
 	}
 }
 
@@ -129,6 +138,7 @@ func TestRecoverDoesNotRaceActiveCardAction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer processor.Close()
 	if err := processor.Handle(context.Background(), "card.action.trigger", payload); err != nil {
 		t.Fatal(err)
 	}
@@ -147,36 +157,38 @@ func TestRecoverDoesNotRaceActiveCardAction(t *testing.T) {
 	}
 }
 
-func TestRecoverExpiresCardActionLeftByRestart(t *testing.T) {
+func TestRecoverDeliversCardActionLeftByRestart(t *testing.T) {
 	root := t.TempDir()
-	if err := NewClientConfigStore(root).Save(DefaultClientConfig()); err != nil {
-		t.Fatal(err)
-	}
+	deliveryConfig(t, root)
 	box := NewInboundWorkbox(root)
-	work, err := box.Enqueue("card.action.trigger", []byte(`{"event":{"sequence":1}}`))
+	work, err := box.Enqueue("card.action.trigger", deliveryCard("restart-original-id"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var attempts atomic.Int32
-	processor, err := NewInboundProcessor(root, DefaultSettings(), nil, func(context.Context, InboundCardAction) error {
+	processor, err := NewInboundProcessor(root, DefaultSettings(), nil, func(ctx context.Context, action InboundCardAction) error {
+		if action.EventID != "restart-original-id" {
+			return errors.New("event ID changed")
+		}
 		attempts.Add(1)
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer processor.Close()
 	if err := processor.Recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if attempts.Load() != 0 {
-		t.Fatal("card action left by restart was executed")
+	if attempts.Load() != 1 {
+		t.Fatal("persisted card delivery was dropped after restart")
 	}
 	var stored inboundWork
 	if missing, err := readPrivateJSON(filepath.Join(box.root, work.ID+".json"), &stored); err != nil || missing {
-		t.Fatalf("read expired card action: missing=%v err=%v", missing, err)
+		t.Fatalf("read card delivery receipt: missing=%v err=%v", missing, err)
 	}
-	if stored.Status != "failed" || stored.LastError != "stale_card_action_after_restart" {
-		t.Fatalf("unexpected expired card action: %#v", stored)
+	if stored.Status != "completed" || len(stored.Payload) != 0 {
+		t.Fatalf("unexpected ACK receipt: %#v", stored)
 	}
 }
 

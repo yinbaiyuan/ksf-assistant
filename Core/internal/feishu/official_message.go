@@ -14,7 +14,10 @@ import (
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 )
 
-type OfficialMessageClient struct{ client *lark.Client }
+type OfficialMessageClient struct {
+	client *lark.Client
+	appID  string
+}
 
 func NewOfficialMessageClient(appID, appSecret string, options ...lark.ClientOptionFunc) (*OfficialMessageClient, error) {
 	if strings.TrimSpace(appID) == "" || appSecret == "" {
@@ -22,7 +25,7 @@ func NewOfficialMessageClient(appID, appSecret string, options ...lark.ClientOpt
 	}
 	base := []lark.ClientOptionFunc{lark.WithLogLevel(larkcore.LogLevelError), lark.WithLogger(discardSDKLogger{})}
 	base = append(base, options...)
-	return &OfficialMessageClient{client: lark.NewClient(strings.TrimSpace(appID), appSecret, base...)}, nil
+	return &OfficialMessageClient{client: lark.NewClient(strings.TrimSpace(appID), appSecret, base...), appID: strings.TrimSpace(appID)}, nil
 }
 
 func (client *OfficialMessageClient) Send(ctx context.Context, target MessageTarget, format, value, idempotencyKey string) (string, error) {

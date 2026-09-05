@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"codexusagebar/core/internal/service"
+	"ksfassistant/core/internal/service"
 )
 
 func TestShutdownReturnsWithoutWaitingForStdinEOF(t *testing.T) {

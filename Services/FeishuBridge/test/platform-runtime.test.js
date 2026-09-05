@@ -40,10 +40,10 @@ test('macOS defaults remain backward compatible', () => {
 });
 
 test('managed macOS runtime keeps mutable logs outside the signed application bundle', () => {
-  const projectRoot = '/Applications/CodexAssistant.app/Contents/Resources/services/feishu-bridge';
+  const projectRoot = '/Applications/KSFAssistant.app/Contents/Resources/services/feishu-bridge';
   const dataRoot = '/Users/test/.config/feishu-bridge';
   const env = {
-    CODEX_USAGE_BAR_MANAGED: '1',
+    KSF_ASSISTANT_MANAGED: '1',
     FEISHU_BRIDGE_DATA_DIR: dataRoot,
   };
   assert.equal(defaultLogDir(projectRoot, { platform: 'darwin', env, homeDir: '/Users/test' }), path.join(dataRoot, 'logs'));
@@ -79,19 +79,19 @@ test('managed Codex workspace ignores legacy environment roots', (t) => {
   t.after(() => fs.rmSync(legacyRoot, { recursive: true, force: true }));
   assert.equal(defaultCodexWorkspaceRoot({
     platform: 'darwin',
-    env: { CODEX_USAGE_BAR_MANAGED: '1', KMS_ROOT: legacyRoot },
+    env: { KSF_ASSISTANT_MANAGED: '1', KMS_ROOT: legacyRoot },
     dataRoot,
   }), path.join(dataRoot, 'codex-workspace'));
 });
 
 test('managed compatibility launcher uses the host-provided pinned lark-cli', () => {
-  const projectRoot = '/Applications/CodexAssistant.app/Contents/Resources/services/feishu-bridge';
-  const larkCLI = '/Applications/CodexAssistant.app/Contents/Resources/runtime/lark-cli/darwin-arm64/lark-cli';
+  const projectRoot = '/Applications/KSFAssistant.app/Contents/Resources/services/feishu-bridge';
+  const larkCLI = '/Applications/KSFAssistant.app/Contents/Resources/runtime/lark-cli/darwin-arm64/lark-cli';
   assert.equal(defaultLarkCliBin(projectRoot, {
-    platform: 'darwin', env: { CODEX_USAGE_BAR_LARK_CLI: larkCLI },
+    platform: 'darwin', env: { KSF_ASSISTANT_LARK_CLI: larkCLI },
   }), larkCLI);
   const source = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'start-bridge.js'), 'utf8');
-  assert.match(source, /runtimeEnv\.CODEX_USAGE_BAR_LARK_CLI/);
+  assert.match(source, /runtimeEnv\.KSF_ASSISTANT_LARK_CLI/);
   assert.match(source, /FEISHU_AUDIT_DIR:[\s\S]*path\.join\(logDir, 'audit'\)/);
 });
 

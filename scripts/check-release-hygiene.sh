@@ -6,11 +6,12 @@ cd "$repo_root"
 
 personal_user="la""wis"
 personal_bundle="com.""lawis"
-personal_certificate="CodexAssistant Local ""Signing"
+personal_certificate="KSFAssistant Local ""Signing"
+legacy_certificate="CodexAssistant Local ""Signing"
 private_host="gitlab.""houzzkit.com"
 personal_name="尹""超"
 
-for pattern in "$personal_user" "$personal_bundle" "$personal_certificate" "$private_host" "$personal_name"; do
+for pattern in "$personal_user" "$personal_bundle" "$personal_certificate" "$legacy_certificate" "$private_host" "$personal_name"; do
     if rg -n \
         --glob '!scripts/check-release-hygiene.sh' \
         --glob '!Windows/node_modules/**' \

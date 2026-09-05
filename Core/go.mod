@@ -1,4 +1,4 @@
-module codexusagebar/core
+module ksfassistant/core
 
 go 1.23
 

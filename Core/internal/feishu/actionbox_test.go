@@ -327,7 +327,7 @@ func TestLegacyQueueCannotAcquireDestructivePermissionDuringUpgrade(t *testing.T
 		t.Fatal(err)
 	}
 	result, found, err := box.FindResult(request.ID)
-	if err != nil || !found || result.Status != "failed" || result.Error != "destructive_operation_requires_governance" || executor.calls != 0 {
+	if err != nil || !found || result.Status != string(OperationOutcomeUnknown) || result.Error != "legacy_authorization_unverified" || executor.calls != 0 {
 		t.Fatalf("result=%#v found=%v calls=%d err=%v", result, found, executor.calls, err)
 	}
 }

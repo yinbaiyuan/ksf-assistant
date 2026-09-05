@@ -8,32 +8,18 @@ import (
 
 func TestUnifiedExecutorRoutesSDKSendThroughOutboxOnce(t *testing.T) {
 	root := t.TempDir()
-	box := NewOutbox(root)
 	sender := &recordingSender{}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		ticker := time.NewTicker(20 * time.Millisecond)
-		defer ticker.Stop()
-		for range ticker.C {
-			_ = box.Process(context.Background(), sender, false)
-			if len(sender.calls) > 0 {
-				return
-			}
-		}
-	}()
-	executor := UnifiedCapabilityExecutor{DataRoot: root, LongTail: CapabilityExecutor{DataRoot: root, WorkingDirectory: root}}
-	result, err := executor.ExecuteWithOptions(context.Background(), "im.sdk.message.send", map[string]any{
-		"request-id": "OUT-test-123", "target-type": "open_id", "target-id": "ou_test",
-		"format": "text", "text": "hello", "source": "test", "dry-run": false,
-	}, CapabilityExecutionOptions{Timeout: 2 * time.Second})
+	input := map[string]any{"request-id": "OUT-test-123", "target-type": "open_id", "target-id": "ou_test", "format": "text", "text": "hello", "source": "test", "dry-run": false}
+	ctx, operationID := reviewRunningBoundary(t, root, "im.sdk.message.send", input)
+	executor := UnifiedCapabilityExecutor{DataRoot: root, Sender: sender}
+	result, err := executor.ExecuteWithOptions(ctx, "im.sdk.message.send", input, CapabilityExecutionOptions{OperationID: operationID, Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
-	<-done
 	if len(sender.calls) != 1 || result["verified"] != true {
 		t.Fatalf("result=%#v calls=%#v", result, sender.calls)
 	}
+	reviewAssertNoChildWork(t, root, "outbox")
 }
 
 func TestUnifiedExecutorRoutesGovernedWhiteboardThroughDocbox(t *testing.T) {
@@ -43,28 +29,25 @@ func TestUnifiedExecutorRoutesGovernedWhiteboardThroughDocbox(t *testing.T) {
 	if err := NewClientConfigStore(root).Save(config); err != nil {
 		t.Fatal(err)
 	}
-	box := NewDocbox(root)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		ticker := time.NewTicker(20 * time.Millisecond)
-		defer ticker.Stop()
-		for range ticker.C {
-			_ = box.Process(context.Background(), CapabilityExecutor{}, true)
-			if readQueueHealth(root, "docbox", true).Processed > 0 {
-				return
-			}
-		}
-	}()
-	executor := UnifiedCapabilityExecutor{DataRoot: root, LongTail: CapabilityExecutor{DataRoot: root, WorkingDirectory: root}}
-	result, err := executor.ExecuteWithOptions(context.Background(), "docs.whiteboard.insert", map[string]any{
-		"doc": "design", "content": "graph TD; A-->B", "doc-format": "mermaid",
-	}, CapabilityExecutionOptions{Timeout: 2 * time.Second})
+	input := map[string]any{"doc": "design", "content": "graph TD; A-->B", "doc-format": "mermaid"}
+	ctx, operationID := reviewRunningBoundary(t, root, "docs.whiteboard.insert", input)
+	transport := &reviewDocumentTransport{}
+	executor := UnifiedCapabilityExecutor{DataRoot: root, Documents: transport}
+	result, err := executor.ExecuteWithOptions(ctx, "docs.whiteboard.insert", input, CapabilityExecutionOptions{OperationID: operationID, Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
-	<-done
-	if result["capabilityId"] != "docs.whiteboard.insert" {
+	if result["capabilityId"] != "docs.whiteboard.insert" || transport.writes.Load() != 1 {
 		t.Fatalf("unexpected result: %#v", result)
+	}
+	reviewAssertNoChildWork(t, root, "docbox")
+}
+
+func TestUnifiedExecutorRejectsUnboundDirectWrite(t *testing.T) {
+	sender := &reviewConcurrentSender{}
+	executor := UnifiedCapabilityExecutor{DataRoot: t.TempDir(), Sender: sender}
+	_, err := executor.ExecuteWithOptions(context.Background(), "im.sdk.message.send", map[string]any{}, CapabilityExecutionOptions{})
+	if err == nil || sender.calls.Load() != 0 {
+		t.Fatalf("err=%v calls=%d", err, sender.calls.Load())
 	}
 }

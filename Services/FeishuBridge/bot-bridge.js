@@ -141,7 +141,7 @@ const codexBin = defaultCodexBin({ env: process.env });
 const codexTimeoutMs = Number(process.env.CODEX_TIMEOUT_MS || 10 * 60 * 1000);
 const codexTaskTimeoutMs = Number(process.env.CODEX_TASK_TIMEOUT_MS || 30 * 60 * 1000);
 const codexBypassApprovals = parseBool(process.env.CODEX_BYPASS_APPROVALS || 'true');
-const managedRuntime = process.env.CODEX_USAGE_BAR_MANAGED === '1';
+const managedRuntime = process.env.KSF_ASSISTANT_MANAGED === '1';
 const codexAppServerRequestTimeoutMs = Number(process.env.CODEX_APP_SERVER_REQUEST_TIMEOUT_MS
   || 60 * 1000);
 const codexAppServerInitializeTimeoutMs = Number(process.env.CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MS
@@ -150,7 +150,7 @@ const codexTransportPreference = process.env.CODEX_TRANSPORT || 'auto';
 const codexAutoStartDaemon = parseBool(process.env.CODEX_AUTO_START_DAEMON || 'true');
 const bridgeOwnedTransportPreference = managedRuntime ? 'app-server' : codexTransportPreference;
 const bridgeOwnedAutoStartDaemon = managedRuntime ? false : codexAutoStartDaemon;
-const hostContextPath = process.env.CODEX_USAGE_BAR_HOST_CONTEXT || '';
+const hostContextPath = process.env.KSF_ASSISTANT_HOST_CONTEXT || '';
 const codexClientName = process.env.CODEX_CLIENT_NAME || 'codex_vscode';
 const codexClientTitle = process.env.CODEX_CLIENT_TITLE || 'Codex';
 const defaultSessionName = process.env.CODEX_FEISHU_DEFAULT_SESSION || 'feishu-default-kms';
@@ -4712,7 +4712,7 @@ async function executeTaskLink(link, command, context) {
   if (latestInput && !requestedNewTurn) taskLinkLatestInputs.set(fresh.id, latestInput);
   if (taskLinkEffectiveState(fresh) !== 'active') {
     cleanupContextInbound(context);
-    await replyText(context.message.message_id, context.message.chat_id, '该任务连接已失效，请回到 CodexAssistant 重新连接。', { phase: `task-link-inactive:${fresh.taskKey}` });
+    await replyText(context.message.message_id, context.message.chat_id, '该任务连接已失效，请回到 KSFAssistant 重新连接。', { phase: `task-link-inactive:${fresh.taskKey}` });
     return;
   }
   let snapshot;
@@ -5559,7 +5559,7 @@ async function handleFeishuMessage(data) {
       }
       if (taskLinkEffectiveState(taskLink) !== 'active') {
         cleanupContextInbound(context);
-        await replyText(message.message_id, message.chat_id, '该任务连接已过期，请回到 CodexAssistant 重新连接。', { phase: `task-link-expired:${taskLink.taskKey}` });
+        await replyText(message.message_id, message.chat_id, '该任务连接已过期，请回到 KSFAssistant 重新连接。', { phase: `task-link-expired:${taskLink.taskKey}` });
         return;
       }
       logAccepted(context, 'task_link_continue');

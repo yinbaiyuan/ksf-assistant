@@ -40,7 +40,7 @@ class CoreClient {
     child.once('exit', (_code, signal) => this.#failAll(new Error(`核心服务已停止${signal ? `（${signal}）` : ''}`)));
     child.once('error', (error) => this.#failAll(error));
     await this.request('initialize', {
-      clientInfo: { name: 'codex_usage_bar_windows', title: 'CodexAssistant for Windows', version: '0.10.0-preview.1' },
+      clientInfo: { name: 'ksf_assistant_windows', title: 'KSFAssistant for Windows', version: '0.10.0-preview.1' },
       integrations: this.integrations,
     }, { skipStart: true });
   }

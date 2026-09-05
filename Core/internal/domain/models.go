@@ -2,7 +2,7 @@ package domain
 
 import "time"
 
-const Protocol = "codex-usage-core-v2"
+const Protocol = "ksf-assistant-core-v2"
 
 type RateLimitWindow struct {
 	UsedPercent        int    `json:"usedPercent"`

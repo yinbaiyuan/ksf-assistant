@@ -1,7 +1,7 @@
 # 飞书桥系统实现与复刻指南
 
 > 迁移期维护者参考：本文用于理解和回退 Node 兼容实现，不是
-> CodexAssistant 普通用户的安装或配置入口。
+> KSFAssistant 普通用户的安装或配置入口。
 
 更新日期：2026-09-03
 适用项目：`feishu-bot-bridge`
@@ -42,7 +42,7 @@
 13. 事件收件箱：官方 SDK 单一连接接入 23 个非 Approval EventKey，私有分卷、去重、脱敏且不自动触发业务写入。
 14. 协作与内容补全：Whiteboard、Mindnotes、Markdown、Wiki/评论以及消息、日历、任务、Sheets、Base、会议和妙记的安全子集。
 15. 妙搭 Apps 与组合工作流：固定 Apps 开发主链路，以及默认不发布的站会与会议素材包。
-16. Codex 任务控制：由本机 CodexAssistant 显式绑定一个顶层 thread 与唯一授权单聊，观察/steer/interrupt 当前轮，并以全权限继续后续轮次；任务卡用单行“快速回复”处理普通文字，多行文字和各类附件通过飞书原生“回复卡片”精确路由；24 小时闲置租约和非敏感问题均由桥统一管理。
+16. Codex 任务控制：由本机 KSFAssistant 显式绑定一个顶层 thread 与唯一授权单聊，观察/steer/interrupt 当前轮，并以全权限继续后续轮次；任务卡用单行“快速回复”处理普通文字，多行文字和各类附件通过飞书原生“回复卡片”精确路由；24 小时闲置租约和非敏感问题均由桥统一管理。
 17. 独立默认对话与项目升级：授权单聊的每条根消息创建独立 Codex Thread，卡内追问和引用回复只续接对应卡片；默认卡与任务卡使用同一视觉外壳，未绑定时显示“Codex 对话”。明确项目延续语句通过 KSF 项目目录协议做精确匹配；普通对话每轮完成后也回读该 Thread 的 KSF 投影。只有 active 项目归属可验证时，才把原卡标题改为项目名并升级为任务控制卡。桥不从正文猜项目、不创建项目，也不允许已升级任务静默改绑。
 
 明确不做：
@@ -399,7 +399,7 @@ task <任务描述>
 
 ## 9. Codex 调用链路
 
-以下传输开关只用于独立开发模式；CodexAssistant 托管模式会忽略它们并固定直连：
+以下传输开关只用于独立开发模式；KSFAssistant 托管模式会忽略它们并固定直连：
 
 ```text
 CODEX_TRANSPORT=auto
@@ -408,7 +408,7 @@ CODEX_CLIENT_NAME=codex_vscode
 CODEX_CLIENT_TITLE=Codex
 ```
 
-CodexAssistant 托管调用顺序：
+KSFAssistant 托管调用顺序：
 
 ```text
 短生命周期 codex app-server

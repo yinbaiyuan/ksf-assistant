@@ -1,7 +1,7 @@
 # 飞书桥配置说明
 
 > 迁移期维护者参考：本文记录 Node 兼容实现的底层配置，不是
-> CodexAssistant 普通用户操作。普通用户只使用软件内飞书向导。
+> KSFAssistant 普通用户操作。普通用户只使用软件内飞书向导。
 
 更新日期：2026-09-02
 
@@ -71,7 +71,7 @@ FEISHU_DIRECT_ALLOWED_OPEN_IDS=ou_xxx
 - `FEISHU_INBOUND_MAX_BYTES`：单条授权单聊的附件总暂存上限，默认 25 MiB。临时文件权限为 `0600`，Codex 处理结束后清理。
 - `FEISHU_BRIDGE_LOG_DIR`：本地 JSONL 日志目录。
 - `FEISHU_DIRECT_ALLOWED_OPEN_IDS`：允许单聊访问机器人的用户 open_id 列表，多个值用英文逗号分隔。
-- CodexAssistant 的任务连接目标必须同时是 `open_id` 消息目标别名和 `FEISHU_DIRECT_ALLOWED_OPEN_IDS` 成员；`targets list` 只把满足两者的别名标为任务连接可用。桥不会因为主动出站配置而扩大入站操控权限。连接账本固定使用 `~/.config/feishu-bridge/task-links-v1.json`，schema v2 将连接/轮次状态分开并使用 24 小时闲置租约，无需新增环境变量。
+- KSFAssistant 的任务连接目标必须同时是 `open_id` 消息目标别名和 `FEISHU_DIRECT_ALLOWED_OPEN_IDS` 成员；`targets list` 只把满足两者的别名标为任务连接可用。桥不会因为主动出站配置而扩大入站操控权限。连接账本固定使用 `~/.config/feishu-bridge/task-links-v1.json`，schema v2 将连接/轮次状态分开并使用 24 小时闲置租约，无需新增环境变量。
 
 默认不启用群聊和主动出站，避免 clone 后误发消息。
 
@@ -104,7 +104,7 @@ FEISHU_BRIDGE_WINDOWS_TASK_NAME=FeishuBotBridge
 - `FEISHU_BRIDGE_WINDOWS_TASK_NAME`：Windows 计划任务名，必须与安装器的 `-TaskName` 一致。
 - `FEISHU_BRIDGE_DATA_DIR`：可选私有数据根。macOS 与 Windows 默认均为 `~/.config/feishu-bridge`。
 - `FEISHU_BRIDGE_LOG_DIR`：可选运行日志目录。macOS 默认项目内 `./logs`，Windows 默认私有数据根内 `logs`。
-- `KMS_ROOT`、`KSF_PROJECT_ROOT` 只供仓库独立开发与协议测试使用。CodexAssistant 托管运行时不读取它们，也不猜测 `~/Documents/KSF`；普通用户只在软件设置中选择并验证 KSF 目录。
+- `KMS_ROOT`、`KSF_PROJECT_ROOT` 只供仓库独立开发与协议测试使用。KSFAssistant 托管运行时不读取它们，也不猜测 `~/Documents/KSF`；普通用户只在软件设置中选择并验证 KSF 目录。
 - `FEISHU_AUDIT_DIR`：人类可读审计 Markdown 输出目录。需要关闭或替换审计时，修改这里即可。
 
 不要把个人真实路径写入版本化文档、代码或 plist 模板。
@@ -132,7 +132,7 @@ CODEX_CLIENT_TITLE=Codex
 
 建议保持：
 
-- `CODEX_TRANSPORT`、`CODEX_AUTO_START_DAEMON` 只用于独立开发模式。CodexAssistant 托管运行固定使用短生命周期独立 app-server，初始化最长 5 秒，不尝试 proxy 或 daemon；该限时不作用于 `thread/start`、`turn/start` 等常规 RPC。
+- `CODEX_TRANSPORT`、`CODEX_AUTO_START_DAEMON` 只用于独立开发模式。KSFAssistant 托管运行固定使用短生命周期独立 app-server，初始化最长 5 秒，不尝试 proxy 或 daemon；该限时不作用于 `thread/start`、`turn/start` 等常规 RPC。
 - `CODEX_DESKTOP_IPC_PATH`：可选。任务连接的写操作通过当前用户私有的 Codex Desktop IPC 交给任务所有者；默认使用 `~/.codex/ipc/ipc.sock`。桥会校验路径确为当前用户所有且权限不向组或其他用户开放。
 - `CODEX_DESKTOP_REQUEST_TIMEOUT_MS`：Desktop 所有者请求的单次超时；默认 20 秒。目标任务未被窗口持有时，桥先打开准确任务并等待 Desktop 接管。
 - `CODEX_CLIENT_NAME=codex_vscode`：已验证更容易让新 thread 出现在 Codex 本地 UI。

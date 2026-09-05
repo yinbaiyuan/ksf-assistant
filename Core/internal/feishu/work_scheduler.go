@@ -8,9 +8,10 @@ import (
 )
 
 const (
-	defaultWorkConcurrency = 4
-	maxLarkCLIConcurrency  = 2
-	maxLongRemoteRunning   = 1
+	defaultWorkConcurrency       = 4
+	maxLarkCLIConcurrency        = 2
+	maxLongRemoteRunning         = 1
+	WorkSchedulerShutdownTimeout = 5 * time.Second
 )
 
 type scheduledWorkQueue struct {
@@ -30,16 +31,19 @@ type scheduledCompletion struct {
 // Feishu work. Its coordinator owns capacity and conflict reservations, so
 // workers never block while holding a slot waiting for another worker.
 type WorkScheduler struct {
-	dataRoot string
-	queues   []*scheduledWorkQueue
-	complete chan scheduledCompletion
-	active   int
-	cli      int
-	long     int
-	conflict map[string]bool
-	lastKey  map[string]string
-	nextKind int
-	runOnce  sync.Once
+	dataRoot  string
+	queues    []*scheduledWorkQueue
+	complete  chan scheduledCompletion
+	active    int
+	cli       int
+	long      int
+	conflict  map[string]bool
+	lastKey   map[string]string
+	nextKind  int
+	runOnce   sync.Once
+	sender    MessageSender
+	healthMu  sync.Mutex
+	healthErr error
 }
 
 func NewWorkScheduler(dataRoot string) *WorkScheduler {
@@ -82,6 +86,7 @@ func (scheduler *WorkScheduler) RegisterOutbox(box *Outbox, sender MessageSender
 	if box == nil {
 		return
 	}
+	scheduler.sender = sender
 	scheduler.queues = append(scheduler.queues, &scheduledWorkQueue{
 		kind: "outbox", repo: box.repository,
 		migrate: func() error { return box.repository.migrateLegacy(box.queuePath(), box.resultPath(), box.statePath()) },
@@ -91,7 +96,43 @@ func (scheduler *WorkScheduler) RegisterOutbox(box *Outbox, sender MessageSender
 
 func (scheduler *WorkScheduler) Wake() { signalWork(scheduler.dataRoot) }
 
-func (scheduler *WorkScheduler) Run(ctx context.Context) error {
+func (scheduler *WorkScheduler) Health() error {
+	scheduler.healthMu.Lock()
+	defer scheduler.healthMu.Unlock()
+	return scheduler.healthErr
+}
+
+func (scheduler *WorkScheduler) degrade(err error) {
+	scheduler.healthMu.Lock()
+	defer scheduler.healthMu.Unlock()
+	scheduler.healthErr = errors.Join(scheduler.healthErr, err)
+}
+
+func (scheduler *WorkScheduler) Run(ctx context.Context) (runErr error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer func() {
+		cancel()
+		deadline := time.NewTimer(WorkSchedulerShutdownTimeout)
+		defer deadline.Stop()
+		for scheduler.active > 0 {
+			select {
+			case completion := <-scheduler.complete:
+				scheduler.release(completion.item)
+				if completion.err != nil {
+					scheduler.degrade(completion.err)
+					runErr = errors.Join(runErr, completion.err)
+				}
+			case <-deadline.C:
+				err := errors.New("work_scheduler_shutdown_timeout")
+				scheduler.degrade(err)
+				runErr = errors.Join(runErr, err)
+				return
+			}
+		}
+		if runErr != nil && !errors.Is(runErr, context.Canceled) {
+			scheduler.degrade(runErr)
+		}
+	}()
 	if len(scheduler.queues) == 0 {
 		<-ctx.Done()
 		return ctx.Err()
@@ -106,19 +147,37 @@ func (scheduler *WorkScheduler) Run(ctx context.Context) error {
 			if _, err := queue.repo.recoverRunning(1000); err != nil {
 				startupErr = errors.Join(startupErr, err)
 			}
-			if err := queue.repo.rebuildIndex(); err != nil {
+			if err := queue.repo.reconcileTerminalOperations(); err != nil {
 				startupErr = errors.Join(startupErr, err)
+			}
+			if err := queue.repo.rebuildIndex(); err != nil {
+				_ = NewAuditLog(scheduler.dataRoot).Record("work_index_degraded", map[string]any{"kind": queue.kind, "error": safeCommandError(err.Error())})
 			}
 		}
 	})
 	if startupErr != nil {
+		scheduler.degrade(startupErr)
 		return startupErr
 	}
 	reconcile := time.NewTicker(time.Minute)
 	defer reconcile.Stop()
+	dispatchFailures := 0
 	for {
 		if err := scheduler.dispatchAvailable(ctx); err != nil {
 			_ = NewAuditLog(scheduler.dataRoot).Record("work_scheduler_degraded", map[string]any{"error": safeCommandError(err.Error())})
+			dispatchFailures++
+			if dispatchFailures >= 3 {
+				scheduler.degrade(err)
+				return err
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+			continue
+		} else {
+			dispatchFailures = 0
 		}
 		select {
 		case <-ctx.Done():
@@ -127,6 +186,8 @@ func (scheduler *WorkScheduler) Run(ctx context.Context) error {
 			scheduler.release(completion.item)
 			if completion.err != nil {
 				_ = NewAuditLog(scheduler.dataRoot).Record("work_item_processing_failed", map[string]any{"kind": completion.queue.kind, "id": AuditFingerprint(completion.item.ID), "error": safeCommandError(completion.err.Error())})
+				scheduler.degrade(completion.err)
+				return completion.err
 			}
 		case <-workSignal(scheduler.dataRoot):
 		case <-reconcile.C:
@@ -136,6 +197,9 @@ func (scheduler *WorkScheduler) Run(ctx context.Context) error {
 
 func (scheduler *WorkScheduler) dispatchAvailable(ctx context.Context) error {
 	for scheduler.active < defaultWorkConcurrency {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		queue, candidate, found, err := scheduler.nextEligible()
 		if err != nil {
 			return err
@@ -233,6 +297,10 @@ func (scheduler *WorkScheduler) release(item WorkItemV3) {
 }
 
 func (scheduler *WorkScheduler) execute(ctx context.Context, queue *scheduledWorkQueue, item WorkItemV3) {
+	ctx = context.WithValue(ctx, executionWorkKey{}, executionWork{repository: queue.repo, item: item})
+	if scheduler.sender != nil {
+		ctx = context.WithValue(ctx, executionSenderKey{}, scheduler.sender)
+	}
 	var err error
 	defer func() {
 		if recover() != nil {
@@ -246,5 +314,11 @@ func (scheduler *WorkScheduler) execute(ctx context.Context, queue *scheduledWor
 		}
 		scheduler.complete <- scheduledCompletion{queue: queue, item: item, err: err}
 	}()
-	err = queue.handle(ctx, item)
+	executionCtx, release, admissionErr := admitExecution(ctx, scheduler.dataRoot, item)
+	if admissionErr != nil {
+		err = admissionErr
+		return
+	}
+	defer release()
+	err = queue.handle(executionCtx, item)
 }

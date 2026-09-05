@@ -2,11 +2,11 @@
 
 ## Boundary
 
-`codex-usage-core` is the single cross-platform business implementation. It is a native Go child process started by each desktop host and communicates over newline-delimited JSON-RPC 2.0 on private stdin/stdout.
+`ksf-assistant-core` is the single cross-platform business implementation. It is a native Go child process started by each desktop host and communicates over newline-delimited JSON-RPC 2.0 on private stdin/stdout.
 
 ```text
 macOS SwiftUI/AppKit ─┐
-                     ├─ codex-usage-core ─ Codex App Server
+                     ├─ ksf-assistant-core ─ Codex App Server
 Windows Electron ────┘                   ├ KSF bridge
                                          ├ Feishu bridge
                                          ├ local session counters
@@ -38,11 +38,11 @@ Renderers submit identifiers and user intent, not authoritative paths or state. 
 
 No credential material crosses this protocol. Codex login stays managed by Codex, while Feishu identity, IDs, lease state, messages and secrets remain bridge-owned.
 
-KSF Markdown interpretation remains in the KSF-owned Ruby bridge. The Go process supplies a platform-correct per-user support directory and consumes only the versioned catalog/projection JSON. This keeps one CodexAssistant business core without creating a second KSF parser.
+KSF Markdown interpretation remains in the KSF-owned Ruby bridge. The Go process supplies a platform-correct per-user support directory and consumes only the versioned catalog/projection JSON. This keeps one KSFAssistant business core without creating a second KSF parser.
 
 ## Protocol
 
-- Name: `codex-usage-core-v1`
+- Name: `ksf-assistant-core-v1`
 - Core version: `0.8.0`
 - Transport: UTF-8 NDJSON, one JSON-RPC object per line
 - Current methods: `initialize`, `health/read`, `dashboard/read`, `pricing/catalog/read`, `token/history/read`, `token/history/compare`, `task/create`, `task/submit`, `project/launch/prepare`, `feishu/taskLink/create`, `feishu/taskLink/release`, `feishu/taskLink/interrupt`, `feishu/test`, `shutdown`

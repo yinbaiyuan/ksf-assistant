@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
+	"ksfassistant/core/internal/feishutypes"
 	"os"
 	"regexp"
 	"strings"
@@ -12,263 +14,257 @@ import (
 	"time"
 )
 
-type InboundMessage struct {
-	EventID, MessageID, RootID, ParentID, ChatID, ChatType, MessageType, Text, SenderOpenID string
-	Raw                                                                                     map[string]any
-}
-type InboundCardAction struct {
-	EventID, OperatorOpenID, ChatID, MessageID, Action, TaskKey, LinkID, QuestionRevision, Token string
-	Value, FormValue                                                                             map[string]any
-	Raw                                                                                          map[string]any
-}
+type InboundMessage = feishutypes.InboundMessage
+type InboundCardAction = feishutypes.InboundCardAction
 type InboundMessageHandler func(context.Context, InboundMessage) error
 type InboundCardHandler func(context.Context, InboundCardAction) error
+
+const inboundDeliveryWorkers = 4
+const inboundDeliveryBuffer = 32
+
+type inboundDeliveryJob struct {
+	work inboundWork
+	done chan struct{}
+}
+
+type terminalDeliveryError struct{ error }
+
 type InboundProcessor struct {
+	dataRoot    string
 	inbox       *EventInbox
 	workbox     *InboundWorkbox
-	config      ClientConfig
-	settings    Settings
 	message     InboundMessageHandler
 	card        InboundCardHandler
 	audit       AuditLog
+	ctx         context.Context
+	cancel      context.CancelFunc
+	workers     sync.WaitGroup
+	ingestMu    sync.Mutex
 	executionMu sync.Mutex
 	inFlight    map[string]bool
+	closed      bool
+	jobs        [inboundDeliveryWorkers]chan inboundDeliveryJob
 }
 
-const maxInboundMessageAttempts = 6
-
-func NewInboundProcessor(dataRoot string, settings Settings, message InboundMessageHandler, card InboundCardHandler) (*InboundProcessor, error) {
-	config, err := NewClientConfigStore(dataRoot).Load()
-	if err != nil {
+func NewInboundProcessor(dataRoot string, _ Settings, message InboundMessageHandler, card InboundCardHandler) (*InboundProcessor, error) {
+	if _, err := NewClientConfigStore(dataRoot).Load(); err != nil {
 		return nil, err
 	}
 	workbox := NewInboundWorkbox(dataRoot)
 	if _, err := workbox.ScrubTerminal(); err != nil {
 		return nil, err
 	}
-	return &InboundProcessor{inbox: NewEventInbox(dataRoot), workbox: workbox, config: config, settings: settings, message: message, card: card, audit: NewAuditLog(dataRoot), inFlight: map[string]bool{}}, nil
+	ctx, cancel := context.WithCancel(context.Background())
+	processor := &InboundProcessor{dataRoot: dataRoot, inbox: NewEventInbox(dataRoot), workbox: workbox, message: message, card: card, audit: NewAuditLog(dataRoot), ctx: ctx, cancel: cancel, inFlight: map[string]bool{}}
+	for partition := range processor.jobs {
+		processor.jobs[partition] = make(chan inboundDeliveryJob, inboundDeliveryBuffer)
+		processor.workers.Add(1)
+		go processor.runDeliveryWorker(partition)
+	}
+	return processor, nil
 }
+
+func (processor *InboundProcessor) Close() {
+	processor.executionMu.Lock()
+	processor.closed = true
+	processor.cancel()
+	processor.executionMu.Unlock()
+	processor.workers.Wait()
+}
+
 func (processor *InboundProcessor) Handle(ctx context.Context, eventKey string, payload []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := processor.ctx.Err(); err != nil {
+		return err
+	}
+	processor.ingestMu.Lock()
+	defer processor.ingestMu.Unlock()
 	work, err := processor.workbox.Enqueue(eventKey, payload)
 	if err != nil {
 		return err
 	}
-	if !processor.acquire(work.ID) {
-		return nil
-	}
-	_, accepted, err := processor.inbox.Put(eventKey, payload)
-	if err != nil {
-		processor.release(work.ID)
-		_ = processor.workbox.Complete(work.ID)
+	if _, _, err := processor.inbox.Put(eventKey, payload); err != nil {
 		return err
 	}
-	if !accepted {
-		processor.release(work.ID)
-		if work.Existing {
-			return nil
-		}
-		return processor.workbox.Complete(work.ID)
+	if work.Existing {
+		return nil
 	}
-	go processor.processPersisted(work)
+	processor.schedule(work)
 	return nil
 }
 
+func (processor *InboundProcessor) schedule(work inboundWork) <-chan struct{} {
+	processor.executionMu.Lock()
+	defer processor.executionMu.Unlock()
+	if processor.closed || processor.inFlight[work.ID] {
+		return nil
+	}
+	var raw map[string]any
+	_ = json.Unmarshal(work.Payload, &raw)
+	conversation := firstNestedValue(raw, []string{"chat_id", "open_chat_id"})
+	if conversation == "" {
+		conversation = firstNestedValue(raw, []string{"open_id", "event_id", "message_id"})
+	}
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(conversation))
+	partition := int(hash.Sum32() % inboundDeliveryWorkers)
+	job := inboundDeliveryJob{work: work, done: make(chan struct{})}
+	processor.inFlight[work.ID] = true
+	select {
+	case processor.jobs[partition] <- job:
+		return job.done
+	default:
+		delete(processor.inFlight, work.ID)
+		return nil
+	}
+}
+
+func (processor *InboundProcessor) runDeliveryWorker(partition int) {
+	defer processor.workers.Done()
+	for {
+		select {
+		case <-processor.ctx.Done():
+			return
+		case job := <-processor.jobs[partition]:
+			if processor.ctx.Err() == nil {
+				processor.processPersisted(job.work)
+			}
+			processor.executionMu.Lock()
+			delete(processor.inFlight, job.work.ID)
+			processor.executionMu.Unlock()
+			close(job.done)
+		}
+	}
+}
+
 func (processor *InboundProcessor) processPersisted(work inboundWork) {
-	defer processor.release(work.ID)
-	if work.EventKey == "card.action.trigger" {
-		attempt := work.AttemptCount + 1
-		_ = processor.audit.Record("inbound_execution_started", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": attempt})
-		err := processor.dispatch(context.Background(), work.EventKey, work.Payload)
-		if err == nil {
-			_ = processor.audit.Record("inbound_execution_succeeded", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": attempt})
-			_ = processor.workbox.Complete(work.ID)
-			return
-		}
-		errorClass := inboundErrorClass(err)
-		_ = processor.audit.Record("inbound_execution_failed", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": attempt, "errorClass": errorClass, "terminal": true})
-		_ = processor.workbox.RecordFailure(work, errorClass, 1, true, time.Time{})
-		return
-	}
-
 	delays := []time.Duration{0, 250 * time.Millisecond, time.Second}
-	attempts := 0
 	for index, delay := range delays {
+		if processor.ctx.Err() != nil {
+			return
+		}
 		if delay > 0 {
-			time.Sleep(delay)
+			timer := time.NewTimer(delay)
+			select {
+			case <-processor.ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
 		}
-		attempts++
-		_ = processor.audit.Record("inbound_execution_started", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": work.AttemptCount + index + 1})
-		err := processor.dispatch(context.Background(), work.EventKey, work.Payload)
+		ctx, cancel := context.WithTimeout(processor.ctx, 15*time.Second)
+		err := processor.dispatch(ctx, work.EventKey, work.Payload)
+		cancel()
 		if err == nil {
-			_ = processor.audit.Record("inbound_execution_succeeded", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": work.AttemptCount + index + 1})
-			_ = processor.workbox.Complete(work.ID)
+			if err := processor.workbox.Complete(work.ID); err == nil {
+				_ = processor.audit.Record("inbound_delivery_accepted", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": work.AttemptCount + index + 1})
+				return
+			}
+		}
+		if processor.ctx.Err() != nil {
 			return
 		}
-		if terminalInboundError(err) {
-			_ = processor.audit.Record("inbound_execution_failed", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": work.AttemptCount + index + 1, "errorClass": inboundErrorClass(err), "terminal": true})
-			_ = processor.workbox.Complete(work.ID)
+		var terminal terminalDeliveryError
+		if errors.As(err, &terminal) {
+			_ = processor.workbox.RecordFailure(work, "delivery_not_authorized_or_invalid", index+1, true, time.Time{})
 			return
 		}
-		_ = processor.audit.Record("inbound_execution_retrying", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": work.AttemptCount + index + 1, "errorClass": inboundErrorClass(err)})
 	}
-	terminal := work.AttemptCount+attempts >= maxInboundMessageAttempts
-	_ = processor.workbox.RecordFailure(work, "temporary_failure", attempts, terminal, time.Now().UTC().Add(time.Minute))
-	if terminal {
-		_ = processor.audit.Record("inbound_execution_failed", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": work.AttemptCount + len(delays), "errorClass": "temporary_failure", "terminal": true})
-	}
-}
-
-func terminalInboundError(err error) bool {
-	if err == nil {
-		return false
-	}
-	value := err.Error()
-	return strings.HasPrefix(value, "invalid_") || strings.HasPrefix(value, "unsupported_") || strings.HasSuffix(value, "_not_authorized")
-}
-
-func inboundErrorClass(err error) string {
-	if err == nil {
-		return "none"
-	}
-	value := err.Error()
-	for _, class := range []string{
-		"desktop_user_input_owner_unavailable",
-		"desktop_user_input_snapshot_timeout",
-		"desktop_user_input_request_stale",
-		"desktop_user_input_submit_rejected",
-		"desktop_user_input_not_consumed",
-	} {
-		if strings.HasPrefix(value, class) {
-			return class
-		}
-	}
-	for _, prefix := range []string{"invalid_", "unsupported_"} {
-		if strings.HasPrefix(value, prefix) {
-			return strings.Fields(value)[0]
-		}
-	}
-	if strings.HasSuffix(value, "_not_authorized") {
-		return "not_authorized"
-	}
-	if strings.Contains(strings.ToLower(value), "timeout") {
-		return "timeout"
-	}
-	if strings.Contains(strings.ToLower(value), "owner") {
-		return "owner_unavailable"
-	}
-	return "temporary_failure"
+	_ = processor.workbox.RecordFailure(work, "core_ack_unavailable", len(delays), false, time.Now().UTC().Add(time.Minute))
+	_ = processor.audit.Record("inbound_delivery_deferred", map[string]any{"event": work.ID, "eventKey": work.EventKey})
 }
 
 func (processor *InboundProcessor) Recover(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := processor.ctx.Err(); err != nil {
+		return err
+	}
 	items, err := processor.workbox.Ready(time.Now().UTC())
 	if err != nil {
 		return err
 	}
+	waiting := []<-chan struct{}{}
 	for _, work := range items {
-		if !processor.acquire(work.ID) {
-			continue
+		if done := processor.schedule(work); done != nil {
+			waiting = append(waiting, done)
 		}
-		recoverErr := func() error {
-			defer processor.release(work.ID)
-			if work.EventKey == "card.action.trigger" {
-				const errorClass = "stale_card_action_after_restart"
-				_ = processor.audit.Record("inbound_execution_failed", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": work.AttemptCount + 1, "errorClass": errorClass, "terminal": true, "recovered": true})
-				return processor.workbox.RecordFailure(work, errorClass, 1, true, time.Time{})
-			}
-			if _, _, err := processor.inbox.Put(work.EventKey, work.Payload); err != nil {
-				return err
-			}
-			attempt := work.AttemptCount + 1
-			_ = processor.audit.Record("inbound_execution_started", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": attempt, "recovered": true})
-			err := processor.dispatch(ctx, work.EventKey, work.Payload)
-			if err == nil {
-				_ = processor.audit.Record("inbound_execution_succeeded", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": attempt, "recovered": true})
-				return processor.workbox.Complete(work.ID)
-			}
-			if terminalInboundError(err) {
-				_ = processor.audit.Record("inbound_execution_failed", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": attempt, "errorClass": inboundErrorClass(err), "terminal": true, "recovered": true})
-				return processor.workbox.Complete(work.ID)
-			}
-			terminal := attempt >= maxInboundMessageAttempts
-			if err := processor.workbox.RecordFailure(work, inboundErrorClass(err), 1, terminal, time.Now().UTC().Add(time.Minute)); err != nil {
-				return err
-			}
-			direction := "inbound_execution_retrying"
-			if terminal {
-				direction = "inbound_execution_failed"
-			}
-			_ = processor.audit.Record(direction, map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": attempt, "errorClass": inboundErrorClass(err), "terminal": terminal, "recovered": true})
-			return nil
-		}()
-		if recoverErr != nil {
-			return recoverErr
+	}
+	for _, done := range waiting {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-processor.ctx.Done():
+			return processor.ctx.Err()
+		case <-done:
 		}
 	}
 	return nil
 }
 
-func (processor *InboundProcessor) acquire(id string) bool {
-	processor.executionMu.Lock()
-	defer processor.executionMu.Unlock()
-	if processor.inFlight[id] {
-		return false
-	}
-	processor.inFlight[id] = true
-	return true
-}
-
-func (processor *InboundProcessor) release(id string) {
-	processor.executionMu.Lock()
-	delete(processor.inFlight, id)
-	processor.executionMu.Unlock()
-}
-
 func (processor *InboundProcessor) dispatch(ctx context.Context, eventKey string, payload []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	config, err := NewClientConfigStore(processor.dataRoot).Load()
+	if err != nil {
+		return err
+	}
+	settings, err := NewSettingsStore(processor.dataRoot).Load()
+	if err != nil {
+		return err
+	}
+
 	var raw map[string]any
 	if json.Unmarshal(payload, &raw) != nil {
-		return errors.New("invalid_inbound_event")
+		return terminalDeliveryError{errors.New("invalid_inbound_event")}
 	}
 	switch eventKey {
 	case "im.message.receive_v1":
 		message, err := normalizeInboundMessage(raw)
 		if err != nil {
-			return err
+			return terminalDeliveryError{err}
 		}
-		if !processor.authorize(message.ChatType, message.ChatID, message.SenderOpenID) {
+		if !authorizeInbound(config, settings, message.ChatType, message.ChatID, message.SenderOpenID) {
 			_ = processor.audit.Record("authz_denied", map[string]any{"event": AuditFingerprint(message.EventID), "actor": AuditFingerprint(message.SenderOpenID), "resource": AuditFingerprint(message.ChatID), "reason": "inbound_sender_not_authorized"})
-			return errors.New("inbound_sender_not_authorized")
+			return terminalDeliveryError{errors.New("inbound_sender_not_authorized")}
 		}
 		_ = processor.audit.Record("inbound_accepted", map[string]any{"event": AuditFingerprint(message.EventID), "actor": AuditFingerprint(message.SenderOpenID), "resource": AuditFingerprint(message.MessageID), "messageType": message.MessageType})
-		if processor.message != nil {
-			return processor.message(ctx, message)
+		if processor.message == nil {
+			return errors.New("Core delivery handler unavailable")
 		}
+		return processor.message(ctx, message)
 	case "card.action.trigger":
 		action, err := normalizeInboundCard(raw)
 		if err != nil {
-			return err
+			return terminalDeliveryError{err}
 		}
-		if !processor.authorize("p2p", "", action.OperatorOpenID) {
+		if !authorizeInbound(config, settings, "p2p", "", action.OperatorOpenID) {
 			_ = processor.audit.Record("card_action_denied", map[string]any{"event": AuditFingerprint(action.EventID), "actor": AuditFingerprint(action.OperatorOpenID), "reason": "card_operator_not_authorized"})
-			return errors.New("card_operator_not_authorized")
+			return terminalDeliveryError{errors.New("card_operator_not_authorized")}
 		}
 		_ = processor.audit.Record("card_action_accepted", map[string]any{"event": AuditFingerprint(action.EventID), "actor": AuditFingerprint(action.OperatorOpenID), "resource": AuditFingerprint(action.MessageID), "action": action.Action})
-		if processor.card != nil {
-			return processor.card(ctx, action)
+		if processor.card == nil {
+			return errors.New("Core delivery handler unavailable")
 		}
+		return processor.card(ctx, action)
 	}
 	return nil
 }
-func (processor *InboundProcessor) authorize(chatType, chatID, openID string) bool {
+func authorizeInbound(config ClientConfig, settings Settings, chatType, chatID, openID string) bool {
 	allowed := map[string]bool{}
-	for _, alias := range processor.config.DirectAllowedAliases {
-		if target, ok := processor.config.MessageTargets[alias]; ok && target.Type == "open_id" {
+	for _, alias := range config.DirectAllowedAliases {
+		if target, ok := config.MessageTargets[alias]; ok && target.Type == "open_id" {
 			allowed[target.ID] = true
 		}
 	}
 	if chatType == "p2p" || chatType == "direct" || chatType == "" {
 		return allowed[openID]
 	}
-	if !processor.settings.Group.Enabled {
+	if !settings.Group.Enabled {
 		return false
 	}
 	return csvEnvironmentAllows("FEISHU_GROUP_ALLOWED_CHAT_IDS", chatID) && csvEnvironmentAllows("FEISHU_GROUP_ALLOWED_OPEN_IDS", openID)

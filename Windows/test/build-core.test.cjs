@@ -12,7 +12,7 @@ test('core build explains when an explicit Go toolchain is unavailable', () => {
   const result = spawnSync(process.execPath, ['scripts/build-core.mjs'], {
     cwd: windowsRoot,
     encoding: 'utf8',
-    env: { ...process.env, PATH: '', CODEX_USAGE_BAR_GO: missingGo },
+    env: { ...process.env, PATH: '', KSF_ASSISTANT_GO: missingGo },
   });
 
   assert.notEqual(result.status, 0);

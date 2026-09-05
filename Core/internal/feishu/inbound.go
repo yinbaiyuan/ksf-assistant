@@ -104,7 +104,7 @@ func NewOfficialInbound(appID, appSecret string, sink EventSink, observer Connec
 		larkws.WithEventHandler(d),
 		larkws.WithLogLevel(larkcore.LogLevelError),
 		larkws.WithLogger(discardSDKLogger{}),
-		larkws.WithSource("codex-usage-bar"),
+		larkws.WithSource("ksf-assistant"),
 		larkws.WithAutoReconnect(true),
 		larkws.WithOnReady(func() { observer("connected") }),
 		larkws.WithOnReconnecting(func() { observer("reconnecting") }),

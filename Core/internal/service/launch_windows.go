@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"codexusagebar/core/internal/domain"
+	"ksfassistant/core/internal/domain"
 )
 
 func resolveProjectLaunchAction(project domain.Project) (domain.ProjectLaunchAction, bool) {

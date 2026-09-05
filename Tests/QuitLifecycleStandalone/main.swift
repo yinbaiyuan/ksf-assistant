@@ -1,5 +1,5 @@
 import AppKit
-import CodexUsageCore
+import KSFAssistantCore
 
 // Exercise the real quit action against AppKit's deferred-termination protocol.
 // No Core, Codex, Feishu, or account connection is started in this process.

@@ -1,6 +1,6 @@
 # TODO-FEISHU-GO-001: 将飞书桥从 Node 完整迁移到 Go
 
-Target: CodexAssistant `0.10.0-preview.1` public preview.
+Target: KSFAssistant `0.10.0-preview.1` public preview.
 
 ## Goal
 
@@ -17,7 +17,7 @@ Move the packaged Feishu Bridge implementation from Node.js to Go without changi
 
 ## Platform Boundary
 
-Platform differences may exist only in adapters. macOS uses Keychain, POSIX permissions, and Unix Socket behavior. Windows uses DPAPI, ACLs, and Named Pipe behavior. Product lifetime is shared: explicitly quitting CodexAssistant stops every product-managed server on both platforms.
+Platform differences may exist only in adapters. macOS uses Keychain, POSIX permissions, and Unix Socket behavior. Windows uses DPAPI, ACLs, and Named Pipe behavior. Product lifetime is shared: explicitly quitting KSFAssistant stops every product-managed server on both platforms.
 
 ## Sequence
 

@@ -15,7 +15,7 @@ test('private runtime settings survive packaged deployments and process values w
   fs.writeFileSync(path.join(project, '.env.local'), 'FEISHU_OUTBOUND_ENABLED=false\n');
   fs.writeFileSync(path.join(data, 'runtime.env'), 'FEISHU_OUTBOUND_ENABLED=true\nFEISHU_GROUP_ENABLED=true\n');
   const loaded = loadRuntimeEnvironment(project, {
-    env: { CODEX_USAGE_BAR_MANAGED: '1', FEISHU_BRIDGE_DATA_DIR: data, FEISHU_GROUP_ENABLED: 'false' },
+    env: { KSF_ASSISTANT_MANAGED: '1', FEISHU_BRIDGE_DATA_DIR: data, FEISHU_GROUP_ENABLED: 'false' },
     homeDir: root,
   });
   assert.equal(loaded.FEISHU_OUTBOUND_ENABLED, 'true');
@@ -44,7 +44,7 @@ test('managed packaged runtime uses canonical non-secret settings over legacy fl
 
   const loaded = loadRuntimeEnvironment(project, {
     env: {
-      CODEX_USAGE_BAR_MANAGED: '1',
+      KSF_ASSISTANT_MANAGED: '1',
       FEISHU_BRIDGE_DATA_DIR: data,
       FEISHU_OUTBOUND_ENABLED: 'false',
     },

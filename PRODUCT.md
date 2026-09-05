@@ -1,8 +1,10 @@
-# CodexAssistant product brief
+# KSFAssistant product brief
+
+KSFAssistant means Knowledge–Skills–Flywheel Assistant（知识－技能－飞轮－助手）.
 
 ## Product
 
-CodexAssistant is an open-source macOS menu-bar and Windows system-tray instrument for Codex users. It combines account capacity and live task attention in one glanceable surface, with optional KSF and Feishu integrations.
+KSFAssistant is an open-source macOS menu-bar and Windows system-tray instrument for Codex users. It combines account capacity and live task attention in one glanceable surface, with optional KSF and Feishu integrations.
 
 ## Current release
 
@@ -36,14 +38,14 @@ The prepared `0.10.0-preview.1` public preview keeps the platform UI, shared Go 
 
 ## Trust boundaries
 
-- Platform renderers do not receive filesystem, process or credential capabilities. They call a narrow host API, and the host delegates business actions to `codex-usage-core` over private stdio JSON-RPC.
+- Platform renderers do not receive filesystem, process or credential capabilities. They call a narrow host API, and the host delegates business actions to `ksf-assistant-core` over private stdio JSON-RPC.
 - The core re-resolves project IDs against the current KSF catalog before task creation or project launch. It does not trust renderer-provided project paths, titles or state.
 - KSF owns Markdown interpretation and exports `ksf-panel-catalog-v1`; the app is a read-only consumer.
 - Route projection is display-only and never replaces the verified receipt, task trace, project memory contract, or governance authority.
 - Raw task IDs are HMAC-addressed on disk. Task titles, conversation content, complete receipts, and governance evidence are never persisted.
 - Project Token totals begin at verified binding time, include child agents by inheritance, split on later project bindings, and report incomplete local coverage instead of showing a false zero.
 - Quota and the global task counter remain available when the KSF bridge fails.
-- CodexAssistant owns the isolated Feishu Bridge process but not its authority. The bridge implements transport and inbound handling, derives authoritative task state, enforces the exact direct-message operator, observes/steers/interrupts Codex turns, handles ordinary attachments and non-secret input, and owns the 24-hour inactivity lease, redaction and wake assertion.
+- KSFAssistant owns the isolated Feishu Bridge process but not its authority. The bridge implements transport and inbound handling, derives authoritative task state, enforces the exact direct-message operator, observes/steers/interrupts Codex turns, handles ordinary attachments and non-secret input, and owns the 24-hour inactivity lease, redaction and wake assertion.
 - The bot token and queue encryption key stay in Keychain; the bounded command queue and protocol cursor are encrypted at rest.
 
 ## Not in this preview

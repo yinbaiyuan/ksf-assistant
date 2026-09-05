@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"ksfassistant/core/internal/feishutypes"
+	"ksfassistant/core/internal/privatestore"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,21 +21,10 @@ const (
 	defaultInboundMaxResources = 10
 )
 
-type InboundResource struct {
-	FileKey, ResourceType, DisplayName string
-}
-
-type InboundAsset struct {
-	MessageType, ResourceType, DisplayName, LocalPath string
-	SizeBytes                                         int64
-}
-
-type StagedInboundMessage struct {
-	MessageType string
-	Text        string
-	Assets      []InboundAsset
-	CleanupDir  string
-}
+type InboundResource = feishutypes.InboundResource
+type InboundAsset = feishutypes.InboundAsset
+type StagedInboundMessage = feishutypes.StagedInboundMessage
+type StageAssets = feishutypes.StageAssets
 
 func inboundMessageDetails(message InboundMessage) (string, []InboundResource, error) {
 	var content any
@@ -95,7 +86,7 @@ func inboundMessageDetails(message InboundMessage) (string, []InboundResource, e
 	}
 }
 
-func StageInboundMessage(ctx context.Context, runner CapabilityExecutor, message InboundMessage, maxBytes int64) (StagedInboundMessage, error) {
+func StageInboundMessage(ctx context.Context, dataRoot string, runner ResourceDownloader, message InboundMessage, maxBytes int64) (StagedInboundMessage, error) {
 	text, resources, err := inboundMessageDetails(message)
 	if err != nil {
 		return StagedInboundMessage{}, err
@@ -109,13 +100,13 @@ func StageInboundMessage(ctx context.Context, runner CapabilityExecutor, message
 	if maxBytes <= 0 {
 		maxBytes = defaultInboundMaxBytes
 	}
-	root := filepath.Join(runner.DataRoot, "private-cache", "inbound-assets")
-	if err := ensurePrivateDirectory(root); err != nil {
+	root := filepath.Join(dataRoot, "private-cache", "inbound-assets")
+	if err := privatestore.EnsureDirectory(root); err != nil {
 		return StagedInboundMessage{}, err
 	}
 	digest := sha256.Sum256([]byte(message.MessageID))
 	directory := filepath.Join(root, hex.EncodeToString(digest[:12]))
-	if err := CleanupInboundAssets(runner.DataRoot, directory); err != nil {
+	if err := CleanupInboundAssets(dataRoot, directory); err != nil {
 		return StagedInboundMessage{}, err
 	}
 	if err := os.Mkdir(directory, 0o700); err != nil {
@@ -125,7 +116,7 @@ func StageInboundMessage(ctx context.Context, runner CapabilityExecutor, message
 	failed := true
 	defer func() {
 		if failed {
-			_ = CleanupInboundAssets(runner.DataRoot, directory)
+			_ = CleanupInboundAssets(dataRoot, directory)
 		}
 	}()
 	var total int64
@@ -152,27 +143,13 @@ func StageInboundMessage(ctx context.Context, runner CapabilityExecutor, message
 	return result, nil
 }
 
-func InboundAssetsPrompt(prompt string, staged StagedInboundMessage) string {
-	if len(staged.Assets) == 0 {
-		return prompt
-	}
-	lines := []string{strings.TrimSpace(prompt), "", "飞书服务已将本轮附件暂存为以下本机只读输入。请按用户意图读取这些文件；不要移动、改写或删除它们："}
-	if lines[0] == "" {
-		lines[0] = "请分析我发送的附件并给出有用的回复。"
-	}
-	for index, asset := range staged.Assets {
-		lines = append(lines, fmt.Sprintf("%d. %s (%s/%s, %d bytes): %s", index+1, asset.DisplayName, asset.MessageType, asset.ResourceType, asset.SizeBytes, asset.LocalPath))
-	}
-	return strings.Join(lines, "\n")
-}
-
 func CleanupInboundAssets(dataRoot, directory string) error {
 	if strings.TrimSpace(directory) == "" {
 		return nil
 	}
 	root := filepath.Join(dataRoot, "private-cache", "inbound-assets")
 	relative, err := filepath.Rel(root, directory)
-	if err != nil || relative == "." || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+	if err != nil || relative == "." || relative == ".." || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
 		return errors.New("unsafe_inbound_asset_cleanup_path")
 	}
 	return os.RemoveAll(directory)
@@ -196,4 +173,8 @@ func safeInboundFileName(value, fallback string) string {
 		name = string(runes[:160])
 	}
 	return name
+}
+
+type ResourceDownloader interface {
+	DownloadMessageResource(ctx context.Context, messageID, fileKey, resourceType, output string, timeout time.Duration) error
 }

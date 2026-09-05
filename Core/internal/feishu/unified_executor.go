@@ -9,12 +9,12 @@ import (
 	"time"
 )
 
-// UnifiedCapabilityExecutor is the only service execution adapter. Long-tail
-// capabilities use the pinned CLI; SDK capabilities enter the existing Go
-// transport queues and wait on the same stable request ID.
 type UnifiedCapabilityExecutor struct {
-	LongTail CapabilityExecutor
-	DataRoot string
+	LongTail  CapabilityExecutor
+	DataRoot  string
+	Direct    *DirectExecutionAdapter
+	Sender    MessageSender
+	Documents DocumentExecutionTransport
 }
 
 func (executor UnifiedCapabilityExecutor) ReadPreflight(ctx context.Context, id string, input map[string]any) (map[string]any, error) {
@@ -40,12 +40,27 @@ func (executor UnifiedCapabilityExecutor) ExecuteWithOptions(ctx context.Context
 	if !ok {
 		return nil, errors.New("unknown_capability")
 	}
+	if definition.Risk != "read" {
+		if err := validateDirectBinding(ctx, id, input, options.OperationID); err != nil {
+			return nil, &CapabilityExecutionError{Phase: "preflight", Err: err}
+		}
+	}
+	if options.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, options.Timeout)
+		defer cancel()
+	}
 	if definition.Backend != "go-sdk" {
 		if strings.HasPrefix(id, "docs.service.document.") {
 			return executor.executeDocumentService(ctx, id, input, options)
 		}
 		if id == "docs.whiteboard.insert" {
 			return executor.executeDocbox(ctx, id, input, options)
+		}
+		if definition.Risk != "read" {
+			if err := beforeRemoteWrite(ctx); err != nil {
+				return nil, &CapabilityExecutionError{Phase: "preflight", Err: err}
+			}
 		}
 		return executor.LongTail.ExecuteWithOptions(ctx, id, input, options)
 	}
@@ -67,31 +82,12 @@ func (executor UnifiedCapabilityExecutor) ExecuteWithOptions(ctx context.Context
 		}
 	}
 	request := OutboxRequest{
-		ID: fmt.Sprint(input["request-id"]), Type: fmt.Sprint(input["format"]),
+		ID: fmt.Sprint(input["request-id"]), OperationID: options.OperationID, Type: fmt.Sprint(input["format"]),
 		Target: MessageTarget{Type: fmt.Sprint(input["target-type"]), ID: fmt.Sprint(input["target-id"])},
 		Text:   fmt.Sprint(input["text"]), FilePath: filePath, ExplicitAuthorization: true,
 		Source: fmt.Sprint(input["source"]), DryRun: input["dry-run"] == true, CreatedAt: time.Now().UTC(),
 	}
-	box := NewOutbox(dataRoot)
-	if err := box.Submit(request); err != nil {
-		return nil, err
-	}
-	_ = WakeQueue(dataRoot, "outbox")
-	wait := options.Timeout
-	if wait <= 0 {
-		wait = 60 * time.Second
-	}
-	var result OutboxResult
-	found, err := box.repository.waitResult(ctx, request.ID, wait, &result)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, &CapabilityExecutionError{Phase: "write", Err: errors.New("message_send_outcome_pending")}
-		}
-		return nil, &CapabilityExecutionError{Phase: "write", Err: err}
-	}
-	if !found {
-		return nil, &CapabilityExecutionError{Phase: "write", Err: errors.New("message_send_outcome_pending")}
-	}
+	result := executor.directAdapter(dataRoot).Send(ctx, request)
 	switch result.Status {
 	case "sent", "dry_run":
 		verificationState := string(VerificationInconclusive)
@@ -99,6 +95,8 @@ func (executor UnifiedCapabilityExecutor) ExecuteWithOptions(ctx context.Context
 			verificationState = string(VerificationConfirmed)
 		}
 		return map[string]any{"capabilityId": id, "response": result, "verified": result.Status == "sent", "verificationState": verificationState}, nil
+	case string(OperationOutcomeUnknown), "partial_sent":
+		return map[string]any{"capabilityId": id, "response": result}, &CapabilityExecutionError{Phase: "write", Err: errors.New("message_send_" + result.Status)}
 	default:
 		return nil, &CapabilityExecutionError{Phase: "remote_result", Err: errors.New("message_send_" + result.Status)}
 	}
@@ -108,6 +106,9 @@ func (executor UnifiedCapabilityExecutor) documentSnapshot(ctx context.Context, 
 	target, err := documentServiceTarget(input)
 	if err != nil {
 		return nil, err
+	}
+	if transport := executor.directAdapter(executor.DataRoot).Documents; transport != nil {
+		return transport.DocumentFetch(ctx, target)
 	}
 	return executor.LongTail.documentFetch(ctx, target)
 }
@@ -158,30 +159,11 @@ func (executor UnifiedCapabilityExecutor) executeDocumentService(ctx context.Con
 			}
 		}
 	}
-	return executor.submitDocumentAndWait(ctx, id, dataRoot, request, options)
+	return executor.executeDocumentDirect(ctx, id, dataRoot, request, options)
 }
 
-func (executor UnifiedCapabilityExecutor) submitDocumentAndWait(ctx context.Context, id, dataRoot string, request DocumentRequest, options CapabilityExecutionOptions) (map[string]any, error) {
-	box := NewDocbox(dataRoot)
-	if err := box.Submit(request); err != nil {
-		return nil, &CapabilityExecutionError{Phase: "write", Err: err}
-	}
-	_ = WakeQueue(dataRoot, "docbox")
-	wait := options.Timeout
-	if wait <= 0 {
-		wait = 3 * time.Minute
-	}
-	var result DocumentResult
-	found, findErr := box.repository.waitResult(ctx, request.ID, wait, &result)
-	if findErr != nil {
-		if errors.Is(findErr, context.DeadlineExceeded) {
-			return nil, &CapabilityExecutionError{Phase: "write", Err: errors.New("document_update_outcome_pending")}
-		}
-		return nil, &CapabilityExecutionError{Phase: "write", Err: findErr}
-	}
-	if !found {
-		return nil, &CapabilityExecutionError{Phase: "write", Err: errors.New("document_update_outcome_pending")}
-	}
+func (executor UnifiedCapabilityExecutor) executeDocumentDirect(ctx context.Context, id, dataRoot string, request DocumentRequest, options CapabilityExecutionOptions) (map[string]any, error) {
+	result := executor.directAdapter(dataRoot).ExecuteDocument(ctx, executor.LongTail, request)
 	switch result.Status {
 	case "completed", "dry_run":
 		return map[string]any{"capabilityId": id, "response": result, "verified": result.Verified, "verificationState": result.VerificationState}, nil
@@ -222,11 +204,22 @@ func (executor UnifiedCapabilityExecutor) executeDocbox(ctx context.Context, id 
 		identity = "bot"
 	}
 	request := DocumentRequest{
-		ID: requestID, Type: "document_task", Action: "update_document", Identity: identity, Target: &target,
+		ID: requestID, OperationID: options.OperationID, Type: "document_task", Action: "update_document", Identity: identity, Target: &target,
 		Content:       DocumentContent{Format: "text", Text: content},
 		Instruction:   "先读取目标文档并创建飞书官方版本，再追加 Whiteboard，完成后复读验证",
 		VersionPolicy: "official_before_update", UpdateMode: "append", ExplicitAuthorization: true,
 		Source: "capability-service", CreatedAt: time.Now().UTC(),
 	}
-	return executor.submitDocumentAndWait(ctx, id, dataRoot, request, options)
+	return executor.executeDocumentDirect(ctx, id, dataRoot, request, options)
+}
+
+func (executor UnifiedCapabilityExecutor) directAdapter(dataRoot string) DirectExecutionAdapter {
+	if executor.Direct != nil {
+		adapter := *executor.Direct
+		if adapter.DataRoot == "" {
+			adapter.DataRoot = dataRoot
+		}
+		return adapter
+	}
+	return DirectExecutionAdapter{DataRoot: dataRoot, Sender: executor.Sender, Documents: executor.Documents}
 }
