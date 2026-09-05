@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { createApp, queryArguments, validateInput } from '../server/app.mjs';
 import { withInputFiles, LabError } from '../server/bridge.mjs';
 import { readFile, stat } from 'node:fs/promises';
-import { decision, filterCapabilities, parseFields, reportRows } from '../shared/model.mjs';
+import { browserLimit, decision, filterCapabilities, parseFields, reportRows } from '../shared/model.mjs';
 
 const capability = { id: 'im.fixture.send', domain: 'im', risk: 'write', published: true, identity: 'bot', inputFields: [{ name: 'text', type: 'string', required: true }, { name: 'file', type: 'path' }] };
 const policy = { version: 1, revision: 1, riskDefaults: { read: 'allowed', write: 'allowed' }, capabilityOverrides: {} };
@@ -14,11 +14,13 @@ async function fixture(run) {
   let permission = 'allowed';
   let clock = 1000;
   let failure = false;
+  let policyResult = { status: 'updated', policy: { ...policy, revision: 2 } };
   const bridge = { async call(args, input) {
     calls.push({ args, input });
     if (args.join(' ') === 'capability catalog') return { capabilities: [capability] };
     if (args.join(' ') === 'policy read') return { policy: { ...policy, capabilityOverrides: { [capability.id]: permission } } };
     if (args.includes('--dry-run')) return { status: 'dry_run', submitted: false };
+    if (args.join(' ').startsWith('policy update')) return policyResult;
     if (failure) throw new LabError('outcome_unknown', 'fixture timeout', 504);
     return { status: 'ok', operation: { id: 'OP-20260906000000-ABCDEF12', status: permission === 'confirm_each' ? 'awaiting_confirmation' : 'succeeded' }, challenge: permission === 'confirm_each' ? 'original-challenge' : undefined };
   } };
@@ -30,7 +32,7 @@ async function fixture(run) {
     const response = await fetch(origin + endpoint, { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', ...(withToken ? { 'X-Lab-Token': token } : {}) }, body: JSON.stringify(body) });
     return { status: response.status, data: await response.json() };
   };
-  try { await run({ post, calls, permission: value => { permission = value; }, advance: () => { clock += 120001; }, fail: () => { failure = true; } }); }
+  try { await run({ post, calls, policyResult: value => { policyResult = value; }, permission: value => { permission = value; }, advance: () => { clock += 120001; }, fail: () => { failure = true; } }); }
   finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
 }
 
@@ -102,6 +104,19 @@ test('policy update carries revision and requires explicit confirmation', () => 
   assert.deepEqual(calls.at(-1).args, ['policy', 'update', '--expected-revision', '1', '--payload-file', '-']);
 }));
 
+test('policy rejection or malformed success never replaces the current policy', () => fixture(async ({ post, policyResult }) => {
+  policyResult({ status: 'rejected', errorCode: 'capability_policy_revision_conflict' });
+  const rejection = await post('/api/policy', { policy, expectedRevision: 1, acknowledge: true });
+  assert.equal(rejection.status, 409);
+  assert.equal(rejection.data.error, 'policy_not_updated');
+  policyResult({ status: 'updated' });
+  assert.equal((await post('/api/policy', { policy, expectedRevision: 1, acknowledge: true })).status, 409);
+}));
+
+test('inherited object properties cannot become query commands', () => {
+  for (const kind of ['constructor', 'toString', '__proto__']) assert.throws(() => queryArguments({ kind }));
+});
+
 test('file handling uses private temporary files and cleans up on failure', async () => {
   let filename;
   const files = { file: { name: '../../fixture.txt', data: Buffer.from('fixture').toString('base64') } };
@@ -118,6 +133,8 @@ test('file handling uses private temporary files and cleans up on failure', asyn
 });
 
 test('display decisions never mistake missing policy or unknown scope for allowed', () => {
+  assert.equal(browserLimit(capability), '');
+  assert.match(browserLimit({ inputFields: [{ name: 'output', type: 'path', required: true }] }), /原生 CLI/);
   assert.equal(decision(capability, null).value, 'unknown');
   assert.equal(decision(capability, { ...policy, capabilityOverrides: { [capability.id]: 'disabled' } }).value, 'disabled');
   assert.equal(filterCapabilities([capability], { permission: 'allowed', query: 'fixture' }, policy).length, 1);

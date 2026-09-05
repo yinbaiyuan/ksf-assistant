@@ -2,6 +2,11 @@ export const decisionLabels = { allowed: '直接放行', disabled: '禁止', con
 export const riskLabels = { read: '只读', write: '写入', 'high-impact-write': '高影响写入', 'remote-operation': '远端操作', destructive: '破坏性' };
 export const terminalStates = new Set(['succeeded', 'failed', 'expired', 'cancelled', 'outcome_unknown']);
 
+export function browserLimit(capability) {
+  return capability.inputFields?.some(field => field.type === 'path' && field.required && /^(output|output-dir|output-file|out)$/.test(field.name))
+    ? '此能力要求本地输出文件。实验台不开放服务器输出路径，请使用原生 CLI 指定输出目录；这里仍可查看契约和治理规则。' : '';
+}
+
 export function decision(capability, policy) {
   if (capability.published === false) return { value: 'disabled', source: '未发布' };
   if (!policy) return { value: 'unknown', source: '请读取当前治理策略' };
@@ -37,5 +42,5 @@ export function parseFields(fields, values) {
 }
 
 export function reportRows(history) {
-  return history.map(row => ({ time: row.time, capabilityId: row.capabilityId, operationId: row.operationId || null, status: row.status, elapsedMs: row.elapsedMs, note: '不包含输入、正文、目标、结果或审批 challenge' }));
+  return history.map(row => ({ time: row.time, capabilityId: row.capabilityId, operationId: row.operationId || null, requestId: row.requestId || null, status: row.status, elapsedMs: row.elapsedMs, note: '不包含输入、正文、目标、结果或审批 challenge' }));
 }

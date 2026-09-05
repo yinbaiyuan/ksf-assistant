@@ -50,6 +50,7 @@ macOS 与 Windows 安装包都只携带 Go 飞书服务与固定版 `lark-cli`�
 - [架构说明](docs/ARCHITECTURE.md)
 - [产品身份与升级](docs/architecture/product-identity-migration.md)
 - [开发者构建说明](docs/CONTRIBUTING_BUILD.md)
+- [Vue 3 飞书人工测试台](FeishuLab/README.md)（开发工具，不随桌面包自动启动）
 - [第三方依赖声明](THIRD_PARTY_NOTICES.md)
 
 本轮只准备源码与预览资产，不创建公开远端、不推送或发布。未来公开仓库将从审计通过的工作树导出干净快照并创建单一首提交，不携带当前私有 Git 历史、remote、refs、reflog 或对象库。

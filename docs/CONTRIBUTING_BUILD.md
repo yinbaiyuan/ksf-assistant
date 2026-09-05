@@ -13,6 +13,8 @@ macOS 与 Windows 安装包都会携带运行所需的 Go 飞书服务和固定�
 
 ## 验证
 
+可选 Vue 3 飞书人工测试台需要 Node.js 22+：`npm --prefix FeishuLab ci`、`npm --prefix FeishuLab run check`。启动、客户端路径和隔离验收步骤见 [FeishuLab](../FeishuLab/README.md)。它不加入桌面安装包，也不替换 Go 飞书服务。
+
 统一入口为 `bash scripts/run-tests.sh`。Swift 测试只支持 Swift Package Manager / XCTest，不再支持缺少 SDK PlatformPath 时的旧 standalone 兜底分支；工具链不满足要求时立即报错，不切换旧测试。身份迁移、Core 管道和 AppKit 退出链路的独立隔离测试仍是正式测试，继续保留。应用包本身的构建方式不因测试入口收敛而改变。
 
 产品身份与迁移边界见 [产品身份与升级](architecture/product-identity-migration.md)。改名回归先运行 `node scripts/check-product-identity.mjs` 与 `bash scripts/test-identity-migration.sh`。

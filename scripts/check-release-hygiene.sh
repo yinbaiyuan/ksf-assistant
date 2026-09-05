@@ -16,8 +16,11 @@ for pattern in "$personal_user" "$personal_bundle" "$personal_certificate" "$leg
         --glob '!scripts/check-release-hygiene.sh' \
         --glob '!Windows/node_modules/**' \
         --glob '!Windows/dist/**' \
+        --glob '!FeishuLab/node_modules/**' \
+        --glob '!FeishuLab/dist/**' \
+        --glob '!FeishuLab/output/**' \
         --fixed-strings "$pattern" \
-        Sources Resources Core Windows docs scripts Services runtime Package.swift README.md PRODUCT.md DESIGN.md AGENTS.md \
+        Sources Resources Core Windows FeishuLab docs scripts Services runtime Package.swift README.md PRODUCT.md DESIGN.md AGENTS.md \
         CONTRIBUTING.md SECURITY.md PRIVACY.md SUPPORT.md CODE_OF_CONDUCT.md THIRD_PARTY_NOTICES.md; then
         echo "Release hygiene failed: found forbidden machine-specific value '$pattern'." >&2
         exit 1

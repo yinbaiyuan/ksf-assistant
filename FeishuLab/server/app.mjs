@@ -33,7 +33,7 @@ async function readBody(request) {
 export function queryArguments(body) {
   exact(body, ['kind', 'limit', 'id', 'box', 'fingerprint']);
   const fixed = { catalog: ['capability', 'catalog'], capabilities: ['capabilities'], policy: ['policy', 'read'], status: ['status'], snapshot: ['snapshot'], doctor: ['doctor'], permissions: ['permissions'], targets: ['targets', 'list'], links: ['task-link', 'list'], eventCatalog: ['events', 'catalog'], eventStatus: ['events', 'status'] };
-  if (fixed[body.kind]) return fixed[body.kind];
+  if (Object.hasOwn(fixed, body.kind)) return fixed[body.kind];
   if (body.kind === 'events') return ['events', 'recent', '--limit', bound(body.limit)];
   if (body.kind === 'event') {
     reject(typeof body.fingerprint !== 'string' || !/^[a-zA-Z0-9:_-]{8,160}$/.test(body.fingerprint), '事件指纹无效。');
@@ -169,6 +169,7 @@ export function createApp({ bridge, staticHandler, now = Date.now } = {}) {
         reject(Object.keys(body.policy.capabilityOverrides).some(id => !capabilities.some(item => item.id === id)), '策略含未知能力。');
         reject(Object.values(body.policy.riskDefaults).concat(Object.values(body.policy.capabilityOverrides)).some(value => !['allowed', 'disabled', 'confirm_each'].includes(value)), '治理决策无效。');
         result = await call(['policy', 'update', '--expected-revision', String(body.expectedRevision), '--payload-file', '-'], JSON.stringify(body.policy), controller.signal);
+        if (result?.status !== 'updated' || !object(result.policy) || !Number.isSafeInteger(result.policy.revision) || result.policy.revision <= body.expectedRevision) throw new LabError('policy_not_updated', '服务未确认策略更新。请重新读取策略、核对 revision 与差异后再提交。', 409);
       } else throw new LabError('not_found', '不支持此接口。', 404);
       if (!response.destroyed) send(response, 200, result);
     } catch (error) {

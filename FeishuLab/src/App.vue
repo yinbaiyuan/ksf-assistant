@@ -13,6 +13,7 @@ const tabs = { catalog: ['能力实验', '选择能力，校验参数，再发�
 const tab = ref('catalog'), catalog = ref([]), policy = ref(null), snapshot = ref(null), selectedId = ref(''), busy = ref(false), errors = ref([]), updated = ref(null), page = ref(1), history = ref([]), cases = ref([]), seed = ref(null), favorites = ref([]), onlyFavorites = ref(false);
 const filters = reactive({ query: '', domain: '', identity: '', risk: '', permission: '' });
 const selected = computed(() => catalog.value.find(item => item.id === selectedId.value));
+const latestRecord = computed(() => history.value.find(row => row.capabilityId === selectedId.value));
 const domains = computed(() => [...new Set(catalog.value.map(item => item.domain))].sort());
 const filtered = computed(() => filterCapabilities(catalog.value, filters, policy.value).filter(item => !onlyFavorites.value || favorites.value.includes(item.id)));
 const pageCount = computed(() => Math.max(1, Math.ceil(filtered.value.length / 25)));
@@ -74,7 +75,7 @@ onMounted(refresh);
           <div v-else-if="!visible.length" class="empty-state"><h3>没有匹配能力</h3><p>试试清空关键词或放宽筛选。明确排除项可在服务诊断查看。</p></div>
           <button v-for="item in visible" :key="item.id" class="capability-row" :class="{ selected: selectedId === item.id }" :aria-pressed="selectedId === item.id" @click="selectedId = item.id"><div><span class="domain-label">{{ item.domain }}</span><span class="small">{{ riskLabels[item.risk] }} · {{ item.identity }}</span></div><strong>{{ item.id.split('.').slice(1).join(' / ') }}</strong><code>{{ item.id }}</code><span class="row-decision" :class="decision(item, policy).value">{{ decisionLabels[decision(item, policy).value] }}<span v-if="favorites.includes(item.id)"> · 已收藏</span></span></button>
           <footer class="pagination"><button :disabled="page <= 1" @click="page--">上一页</button><span>{{ page }} / {{ pageCount }}</span><button :disabled="page >= pageCount" @click="page++">下一页</button></footer>
-        </section><div class="inspector"><div v-if="selected" class="inspector-tools"><span class="small">请求只驻留当前会话</span><button class="quiet" @click="favorite">{{ favorites.includes(selectedId) ? '取消收藏' : '收藏能力' }}</button></div><Workbench v-if="selected" :key="selected.id" :capability="selected" :policy="policy" :seed="seed" @result="record" @save-case="saveCase" /><div v-else class="empty-state"><h2>从能力目录开始</h2><p>选择一项能力，检查它的风险、身份和输入，再进行人工测试。</p></div></div></div>
+        </section><div class="inspector"><div v-if="selected" class="inspector-tools"><span class="small">请求只驻留当前会话</span><button class="quiet" @click="favorite">{{ favorites.includes(selectedId) ? '取消收藏' : '收藏能力' }}</button></div><Workbench v-if="selected" :key="selected.id" :capability="selected" :policy="policy" :seed="seed" :latest-record="latestRecord" @result="record" @save-case="saveCase" /><div v-else class="empty-state"><h2>从能力目录开始</h2><p>选择一项能力，检查它的风险、身份和输入，再进行人工测试。</p></div></div></div>
         <section v-if="cases.length" class="session-cases"><div class="section-heading"><h3>会话用例 · {{ cases.length }}/12</h3><button class="quiet" @click="cases = []">清空用例</button></div><p class="hint">只存内存，不保存文件内容；刷新页面即清除。加载后仍需重新校验。</p><div class="case-list"><button v-for="item in cases" :key="item.id" @click="useCase(item)">{{ item.name }}</button></div></section>
       </section>
       <Permissions v-if="tab === 'permissions'" />

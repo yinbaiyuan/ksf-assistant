@@ -2,6 +2,10 @@
 
 The generated SPDX 2.3 SBOM is the machine-readable dependency inventory. This file highlights packages distributed with or linked into preview artifacts; upstream license files remain authoritative.
 
+## Optional FeishuLab development tool
+
+The separate Vue 3 manual testing workspace uses Vue 3.5.39 (MIT), Vite 7.3.5 (MIT), and `@vitejs/plugin-vue` 6.0.7 (MIT). Versions and transitive packages are pinned in `FeishuLab/package-lock.json`; package license files remain authoritative. This development workspace and its Node adapter are not bundled into the desktop application.
+
 ## Lark/Feishu Go SDK
 
 Source: [larksuite/oapi-sdk-go](https://github.com/larksuite/oapi-sdk-go)
