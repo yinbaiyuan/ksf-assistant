@@ -75,7 +75,10 @@ func ConfigureExistingApp(ctx context.Context, runner CapabilityExecutor, appID,
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"status": "configured", "flow": "existing-app", "profile": profile, "brand": brand, "larkCliProfile": "configured", "windowsSdkCredential": "not_required", "next": "run_auth_start_user_for_qr_oauth"}, nil
+	if err := storePlatformOfficialCredentials(runner.DataRoot, appID, appSecret, brand); err != nil {
+		return nil, err
+	}
+	return map[string]any{"status": "configured", "flow": "existing-app", "profile": profile, "brand": brand, "larkCliProfile": "configured", "sdkCredential": platformOfficialCredentialStatus(), "next": "run_auth_start_user_for_qr_oauth"}, nil
 }
 
 func StartAppConfiguration(ctx context.Context, runner CapabilityExecutor, dataRoot, profile string, createNew bool) (map[string]any, error) {

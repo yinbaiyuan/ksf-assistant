@@ -1,7 +1,7 @@
 'use strict';
 
 const { app, BrowserWindow, Tray, Menu, dialog, ipcMain, nativeImage, screen, shell } = require('electron');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -9,7 +9,6 @@ const { CoreClient } = require('./core-client.cjs');
 const { ConfigStore } = require('./config-store.cjs');
 const { taskURL, clamp, isPathInside } = require('./security.cjs');
 const { buildTrayStatus, trayIconDataURL } = require('./tray-status.cjs');
-const { deployFeishuService, removeLegacyWindowsService } = require('./feishu-service-deployment.cjs');
 
 const APP_WIDTH = 392;
 let window = null;
@@ -86,33 +85,22 @@ function createTray() {
 function feishuRuntime() {
   const arch = process.arch === 'arm64' ? 'windows-arm64' : 'windows-x64';
   const repoRoot = path.resolve(__dirname, '..', '..');
-  const serviceRoot = app.isPackaged
-    ? path.join(process.resourcesPath, 'services', 'feishu-bridge')
-    : path.join(repoRoot, 'Services', 'FeishuBridge');
-  const bundledNode = app.isPackaged
-    ? path.join(process.resourcesPath, 'runtime', 'node', arch, 'node.exe')
-    : path.join(repoRoot, 'dist', 'runtime', 'node', arch, 'node.exe');
   const bundledBridge = app.isPackaged
     ? path.join(process.resourcesPath, 'runtime', 'feishu-bridge', arch, 'codex-feishu-bridge.exe')
     : path.join(repoRoot, 'dist', 'runtime', 'feishu-bridge', arch, 'codex-feishu-bridge.exe');
   const bundledLarkCLI = app.isPackaged
     ? path.join(process.resourcesPath, 'runtime', 'lark-cli', arch, 'lark-cli.exe')
     : path.join(repoRoot, 'dist', 'runtime', 'lark-cli', arch, 'lark-cli.exe');
-  const packaged = {
-    serviceRoot,
-    node: fs.existsSync(bundledNode) ? bundledNode : (process.env.CODEX_USAGE_BAR_NODE || 'node.exe'),
-    bridge: fs.existsSync(bundledBridge) ? bundledBridge : '',
-    larkCLI: fs.existsSync(bundledLarkCLI) ? bundledLarkCLI : '',
-  };
-  if (!app.isPackaged) return packaged;
-  const deployed = deployFeishuService({
-    sourceServiceRoot: serviceRoot,
-    sourceNode: bundledNode,
-    dataRoot: app.getPath('userData'),
-    productVersion: app.getVersion(),
-  });
-  removeLegacyWindowsService(deployed);
-  return { ...deployed, bridge: bundledBridge, larkCLI: bundledLarkCLI };
+	return {
+		bridge: fs.existsSync(bundledBridge) ? bundledBridge : '',
+		larkCLI: fs.existsSync(bundledLarkCLI) ? bundledLarkCLI : '',
+	};
+}
+
+function removeLegacyFeishuScheduledTask() {
+	if (process.platform !== 'win32') return;
+	spawnSync('schtasks.exe', ['/End', '/TN', 'FeishuBotBridge'], { windowsHide: true, stdio: 'ignore', timeout: 10_000 });
+	spawnSync('schtasks.exe', ['/Delete', '/F', '/TN', 'FeishuBotBridge'], { windowsHide: true, stdio: 'ignore', timeout: 10_000 });
 }
 
 function updateTrayStatus(snapshot) {
@@ -325,15 +313,14 @@ function migrateLegacySettings(currentSettingsPath) {
 app.whenReady().then(async () => {
   const settingsPath = path.join(app.getPath('userData'), 'settings.json');
   migrateLegacySettings(settingsPath);
-  store = new ConfigStore(settingsPath);
-  const runtime = feishuRuntime();
+	store = new ConfigStore(settingsPath);
+	removeLegacyFeishuScheduledTask();
+	const runtime = feishuRuntime();
   core = new CoreClient({
     executablePath: coreExecutablePath(),
     env: {
       CODEX_USAGE_BAR_MANAGED: '1',
-      CODEX_USAGE_BAR_FEISHU_SERVICE_ROOT: runtime.serviceRoot,
-      CODEX_USAGE_BAR_NODE: runtime.node,
-      CODEX_USAGE_BAR_FEISHU_BRIDGE: process.env.CODEX_USAGE_BAR_FEISHU_GO_PREVIEW === '1' ? runtime.bridge : '',
+			CODEX_USAGE_BAR_FEISHU_BRIDGE: runtime.bridge,
       CODEX_USAGE_BAR_LARK_CLI: runtime.larkCLI,
       FEISHU_BRIDGE_DATA_DIR: path.join(os.homedir(), '.config', 'feishu-bridge'),
     },

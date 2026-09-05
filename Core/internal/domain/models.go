@@ -346,7 +346,6 @@ type FeishuTaskLink struct {
 	TurnOwner         string         `json:"turnOwner"`
 	ActionRequired    string         `json:"actionRequired"`
 	Controls          FeishuControls `json:"controls"`
-	State             string         `json:"state"`
 	CreatedAt         string         `json:"createdAt"`
 	UpdatedAt         string         `json:"updatedAt"`
 	ExpiresAt         string         `json:"expiresAt"`
@@ -358,22 +357,44 @@ type FeishuTaskLink struct {
 }
 
 type FeishuSnapshot struct {
-	Availability            string           `json:"availability"`
-	Message                 string           `json:"message,omitempty"`
-	ProcessState            string           `json:"processState"`
-	Configured              bool             `json:"configured"`
-	ProcessPID              int              `json:"processPid"`
-	RestartCount            int              `json:"restartCount"`
-	LastError               string           `json:"lastError,omitempty"`
-	Profile                 string           `json:"profile,omitempty"`
-	ProfileValid            bool             `json:"profileValid"`
-	InboundConnection       bool             `json:"inboundConnection"`
-	ProcessRunning          bool             `json:"processRunning"`
-	TargetAliases           []string         `json:"targetAliases"`
-	TaskLinkProtocolVersion int              `json:"taskLinkProtocolVersion"`
-	TaskLinkReady           bool             `json:"taskLinkReady"`
-	ReadinessBlockers       []string         `json:"readinessBlockers"`
-	Links                   []FeishuTaskLink `json:"links"`
+	Revision                uint64                      `json:"revision"`
+	RuntimeKind             string                      `json:"runtimeKind,omitempty"`
+	Capabilities            map[string]CapabilityHealth `json:"capabilities,omitempty"`
+	Availability            string                      `json:"availability"`
+	Message                 string                      `json:"message,omitempty"`
+	ProcessState            string                      `json:"processState"`
+	Configured              bool                        `json:"configured"`
+	ProcessPID              int                         `json:"processPid"`
+	RestartCount            int                         `json:"restartCount"`
+	LastError               string                      `json:"lastError,omitempty"`
+	LastDiagnosticAt        string                      `json:"lastDiagnosticAt,omitempty"`
+	LastDiagnosticCode      string                      `json:"lastDiagnosticCode,omitempty"`
+	LastDiagnosticSummary   string                      `json:"lastDiagnosticSummary,omitempty"`
+	Profile                 string                      `json:"profile,omitempty"`
+	ProfileValid            bool                        `json:"profileValid"`
+	InboundConnection       bool                        `json:"inboundConnection"`
+	ProcessRunning          bool                        `json:"processRunning"`
+	TargetAliases           []string                    `json:"targetAliases"`
+	TaskLinkProtocolVersion int                         `json:"taskLinkProtocolVersion"`
+	TaskLinkReady           bool                        `json:"taskLinkReady"`
+	ReadinessBlockers       []string                    `json:"readinessBlockers"`
+	Links                   []FeishuTaskLink            `json:"links"`
+	Queues                  map[string]QueueHealth      `json:"queues,omitempty"`
+}
+
+type CapabilityHealth struct {
+	State  string `json:"state"`
+	Detail string `json:"detail,omitempty"`
+}
+
+type QueueHealth struct {
+	State     string `json:"state"`
+	Revision  uint64 `json:"revision,omitempty"`
+	Pending   int    `json:"pending"`
+	Running   int    `json:"running,omitempty"`
+	Terminal  int    `json:"terminal,omitempty"`
+	Processed int    `json:"processed"`
+	LastError string `json:"lastError,omitempty"`
 }
 
 // FeishuSettingsOverview is the safe, user-facing projection for the setup UI.

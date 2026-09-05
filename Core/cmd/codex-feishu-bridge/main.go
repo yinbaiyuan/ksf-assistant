@@ -10,12 +10,16 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"codexusagebar/core/internal/corebridge"
+	"codexusagebar/core/internal/domain"
 	"codexusagebar/core/internal/feishu"
+	"codexusagebar/core/internal/privateipc"
 )
 
 const version = "0.10.0-preview.1"
@@ -61,103 +65,268 @@ func run(arguments []string) error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	var actionbox *feishu.Actionbox
+	executor := feishu.CapabilityExecutor{Binary: strings.TrimSpace(os.Getenv("LARK_CLI_BIN")), Profile: strings.TrimSpace(os.Getenv("LARK_CLI_PROFILE")), DataRoot: dataRoot, WorkingDirectory: dataRoot}
+	serviceExecutor := feishu.UnifiedCapabilityExecutor{LongTail: executor, DataRoot: dataRoot}
+	capabilityService := feishu.NewCapabilityService(dataRoot, serviceExecutor, nil)
+	rpcServer := newBridgeRPCServer(dataRoot, settings, capabilityService)
+	peer := privateipc.NewPeer(os.Stdin, os.Stdout, rpcServer)
+	coreClient := newCoreCapabilityClient(peer)
+	rpcServer.setRuntime(nil, nil, coreClient)
+	parentClosed := make(chan error, 1)
+	go func() { parentClosed <- peer.Serve(ctx) }()
+
+	taskLinks := feishu.NewTaskLinkStore(dataRoot)
+	_, _ = taskLinks.CleanupAt(time.Now().UTC())
+	go runTaskLinkCleanup(ctx, taskLinks)
+	go feishu.RunLifecycleMaintenance(ctx, dataRoot)
 	var docbox *feishu.Docbox
 	var outbox *feishu.Outbox
-	executor := feishu.CapabilityExecutor{Binary: strings.TrimSpace(os.Getenv("LARK_CLI_BIN")), Profile: strings.TrimSpace(os.Getenv("LARK_CLI_PROFILE")), DataRoot: dataRoot, WorkingDirectory: dataRoot}
+	_ = capabilityService.RecoverInterrupted(1000)
 	if settings.Actionbox.Enabled {
-		actionbox = feishu.NewActionbox(dataRoot)
-		go runActionbox(ctx, actionbox, executor)
+		go runOperationReconciliation(ctx, capabilityService)
 	}
 	if settings.Docbox.Enabled {
 		docbox = feishu.NewDocbox(dataRoot)
-		go runDocbox(ctx, docbox, executor, settings.Docbox.DryRun)
 	}
 	var credentials feishu.OfficialCredentials
 	if settings.Profile == feishu.ProfilePrimary || settings.Outbound.Enabled {
 		credentials, err = feishu.LoadOfficialCredentials()
-		if err != nil {
-			return fmt.Errorf("load Feishu credentials: %w", err)
-		}
 	}
 	var messageClient *feishu.OfficialMessageClient
-	if settings.Profile == feishu.ProfilePrimary || settings.Outbound.Enabled {
+	if err == nil && (settings.Profile == feishu.ProfilePrimary || settings.Outbound.Enabled) {
 		messageClient, err = feishu.NewOfficialMessageClient(credentials.AppID, credentials.AppSecret)
-		if err != nil {
-			return err
-		}
 	}
-	if settings.Outbound.Enabled {
+	rpcServer.setRuntime(messageClient, nil, coreClient)
+	controlInbox := feishu.NewControlInbox(dataRoot)
+	go runBridgeControlInbox(ctx, controlInbox, rpcServer)
+	if settings.Outbound.Enabled && messageClient != nil {
 		outbox = feishu.NewOutbox(dataRoot)
-		go runOutbox(ctx, outbox, messageClient, settings.Outbound.DryRun)
 	}
-	wakeHandlers := map[string]func(){}
-	if actionbox != nil {
-		wakeHandlers["actionbox"] = func() { _ = actionbox.Process(ctx, executor) }
+	scheduler := feishu.NewWorkScheduler(dataRoot)
+	if settings.Actionbox.Enabled {
+		scheduler.RegisterCapabilityService(capabilityService)
 	}
 	if docbox != nil {
-		wakeHandlers["docbox"] = func() { _ = docbox.Process(ctx, executor, settings.Docbox.DryRun) }
+		scheduler.RegisterDocbox(docbox, executor, settings.Docbox.DryRun)
 	}
 	if outbox != nil {
-		wakeHandlers["outbox"] = func() { _ = outbox.Process(ctx, messageClient, settings.Outbound.DryRun) }
+		scheduler.RegisterOutbox(outbox, messageClient, settings.Outbound.DryRun)
+	}
+	go func() {
+		if schedulerErr := scheduler.Run(ctx); schedulerErr != nil && !errors.Is(schedulerErr, context.Canceled) {
+			_ = feishu.NewAuditLog(dataRoot).Record("work_scheduler_stopped", map[string]any{"error": schedulerErr.Error()})
+		}
+	}()
+	wakeHandlers := map[string]func(){}
+	if settings.Actionbox.Enabled {
+		wakeHandlers["actionbox"] = scheduler.Wake
+	}
+	if docbox != nil {
+		wakeHandlers["docbox"] = scheduler.Wake
+	}
+	if outbox != nil {
+		wakeHandlers["outbox"] = scheduler.Wake
 	}
 	wakeServer, err := feishu.StartWakeServer(dataRoot, wakeHandlers)
 	if err != nil {
-		return fmt.Errorf("start queue wake server: %w", err)
+		_ = feishu.NewAuditLog(dataRoot).Record("queue_wake_degraded", map[string]any{"error": err.Error()})
 	}
 	if wakeServer != nil {
 		defer wakeServer.Close(context.Background())
 	}
 	var inbound *feishu.OfficialInbound
-	inboundErrors := make(chan error, 1)
-	if settings.Profile == feishu.ProfilePrimary {
+	if settings.Profile == feishu.ProfilePrimary && messageClient != nil {
 		eventState := feishu.NewEventConsumerStateStore(dataRoot)
 		_ = eventState.UpdateConnection(settings.Profile, "starting")
 		defer eventState.UpdateConnection(settings.Profile, "disconnected")
-		runtimeHandler, err := newInboundRuntime(dataRoot, messageClient)
-		if err != nil {
-			return fmt.Errorf("initialize Codex inbound runtime: %w", err)
-		}
-		defer runtimeHandler.Close()
-		processor, err := feishu.NewInboundProcessor(dataRoot, settings, runtimeHandler.HandleMessage, runtimeHandler.HandleCard)
-		if err != nil {
-			return err
-		}
-		if err := processor.Recover(ctx); err != nil {
-			return fmt.Errorf("recover persisted Feishu inbound work: %w", err)
-		}
-		go runInboundRecovery(ctx, processor)
-		go runTaskCardReconciliation(ctx, runtimeHandler)
-		if err := runtimeHandler.ResumeActive(); err != nil {
-			return fmt.Errorf("resume active Codex task links: %w", err)
-		}
-		inbound, err = feishu.NewOfficialInbound(credentials.AppID, credentials.AppSecret, func(_ context.Context, eventKey string, payload []byte) error {
-			if err := processor.Handle(context.Background(), eventKey, payload); err != nil {
-				return err
+		runtimeHandler, runtimeErr := newInboundRuntime(dataRoot, messageClient, coreClient)
+		if runtimeErr == nil {
+			rpcServer.setRuntime(messageClient, runtimeHandler, coreClient)
+			defer runtimeHandler.Close()
+			processor, processorErr := feishu.NewInboundProcessor(dataRoot, settings, runtimeHandler.HandleMessage, runtimeHandler.HandleCard)
+			if processorErr == nil {
+				if recoverErr := processor.Recover(ctx); recoverErr != nil {
+					_ = feishu.NewAuditLog(dataRoot).Record("inbound_recovery_degraded", map[string]any{"error": recoverErr.Error()})
+				}
+				go runInboundRecovery(ctx, processor)
+				go runTaskCardReconciliation(ctx, runtimeHandler)
+				if resumeErr := runtimeHandler.ResumeActive(); resumeErr != nil {
+					_ = feishu.NewAuditLog(dataRoot).Record("task_link_resume_degraded", map[string]any{"error": resumeErr.Error()})
+				}
+				inbound, err = feishu.NewOfficialInbound(credentials.AppID, credentials.AppSecret, func(_ context.Context, eventKey string, payload []byte) error {
+					if eventKey == feishu.MailMessageReceivedEvent && !rpcServer.mailEventsEnabled() {
+						return nil
+					}
+					if err := processor.Handle(context.Background(), eventKey, payload); err != nil {
+						return err
+					}
+					_ = eventState.MarkReceived(eventKey)
+					return nil
+				}, func(state string) { _ = eventState.UpdateConnection(settings.Profile, state) })
+				if err == nil {
+					go func() {
+						if inboundErr := inbound.Start(ctx); inboundErr != nil && !errors.Is(inboundErr, context.Canceled) {
+							_ = eventState.UpdateConnection(settings.Profile, "disconnected")
+							_ = feishu.NewAuditLog(dataRoot).Record("feishu_inbound_degraded", map[string]any{"error": inboundErr.Error()})
+						}
+					}()
+					defer inbound.Close()
+				}
 			}
-			_ = eventState.MarkReceived(eventKey)
-			return nil
-		}, func(state string) { _ = eventState.UpdateConnection(settings.Profile, state) })
-		if err != nil {
-			return err
+		} else {
+			_ = feishu.NewAuditLog(dataRoot).Record("codex_workflow_degraded", map[string]any{"error": runtimeErr.Error()})
 		}
-		go func() { inboundErrors <- inbound.Start(ctx) }()
-		defer inbound.Close()
 	}
-	parentClosed := make(chan struct{})
-	go func() {
-		_, _ = io.Copy(io.Discard, os.Stdin)
-		close(parentClosed)
-	}()
+	_ = peer.Notify(context.Background(), corebridge.MethodBridgeSnapshotPush, rpcServer.snapshot(context.Background()))
+	go runBridgeSnapshotPublisher(ctx, peer, rpcServer)
 	select {
 	case <-ctx.Done():
-	case <-parentClosed:
-	case err := <-inboundErrors:
-		if err != nil && !errors.Is(err, context.Canceled) {
-			return fmt.Errorf("Feishu inbound stopped: %w", err)
+	case peerErr := <-parentClosed:
+		if peerErr != nil && !errors.Is(peerErr, context.Canceled) {
+			return peerErr
 		}
 	}
 	return nil
+}
+
+func runBridgeSnapshotPublisher(ctx context.Context, peer *privateipc.Peer, server *bridgeRPCServer) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	var previous string
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			snapshot := server.snapshot(ctx)
+			comparable := snapshot
+			comparable.Revision = 0
+			encoded, _ := json.Marshal(comparable)
+			if string(encoded) == previous {
+				continue
+			}
+			previous = string(encoded)
+			_ = peer.Notify(ctx, corebridge.MethodBridgeSnapshotPush, snapshot)
+		}
+	}
+}
+
+func runTaskLinkCleanup(ctx context.Context, store feishu.TaskLinkStore) {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			_, _ = store.CleanupAt(now.UTC())
+		}
+	}
+}
+
+func runBridgeControlInbox(ctx context.Context, inbox *feishu.ControlInbox, server *bridgeRPCServer) {
+	process := func() {
+		_ = inbox.Process(ctx, func(callCtx context.Context, request feishu.ControlRequest) error {
+			_, err := server.interruptTaskLink(callCtx, request.TaskKey)
+			return err
+		})
+	}
+	process()
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			process()
+		}
+	}
+}
+
+func clientAggregateSnapshot(dataRoot string, settings feishu.Settings) (domain.FeishuSnapshot, error) {
+	present, alive, pid, _, err := feishu.InstanceStatus(dataRoot)
+	if err != nil {
+		return domain.FeishuSnapshot{}, err
+	}
+	processState := "stopped"
+	if alive {
+		processState = "running"
+	} else if present {
+		processState = "stale"
+	}
+	setup, setupErr := feishu.NewSetupStore(dataRoot).Load()
+	configured := setupErr == nil && setup.Stage == feishu.SetupReady
+
+	eventState, _ := feishu.NewEventConsumerStateStore(dataRoot).Read()
+	connection, _ := eventState["connection"].(map[string]any)
+	inboundConnected := stringValue(connection["state"]) == "connected"
+
+	aliases := []string{}
+	config, configErr := feishu.NewClientConfigStore(dataRoot).Load()
+	if configErr == nil {
+		for alias, target := range config.MessageTargets {
+			if target.Type == "open_id" && containsString(config.DirectAllowedAliases, alias) {
+				aliases = append(aliases, alias)
+			}
+		}
+	}
+	sort.Strings(aliases)
+
+	links := []domain.FeishuTaskLink{}
+	file, linksErr := feishu.NewTaskLinkStore(dataRoot).Load()
+	if linksErr == nil {
+		encoded, _ := json.Marshal(feishu.PublicLinks(file.Links))
+		_ = json.Unmarshal(encoded, &links)
+	}
+
+	capabilities := map[string]domain.CapabilityHealth{
+		"feishuInbound":  {State: "unavailable"},
+		"feishuOutbound": {State: "unavailable"},
+		"codexAppServer": {State: "unavailable", Detail: "requires managed CodexAssistant Core"},
+		"desktopIPC":     {State: "unavailable", Detail: "requires managed CodexAssistant Core"},
+		"ksfContext":     {State: "unavailable", Detail: "requires managed CodexAssistant Core"},
+		"larkCLI":        {State: "disabled"},
+		"outbox":         {State: switchState(settings.Outbound.Enabled)},
+		"docbox":         {State: switchState(settings.Docbox.Enabled)},
+		"actionbox":      {State: switchState(settings.Actionbox.Enabled)},
+	}
+	if settings.Profile != feishu.ProfilePrimary {
+		capabilities["feishuInbound"] = domain.CapabilityHealth{State: "disabled"}
+	} else if inboundConnected {
+		capabilities["feishuInbound"] = domain.CapabilityHealth{State: "ready"}
+	} else if alive {
+		capabilities["feishuInbound"] = domain.CapabilityHealth{State: "degraded"}
+	}
+	if settings.Outbound.Enabled && alive {
+		capabilities["feishuOutbound"] = domain.CapabilityHealth{State: "ready"}
+	} else if settings.Outbound.Enabled {
+		capabilities["feishuOutbound"] = domain.CapabilityHealth{State: "degraded"}
+	} else {
+		capabilities["feishuOutbound"] = domain.CapabilityHealth{State: "disabled"}
+	}
+	probe := feishu.ProbeLarkCLI(context.Background(), strings.TrimSpace(os.Getenv("LARK_CLI_BIN")))
+	capabilities["larkCLI"] = domain.CapabilityHealth{State: probe.State, Detail: probe.Detail}
+
+	availability := "stopped"
+	message := "飞书服务未运行。"
+	if alive {
+		availability, message = "ready", ""
+		if !settings.Outbound.Enabled {
+			availability, message = "unavailable", "飞书服务尚未启用主动出站。"
+		} else if settings.Outbound.DryRun {
+			availability = "dryRun"
+		}
+	}
+	ready := alive && settings.Outbound.Enabled && !settings.Outbound.DryRun
+	return domain.FeishuSnapshot{
+		RuntimeKind: "go", Availability: availability, Message: message,
+		ProcessState: processState, Configured: configured, ProcessPID: pid, ProcessRunning: alive,
+		Profile: settings.Profile, ProfileValid: settings.Profile == feishu.ProfilePrimary || settings.Profile == feishu.ProfileManualOnly,
+		InboundConnection: inboundConnected, TargetAliases: aliases,
+		TaskLinkProtocolVersion: 2, TaskLinkReady: ready, ReadinessBlockers: taskLinkBlockers(settings),
+		Links: links, Capabilities: capabilities, Queues: publicQueueHealth(feishu.QueueHealthSnapshot(dataRoot, settings)),
+	}, nil
 }
 
 // runClient is the stable native replacement for `node scripts/bridge-client.js`.
@@ -170,9 +339,11 @@ func runClient(dataRoot string, settings feishu.Settings, arguments []string) er
 	write := func(value any) error { return json.NewEncoder(os.Stdout).Encode(value) }
 	store := feishu.NewTaskLinkStore(dataRoot)
 	authRunner := feishu.CapabilityExecutor{Binary: strings.TrimSpace(os.Getenv("LARK_CLI_BIN")), Profile: strings.TrimSpace(os.Getenv("LARK_CLI_PROFILE")), DataRoot: dataRoot, WorkingDirectory: dataRoot}
+	serviceRunner := feishu.UnifiedCapabilityExecutor{LongTail: authRunner, DataRoot: dataRoot}
+	capabilityService := feishu.NewCapabilityService(dataRoot, serviceRunner, nil)
 	switch arguments[0] {
 	case "help":
-		return write(map[string]any{"usage": []string{"codex-feishu-bridge client status|doctor", "codex-feishu-bridge client targets init|list|set|remove", "codex-feishu-bridge client send ...", "codex-feishu-bridge client task-link protocol|list|create|status|interrupt|release", "codex-feishu-bridge client capability catalog|get|read|write", "codex-feishu-bridge client events catalog|status|recent|get", "codex-feishu-bridge client result <outbox|docbox|actionbox> <id>", "codex-feishu-bridge client recent <outbox|docbox|actionbox|messages|audit>"}})
+		return write(map[string]any{"usage": []string{"codex-feishu-bridge client snapshot", "codex-feishu-bridge client status|doctor", "codex-feishu-bridge client targets init|list|set|remove", "codex-feishu-bridge client send ...", "codex-feishu-bridge client task-link protocol|list|create|status|interrupt|release", "codex-feishu-bridge client capability catalog|get|read|write", "codex-feishu-bridge client operation prepare|confirm|cancel|status", "codex-feishu-bridge client policy read|update", "codex-feishu-bridge client events catalog|status|recent|get", "codex-feishu-bridge client result <outbox|docbox|actionbox> <id>", "codex-feishu-bridge client recent <outbox|docbox|actionbox|messages|audit>"}})
 	case "profile":
 		action := "show"
 		if len(arguments) > 1 {
@@ -256,21 +427,32 @@ func runClient(dataRoot string, settings feishu.Settings, arguments []string) er
 			return err
 		}
 		items := make([]any, 0, len(manifest.Capabilities))
+		readCapabilities := []string{}
+		queuedWriteCapabilities := []string{}
+		riskCounts := map[string]int{}
 		for _, definition := range manifest.Capabilities {
+			if !feishu.CapabilityPublished(definition) {
+				continue
+			}
 			items = append(items, publicCapability(definition))
+			riskCounts[definition.Risk]++
+			if definition.Risk == "read" {
+				readCapabilities = append(readCapabilities, definition.ID)
+			} else {
+				queuedWriteCapabilities = append(queuedWriteCapabilities, definition.ID)
+			}
 		}
 		scopes, err := feishu.RequiredPermissionScopes()
 		if err != nil {
 			return err
 		}
 		return write(map[string]any{"status": "ok", "capabilities": map[string]any{
-			"bridgeVersion": "1.0.0", "packageVersion": "1.2.0", "capabilityVersion": "1.0.0", "stabilityBaselineVersion": "0.6.1", "queueStateSchemaVersion": 2, "skillCompatibility": "1.0.x", "larkCliVersion": "1.0.92", "officialSdk": "go", "officialSdkVersion": "3.11.0",
+			"bridgeVersion": "2.0.0", "packageVersion": "1.2.0", "capabilityVersion": "2.0.0", "stabilityBaselineVersion": "0.6.1", "queueStateSchemaVersion": 2, "skillCompatibility": "phase2_pending", "larkCliVersion": "1.0.92", "officialSdk": "go", "officialSdkVersion": "3.11.0",
 			"identities": []string{"bot", "user"}, "eventTransport": "official-sdk", "singleInboundConnection": true, "events": feishu.FixedEventKeys, "fixedEventCatalog": true,
 			"inboundMessageTypes": []string{"text", "image", "file", "audio", "media", "post"}, "outboundMessageFormats": []string{"text", "markdown", "card", "image", "file"},
-			"readCapabilities":        []string{"message.list", "message.search", "message.thread", "document.inspect", "knowledge.search", "knowledge.read", "comment.list", "calendar.agenda", "calendar.search", "calendar.get", "calendar.freebusy", "task.mine", "task.related", "task.search", "task.get", "task.tasklists", "sheets.inspect", "sheets.cells", "sheets.table", "sheets.search", "sheets.revision", "base.inspect", "base.schema", "base.records", "base.search", "base.get", "meeting.search", "meeting.active", "meeting.get", "meeting.detail", "meeting.events", "meeting.recording", "note.detail", "note.transcript", "minutes.search", "minutes.get", "minutes.detail", "minutes.transcript"},
-			"queuedWriteCapabilities": []string{"base.create_records", "base.update_records", "calendar.create_event", "calendar.rsvp", "calendar.update_event", "capability.execute", "drive.add_comment", "minutes.mutate_todos", "minutes.replace_speaker", "minutes.replace_summary", "minutes.replace_words", "minutes.update_title", "minutes.upload", "sheets.append_table", "sheets.create_sheet", "sheets.set_cells", "task.assign", "task.complete", "task.create", "task.reminder", "task.reopen", "task.update"},
-			"registeredCapabilities":  items, "registeredCapabilityCount": len(items), "documentWrites": []string{"create_document", "append", "overwrite", "str_replace"},
-			"intentionallyExcluded": []string{"delete", "permission_mutation", "wiki_move", "arbitrary_openapi", "automatic_approval", "approval_api", "approval_event", "background_full_crawl", "live_meeting_control", "minutes_media_download", "minutes_permission_mutation", "message_delete", "chat_member_or_admin_mutation", "phone_or_sms_urgent", "sheet_clear_or_delete", "base_delete_share_permission_workflow_or_button_binding", "apps_access_member_role_secret_database_automation_cache_plugin_or_delete"},
+			"readCapabilities": readCapabilities, "queuedWriteCapabilities": queuedWriteCapabilities,
+			"registeredCapabilities": items, "registeredCapabilityCount": len(items), "riskCounts": riskCounts, "documentWrites": []string{"create_document", "append", "overwrite", "str_replace"},
+			"intentionallyExcluded": []string{"application_management", "member_admin_role_permission_management", "credential_or_secret_management", "automation_configuration", "live_meeting_control", "urgent_phone_or_sms", "arbitrary_openapi", "background_full_crawl"},
 			"requiredScopes":        map[string]any{"bot": scopes.Bot, "user": scopes.User},
 		}})
 	case "events":
@@ -333,6 +515,12 @@ func runClient(dataRoot string, settings feishu.Settings, arguments []string) er
 		eventState["expected"] = feishu.FixedEventKeys
 		eventState["fixedCatalogCount"] = len(feishu.FixedEventKeys)
 		return write(map[string]any{"status": "ok", "runtime": "go", "pid": map[string]any{"present": present, "alive": alive, "startedAt": startedAt}, "outbound": settings.Outbound, "service": service, "launchd": service, "eventConsumer": eventState})
+	case "snapshot":
+		value, err := clientAggregateSnapshot(dataRoot, settings)
+		if err != nil {
+			return err
+		}
+		return write(value)
 	case "doctor":
 		return write(nativeDoctor(dataRoot, settings, authRunner))
 	case "targets":
@@ -349,6 +537,16 @@ func runClient(dataRoot string, settings feishu.Settings, arguments []string) er
 			return err
 		}
 		switch arguments[1] {
+		case "directory":
+			if len(arguments) < 3 {
+				return errors.New("missing directory action")
+			}
+			return runDirectoryClient(settings, capabilityService, feishu.PersonDirectory, arguments[2], arguments[3:], configStore, write)
+		case "group-directory":
+			if len(arguments) < 3 {
+				return errors.New("missing group directory action")
+			}
+			return runDirectoryClient(settings, capabilityService, feishu.GroupDirectory, arguments[2], arguments[3:], configStore, write)
 		case "init":
 			if err := configStore.Save(config); err != nil {
 				return err
@@ -413,17 +611,50 @@ func runClient(dataRoot string, settings feishu.Settings, arguments []string) er
 		if !settings.Outbound.Enabled {
 			return errors.New("outbound messaging is disabled")
 		}
+		if !settings.Actionbox.Enabled {
+			return errors.New("actionbox is required for governed outbound messaging")
+		}
 		config, err := feishu.NewClientConfigStore(dataRoot).Load()
 		if err != nil {
 			return err
 		}
-		targetValue, err := clientFlag(arguments[1:], "--target")
-		if err != nil {
-			return err
+		flags := arguments[1:]
+		targetValue := clientOptionalFlag(flags, "--target")
+		targetName := clientOptionalFlag(flags, "--target-name")
+		targetGroupName := clientOptionalFlag(flags, "--target-group-name")
+		providedTargets := 0
+		for _, value := range []string{targetValue, targetName, targetGroupName} {
+			if strings.TrimSpace(value) != "" {
+				providedTargets++
+			}
 		}
-		target, err := config.ResolveMessageTarget(targetValue)
-		if err != nil {
-			return err
+		if providedTargets != 1 {
+			return errors.New("provide exactly one of --target, --target-name, or --target-group-name")
+		}
+		var target feishu.MessageTarget
+		if targetName != "" || targetGroupName != "" {
+			kind := feishu.PersonDirectory
+			name := targetName
+			enabled := settings.Directory.Enabled
+			if targetGroupName != "" {
+				kind, name, enabled = feishu.GroupDirectory, targetGroupName, settings.GroupDirectory.Enabled
+			}
+			if !enabled {
+				return errors.New("requested directory feature is disabled")
+			}
+			resolution, resolveErr := feishu.NewDirectoryService(capabilityService).Resolve(context.Background(), kind, name, config)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			if resolution.Status != "resolved" {
+				return write(feishu.PublicResult(map[string]any{"status": resolution.Status, "submitted": false, "resolution": resolution}))
+			}
+			target = resolution.Target
+		} else {
+			target, err = config.ResolveMessageTarget(targetValue)
+			if err != nil {
+				return err
+			}
 		}
 		format := clientOptionalFlag(arguments[1:], "--format")
 		if format == "" {
@@ -436,19 +667,26 @@ func runClient(dataRoot string, settings feishu.Settings, arguments []string) er
 				return err
 			}
 		}
-		request := feishu.OutboxRequest{ID: id, Type: format, Target: target, ExplicitAuthorization: true, DryRun: clientHasFlag(arguments[1:], "--dry-run"), Source: config.DefaultSource, CreatedAt: time.Now().UTC()}
+		input := map[string]any{"request-id": id, "target-type": target.Type, "target-id": target.ID, "format": format, "source": config.DefaultSource, "dry-run": clientHasFlag(arguments[1:], "--dry-run")}
 		if source := clientOptionalFlag(arguments[1:], "--source"); source != "" {
-			request.Source = source
+			input["source"] = source
 		}
+		stagedMedia := ""
 		if format == "image" || format == "file" {
 			source, err := clientFlag(arguments[1:], "--media-file")
 			if err != nil {
 				return err
 			}
-			request.FilePath, err = feishu.StageOutboundMedia(dataRoot, id, source)
+			stagedMedia, err = feishu.StageOutboundMedia(dataRoot, id, source)
 			if err != nil {
 				return err
 			}
+			relative, relativeErr := filepath.Rel(dataRoot, stagedMedia)
+			if relativeErr != nil || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+				_ = os.Remove(stagedMedia)
+				return errors.New("staged media path is unsafe")
+			}
+			input["file-path"] = filepath.ToSlash(relative)
 		} else {
 			flag := "--content-file"
 			if clientOptionalFlag(arguments[1:], flag) == "" {
@@ -458,106 +696,36 @@ func runClient(dataRoot string, settings feishu.Settings, arguments []string) er
 			if err != nil {
 				return err
 			}
-			request.Text = string(payload)
+			input["text"] = string(payload)
 		}
-		box := feishu.NewOutbox(dataRoot)
-		if err := box.Submit(request); err != nil {
-			if request.FilePath != "" {
-				_ = os.Remove(request.FilePath)
+		prepared, err := capabilityService.Prepare(context.Background(), "im.sdk.message.send", input, fmt.Sprint(input["source"]))
+		if err != nil {
+			if stagedMedia != "" {
+				_ = os.Remove(stagedMedia)
 			}
-			return err
+			return writeCapabilityRejection(write, err)
 		}
-		_ = feishu.WakeQueue(dataRoot, "outbox")
-		if clientHasFlag(arguments[1:], "--async") {
-			return write(map[string]any{"status": "accepted", "id": id, "submitted": true})
+		if prepared.Submitted {
+			_ = feishu.WakeQueue(dataRoot, "actionbox")
+		}
+		if prepared.Operation.Status == feishu.OperationAwaitingConfirmation || clientHasFlag(arguments[1:], "--async") {
+			return write(feishu.PublicResult(map[string]any{"status": "ok", "operation": prepared.Operation, "challenge": prepared.Challenge, "submitted": prepared.Submitted}))
 		}
 		deadline := time.Now().Add(60 * time.Second)
 		for time.Now().Before(deadline) {
-			if result, found, err := box.FindResult(id); err != nil {
-				return err
-			} else if found {
-				return write(feishu.PublicResult(result))
+			view, statusErr := capabilityService.Status(prepared.Operation.ID)
+			if statusErr != nil {
+				return statusErr
+			}
+			if operationTerminal(view.Status) {
+				return write(feishu.PublicResult(map[string]any{"status": "ok", "operation": view}))
 			}
 			time.Sleep(250 * time.Millisecond)
 		}
-		return errors.New("outbox result timeout")
+		view, _ := capabilityService.Status(prepared.Operation.ID)
+		return write(feishu.PublicResult(map[string]any{"status": "pending", "operation": view, "nextAction": operationPendingNextAction(view)}))
 	case "doc":
-		if len(arguments) < 2 || (arguments[1] != "create" && arguments[1] != "update") {
-			return errors.New("doc action must be create or update")
-		}
-		if !settings.Docbox.Enabled {
-			return errors.New("docbox is disabled")
-		}
-		config, err := feishu.NewClientConfigStore(dataRoot).Load()
-		if err != nil {
-			return err
-		}
-		content, err := clientPrivateValue(arguments[2:], "--content-file")
-		if err != nil {
-			return err
-		}
-		if strings.TrimSpace(string(content)) == "" {
-			return errors.New("document content is empty")
-		}
-		id, err := feishu.NewDocboxID()
-		if err != nil {
-			return err
-		}
-		format := clientOptionalFlag(arguments[2:], "--format")
-		if format == "" {
-			format = "markdown"
-		}
-		request := feishu.DocumentRequest{ID: id, Type: "document_task", Action: "create_document", Identity: "user", Content: feishu.DocumentContent{Format: format, Text: string(content)}, Instruction: "创建飞书文档", ExplicitAuthorization: true, DryRun: clientHasFlag(arguments[2:], "--dry-run"), Source: config.DefaultSource, CreatedAt: time.Now().UTC()}
-		if targetValue := clientOptionalFlag(arguments[2:], "--target"); targetValue != "" {
-			target, err := config.ResolveDocumentTarget(targetValue)
-			if err != nil {
-				return err
-			}
-			request.Target = &target
-			if target.Kind == "wiki_url" || target.Kind == "wiki_token" {
-				request.Identity = "bot"
-			}
-		}
-		if arguments[1] == "update" {
-			if request.Target == nil {
-				return errors.New("missing --target")
-			}
-			request.Action = "update_document"
-			request.Instruction = "先创建飞书官方版本，再更新并复读验证"
-			request.VersionPolicy = "official_before_update"
-			request.UpdateMode = clientOptionalFlag(arguments[2:], "--mode")
-			if request.UpdateMode == "" {
-				request.UpdateMode = "append"
-			}
-			if (request.UpdateMode == "overwrite" || request.UpdateMode == "str_replace") && !clientHasFlag(arguments[2:], "--confirm-high-impact") {
-				return fmt.Errorf("%s requires --confirm-high-impact", request.UpdateMode)
-			}
-			if request.UpdateMode == "str_replace" {
-				pattern, err := clientPrivateValue(arguments[2:], "--pattern-file")
-				if err != nil {
-					return err
-				}
-				request.Selection = map[string]any{"withEllipsis": string(pattern)}
-			}
-		}
-		box := feishu.NewDocbox(dataRoot)
-		if err := box.Submit(request); err != nil {
-			return err
-		}
-		_ = feishu.WakeQueue(dataRoot, "docbox")
-		if clientHasFlag(arguments[2:], "--async") {
-			return write(map[string]any{"status": "accepted", "id": id, "submitted": true})
-		}
-		deadline := time.Now().Add(6 * time.Minute)
-		for time.Now().Before(deadline) {
-			if result, found, err := box.FindResult(id); err != nil {
-				return err
-			} else if found {
-				return write(feishu.PublicResult(result))
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-		return errors.New("docbox result timeout")
+		return runDocumentClient(dataRoot, capabilityService, arguments[1:], write)
 	case "capability":
 		if len(arguments) < 2 {
 			return errors.New("missing capability action")
@@ -571,7 +739,7 @@ func runClient(dataRoot string, settings feishu.Settings, arguments []string) er
 			domain := clientOptionalFlag(arguments[2:], "--domain")
 			items := []any{}
 			for _, definition := range manifest.Capabilities {
-				if domain == "" || definition.Domain == domain {
+				if feishu.CapabilityPublished(definition) && (domain == "" || definition.Domain == domain) {
 					items = append(items, publicCapability(definition))
 				}
 			}
@@ -598,18 +766,10 @@ func runClient(dataRoot string, settings feishu.Settings, arguments []string) er
 		if json.Unmarshal(payload, &input) != nil {
 			return errors.New("invalid capability payload")
 		}
-		runner := feishu.CapabilityExecutor{Binary: strings.TrimSpace(os.Getenv("LARK_CLI_BIN")), Profile: strings.TrimSpace(os.Getenv("LARK_CLI_PROFILE")), DataRoot: dataRoot, WorkingDirectory: dataRoot}
-		if action == "read" {
-			if definition.Risk != "read" {
-				return errors.New("write capability must enter actionbox")
-			}
-			result, err := runner.Execute(context.Background(), definition.ID, input)
-			if err != nil {
-				return err
-			}
-			return write(feishu.PublicResult(map[string]any{"status": "ok", "capability": definition.ID, "result": result}))
+		if action == "read" && definition.Risk != "read" {
+			return errors.New("write capability must enter actionbox")
 		}
-		if definition.Risk == "read" {
+		if action == "write" && definition.Risk == "read" {
 			return errors.New("read capability must not enter actionbox")
 		}
 		if clientHasFlag(arguments[3:], "--dry-run") {
@@ -618,88 +778,37 @@ func runClient(dataRoot string, settings feishu.Settings, arguments []string) er
 			}
 			return write(map[string]any{"status": "dry_run", "capability": definition.ID, "submitted": false})
 		}
-		if definition.Queue == "docbox" {
-			if definition.ID != "docs.whiteboard.insert" {
-				return errors.New("unsupported docbox capability")
-			}
-			if !settings.Docbox.Enabled {
-				return errors.New("docbox is disabled")
-			}
-			config, err := feishu.NewClientConfigStore(dataRoot).Load()
-			if err != nil {
-				return err
-			}
-			target, err := config.ResolveDocumentTarget(fmt.Sprint(input["doc"]))
-			if err != nil {
-				return err
-			}
-			content, err := feishu.DocWhiteboardXML(input)
-			if err != nil {
-				return err
-			}
-			id, err := feishu.NewDocboxID()
-			if err != nil {
-				return err
-			}
-			identity := "user"
-			if target.Kind == "wiki_url" || target.Kind == "wiki_token" {
-				identity = "bot"
-			}
-			request := feishu.DocumentRequest{ID: id, Type: "document_task", Action: "update_document", Identity: identity, Target: &target, Content: feishu.DocumentContent{Format: "text", Text: content}, Instruction: "先读取目标文档并创建飞书官方版本，再追加 Whiteboard，完成后复读验证", VersionPolicy: "official_before_update", UpdateMode: "append", ExplicitAuthorization: true, Source: "codex", CreatedAt: time.Now().UTC()}
-			box := feishu.NewDocbox(dataRoot)
-			if err := box.Submit(request); err != nil {
-				return err
-			}
-			_ = feishu.WakeQueue(dataRoot, "docbox")
-			if clientHasFlag(arguments[3:], "--async") {
-				return write(map[string]any{"status": "accepted", "id": id, "capability": definition.ID, "submitted": true})
-			}
-			deadline := time.Now().Add(6 * time.Minute)
-			for time.Now().Before(deadline) {
-				if result, found, err := box.FindResult(id); err != nil {
-					return err
-				} else if found {
-					return write(feishu.PublicResult(result))
-				}
-				time.Sleep(500 * time.Millisecond)
-			}
-			return errors.New("docbox result timeout")
-		}
-		id, err := feishu.NewActionID()
+		prepared, err := capabilityService.Prepare(context.Background(), definition.ID, input, "codex")
 		if err != nil {
-			return err
+			return writeCapabilityRejection(write, err)
 		}
-		request := feishu.ActionRequest{ID: id, Type: "feishu_capability", Domain: "capability", Action: "execute", CapabilityID: definition.ID, Identity: definition.Identity, Input: input, ExplicitAuthorization: true, ConfirmHighImpact: clientHasFlag(arguments[3:], "--confirm-high-impact"), Source: "codex", CreatedAt: time.Now().UTC()}
-		if value := clientOptionalFlag(arguments[3:], "--remote-timeout-ms"); value != "" {
-			request.RemoteTimeoutMS, err = strconv.Atoi(value)
-			if err != nil {
-				return errors.New("invalid remote timeout")
-			}
+		if prepared.Submitted {
+			_ = feishu.WakeQueue(dataRoot, "actionbox")
 		}
-		if value := clientOptionalFlag(arguments[3:], "--remote-poll-ms"); value != "" {
-			request.PollIntervalMS, err = strconv.Atoi(value)
-			if err != nil {
-				return errors.New("invalid remote poll interval")
-			}
-		}
-		box := feishu.NewActionbox(dataRoot)
-		if err := box.Submit(request); err != nil {
-			return err
-		}
-		_ = feishu.WakeQueue(dataRoot, "actionbox")
-		if clientHasFlag(arguments[3:], "--async") {
-			return write(map[string]any{"status": "accepted", "id": id, "capability": definition.ID, "submitted": true})
+		if prepared.Operation.Status == feishu.OperationAwaitingConfirmation || clientHasFlag(arguments[3:], "--async") || action == "read" {
+			return write(feishu.PublicResult(map[string]any{"status": "ok", "operation": prepared.Operation, "challenge": prepared.Challenge, "submitted": prepared.Submitted, "result": prepared.Result}))
 		}
 		deadline := time.Now().Add(60 * time.Second)
 		for time.Now().Before(deadline) {
-			if result, found, err := box.FindResult(id); err != nil {
-				return err
-			} else if found {
-				return write(feishu.PublicResult(result))
+			view, statusErr := capabilityService.Status(prepared.Operation.ID)
+			if statusErr != nil {
+				return statusErr
+			}
+			if operationTerminal(view.Status) {
+				return write(feishu.PublicResult(map[string]any{"status": "ok", "operation": view}))
 			}
 			time.Sleep(250 * time.Millisecond)
 		}
-		return errors.New("actionbox result timeout")
+		view, _ := capabilityService.Status(prepared.Operation.ID)
+		return write(feishu.PublicResult(map[string]any{"status": "pending", "operation": view, "nextAction": operationPendingNextAction(view)}))
+	case "operation":
+		return runOperationClient(dataRoot, capabilityService, arguments[1:], write)
+	case "policy":
+		return runPolicyClient(capabilityService, arguments[1:], write)
+	case "message", "knowledge", "calendar", "task", "sheets", "base", "meeting", "note", "minutes":
+		return runConvenienceClient(dataRoot, settings, capabilityService, arguments[0], arguments[1:], write)
+	case "workflow":
+		return runWorkflowClient(dataRoot, capabilityService, arguments[1:], write)
 	case "task-link":
 		if len(arguments) < 2 {
 			return errors.New("missing task-link action")
@@ -766,7 +875,11 @@ func runClient(dataRoot string, settings feishu.Settings, arguments []string) er
 				if err != nil {
 					return err
 				}
-				messageID, err := messages.Send(context.Background(), target, "card", card, "task-link-"+link.TaskKey)
+				idempotencyKey, err := feishu.TaskLinkCardIdempotencyKey(link)
+				if err != nil {
+					return err
+				}
+				messageID, err := messages.Send(context.Background(), target, "card", card, idempotencyKey)
 				if err != nil {
 					return err
 				}
@@ -801,7 +914,7 @@ func runClient(dataRoot string, settings feishu.Settings, arguments []string) er
 				return write(map[string]any{"status": "ok", "cardSync": status, "protocol": feishu.TaskLinkProtocol, "version": 2, "link": feishu.PublicLinks([]feishu.TaskLink{link})[0]})
 			}
 			if action == "interrupt" {
-				if err := interruptLinkedTurn(dataRoot, key); err != nil {
+				if err := submitBridgeControl(dataRoot, "taskLink.interrupt", key); err != nil {
 					return err
 				}
 			}
@@ -834,6 +947,32 @@ func runClient(dataRoot string, settings feishu.Settings, arguments []string) er
 	return fmt.Errorf("unsupported native bridge client command: %s", arguments[0])
 }
 
+func submitBridgeControl(dataRoot, operation, taskKey string) error {
+	id, err := feishu.NewControlID()
+	if err != nil {
+		return err
+	}
+	inbox := feishu.NewControlInbox(dataRoot)
+	if err := inbox.Submit(feishu.ControlRequest{ID: id, Operation: operation, TaskKey: taskKey, CreatedAt: time.Now().UTC()}); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		result, found, err := inbox.TakeResult(id)
+		if err != nil {
+			return err
+		}
+		if found {
+			if result.Status != "succeeded" {
+				return errors.New("managed bridge rejected control request")
+			}
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return errors.New("managed bridge control timeout")
+}
+
 func nativeDoctor(dataRoot string, settings feishu.Settings, runner feishu.CapabilityExecutor) map[string]any {
 	type check struct {
 		Name     string `json:"name"`
@@ -862,7 +1001,7 @@ func nativeDoctor(dataRoot string, settings feishu.Settings, runner feishu.Capab
 	}
 	add("managed_process", instanceErr, instanceDetail)
 	_, manifestErr := feishu.LoadCapabilityManifest()
-	add("capability_registry", manifestErr, "219 fixed capabilities")
+	add("capability_registry", manifestErr, "versioned fixed capabilities")
 	_, scopeErr := feishu.RequiredPermissionScopes()
 	add("permission_contract", scopeErr, "frozen bot and user scopes")
 	credentialErr := error(nil)
@@ -870,17 +1009,12 @@ func nativeDoctor(dataRoot string, settings feishu.Settings, runner feishu.Capab
 		_, credentialErr = feishu.LoadOfficialCredentials()
 	}
 	add("credentials", credentialErr, "secure platform credential store")
-	larkErr := error(nil)
-	if strings.TrimSpace(runner.Binary) == "" {
-		larkErr = errors.New("LARK_CLI_BIN is not configured")
-	} else if info, err := os.Lstat(runner.Binary); err != nil || !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
-		if err != nil {
-			larkErr = err
-		} else {
-			larkErr = errors.New("configured lark-cli is not an executable regular file")
-		}
+	larkProbe := feishu.ProbeLarkCLI(context.Background(), runner.Binary)
+	var larkErr error
+	if larkProbe.State != "ready" {
+		larkErr = errors.New(larkProbe.Code)
 	}
-	add("lark_cli", larkErr, "lark-cli 1.0.92")
+	add("lark_cli", larkErr, larkProbe.Detail)
 	ok := true
 	for _, item := range checks {
 		if item.Severity == "error" {
@@ -895,15 +1029,25 @@ func nativeDoctor(dataRoot string, settings feishu.Settings, runner feishu.Capab
 	return map[string]any{"ok": ok, "health": health, "runtime": "go", "checks": checks, "status": map[string]any{"profile": settings.Profile, "outbound": settings.Outbound, "docbox": settings.Docbox, "actionbox": settings.Actionbox}}
 }
 
-func runActionbox(ctx context.Context, box *feishu.Actionbox, executor feishu.CapabilityExecutor) {
-	ticker := time.NewTicker(3 * time.Second)
+// Kept for compatibility tests and explicit one-shot client operation. The
+// production service uses WorkScheduler.Wake and never starts a second queue
+// consumer.
+func actionboxWakeHandler(ctx context.Context, service *feishu.CapabilityService) func() {
+	return func() { _ = service.ProcessActions(ctx) }
+}
+
+func runOperationReconciliation(ctx context.Context, service *feishu.CapabilityService) {
+	_ = service.ExpireAwaiting(100)
+	_ = service.ReconcileUnknown(ctx, 20)
+	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
-		_ = box.Process(ctx, executor)
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			_ = service.ExpireAwaiting(100)
+			_ = service.ReconcileUnknown(ctx, 20)
 		}
 	}
 }
@@ -922,7 +1066,7 @@ func runInboundRecovery(ctx context.Context, processor *feishu.InboundProcessor)
 }
 
 func runTaskCardReconciliation(ctx context.Context, runtime *inboundRuntime) {
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
 		runtime.reconcileTaskLinkCards(ctx)
@@ -947,32 +1091,6 @@ func syncTaskLinkCardFromClient(ctx context.Context, store feishu.TaskLinkStore,
 		return "pending"
 	}
 	return "synced"
-}
-
-func runOutbox(ctx context.Context, box *feishu.Outbox, sender feishu.MessageSender, dryRun bool) {
-	ticker := time.NewTicker(3 * time.Second)
-	defer ticker.Stop()
-	for {
-		_ = box.Process(ctx, sender, dryRun)
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
-}
-
-func runDocbox(ctx context.Context, box *feishu.Docbox, executor feishu.CapabilityExecutor, dryRun bool) {
-	ticker := time.NewTicker(3 * time.Second)
-	defer ticker.Stop()
-	for {
-		_ = box.Process(ctx, executor, dryRun)
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
 }
 
 func publicCapability(definition feishu.CapabilityDefinition) map[string]any {
@@ -1004,7 +1122,7 @@ func publicCapability(definition feishu.CapabilityDefinition) map[string]any {
 	if definition.Reread != nil {
 		reread = definition.Reread.ID
 	}
-	return map[string]any{"id": definition.ID, "domain": definition.Domain, "identity": definition.Identity, "risk": definition.Risk, "queue": queue, "inputFields": fields, "bounded": definition.Scope.Bounded, "preflight": preflight, "reread": reread, "savableResultKinds": kinds, "redaction": definition.Redaction}
+	return map[string]any{"id": definition.ID, "domain": definition.Domain, "published": feishu.CapabilityPublished(definition), "identity": definition.Identity, "risk": definition.Risk, "backend": definition.Backend, "effect": definition.Effect, "reversibility": definition.Reversibility, "guardProfile": definition.GuardProfile, "postcondition": definition.Postcondition, "conflictKey": definition.ConflictKey, "retryClass": definition.RetryClass, "executionClass": definition.ExecutionClass, "requiredScopes": definition.RequiredScopes, "queue": queue, "inputFields": fields, "bounded": definition.Scope.Bounded, "preflight": preflight, "reread": reread, "savableResultKinds": kinds, "redaction": definition.Redaction}
 }
 func clientOptionalFlag(arguments []string, wanted string) string {
 	value, _ := clientFlag(arguments, wanted)

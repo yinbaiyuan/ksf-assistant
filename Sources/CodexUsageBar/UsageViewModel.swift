@@ -47,7 +47,7 @@ final class UsageViewModel: ObservableObject {
     @Published private(set) var onboardingError: String?
     @Published private(set) var notificationPermission: NotificationPermissionState = .unknown
     @Published private(set) var loginItemState: LoginItemState = .disabled
-    @Published private(set) var feishuBridge = FeishuBridgeSnapshot.notConfigured
+    @Published private(set) var feishuService = FeishuServiceSnapshot.notConfigured
     @Published private(set) var feishuActionInProgress = false
     @Published private(set) var feishuFeedback: String?
     @Published private(set) var feishuAuthQRCode: String?
@@ -67,62 +67,28 @@ final class UsageViewModel: ObservableObject {
     private let defaults = UserDefaults.standard
     private let notifications = ResetNotificationController()
     private let loginItems = LoginItemController()
-    private let taskActivityProvider: CodexTaskActivityProviding
-    private let bridge = KSFBridgeClient()
     private let projectUsageStore = ProjectUsageStore()
-    private let localTokenHistoryCache = LocalTokenHistoryCache()
     private let actionLauncher = TerminalActionLauncher()
     private let taskOpener: CodexTaskOpening = WorkspaceCodexTaskOpener()
-    private let taskSubmissionClient: CodexDesktopTaskSubmissionClient
-    private let sharedCore = SharedCoreProcessClient()
-    private var client: CodexAppServerClient?
-    private var sharedCoreEnabled = false
+    private let coreService = CoreServiceProcessClient()
+    private var coreServiceEnabled = false
     private var shutdownStarted = false
     private var quitRequested = false
-    private var refreshingSharedCore = false
+    private var refreshingCoreService = false
     private var started = false
-    private var refreshingRateLimits = false
-    private var refreshingTokenUsage = false
     private var refreshActivityDepth = 0
     private var rateTimerTask: Task<Void, Never>?
-    private var accountTokenTimerTask: Task<Void, Never>?
-    private var activeLocalTokenTimerTask: Task<Void, Never>?
-    private var localTokenReadTask: Task<DailyUsageBucket?, Never>?
     private var localTokenHistoryTask: Task<Void, Never>?
-    private var retryTask: Task<Void, Never>?
-    private var taskActivityUpdateTask: Task<Void, Never>?
-    private var projectRefreshTask: Task<Void, Never>?
-    private var feishuTaskLinkTimerTask: Task<Void, Never>?
-    private var sharedCorePollTask: Task<Void, Never>?
+    private var coreServicePollTask: Task<Void, Never>?
     private var popoverIsOpen = false
-    private var refreshingProjects = false
-    private var bridgeEnabledAt: Date?
-    private var projectCatalog: [KSFProject] = []
-    private var projectThreads: [CodexThreadMetadata] = []
-    private var projectTaskObservations: [CodexTaskObservation] = []
-    private var projectProjections: [String: KSFTaskProjection] = [:]
     private var projectUsage: [String: ProjectUsageSummary]
     private var projectLaunchActions: [String: ProjectLaunchAction] = [:]
     private var projectListOrder: [String]
     private var projectTaskOrder: [String: [String]] = [:]
-    private var retryAttempt = 0
     private var wakeObserver: WorkspaceWakeObserver?
 
     init(autoStart: Bool = true, cleanupLegacyWeChatData: Bool = true) {
         Self.migrateLegacyDefaultsIfNeeded(in: UserDefaults.standard)
-        let socketURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex/ipc/ipc.sock")
-        taskActivityProvider = CodexDesktopTaskActivityClient(
-            transportFactory: { UnixSocketDesktopIPCTransport(socketURL: socketURL) },
-            desktopIsRunning: {
-                !NSRunningApplication.runningApplications(
-                    withBundleIdentifier: "com.openai.codex"
-                ).isEmpty
-            }
-        )
-        taskSubmissionClient = CodexDesktopTaskSubmissionClient(
-            transportFactory: { UnixSocketDesktopIPCTransport(socketURL: socketURL) }
-        )
         defaults.register(defaults: [
             "launchAtLoginEnabled": false,
             "resetNotificationsEnabled": false,
@@ -136,7 +102,7 @@ final class UsageViewModel: ObservableObject {
         launchAtLoginEnabled = defaults.bool(forKey: "launchAtLoginEnabled")
         resetNotificationsEnabled = defaults.bool(forKey: "resetNotificationsEnabled")
         ksfRootPath = defaults.string(forKey: "ksfRootPath") ?? ""
-        defaults.removeObject(forKey: "feishuBridgeRootPath")
+        defaults.removeObject(forKey: "feishuServiceRootPath")
         selectedFeishuTargetAlias = defaults.string(forKey: "selectedFeishuTargetAlias") ?? ""
         selectedPricingPlanID = defaults.string(forKey: "selectedPricingPlanID") ?? Self.defaultPricingPlanID
         if let data = defaults.data(forKey: "customPricingPlansV1"),
@@ -185,15 +151,8 @@ final class UsageViewModel: ObservableObject {
 
     deinit {
         rateTimerTask?.cancel()
-        accountTokenTimerTask?.cancel()
-        activeLocalTokenTimerTask?.cancel()
-        localTokenReadTask?.cancel()
         localTokenHistoryTask?.cancel()
-        retryTask?.cancel()
-        taskActivityUpdateTask?.cancel()
-        projectRefreshTask?.cancel()
-        feishuTaskLinkTimerTask?.cancel()
-        sharedCorePollTask?.cancel()
+        coreServicePollTask?.cancel()
         if let wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
         }
@@ -218,7 +177,7 @@ final class UsageViewModel: ObservableObject {
             localTokens = "本机今日 Token 正在载入"
         }
 
-        let feishu = feishuBridge.availability == .ready ? "，飞书桥已连接" : ""
+        let feishu = feishuService.availability == .ready ? "，飞书服务已连接" : ""
         let summary = "\(quota)，\(localTokens)\(feishu)"
 
         switch taskActivity.availability {
@@ -232,7 +191,7 @@ final class UsageViewModel: ObservableObject {
     }
 
     var feishuStatusText: String {
-        switch feishuBridge.availability {
+        switch feishuService.availability {
         case .notConfigured: return "未配置"
         case .unavailable: return "不可用"
         case .stopped: return "桥未运行"
@@ -310,93 +269,54 @@ final class UsageViewModel: ObservableObject {
 
         do {
             let activeKSFRoot = isOnboardingComplete ? ksfRootPath : ""
-            try await sharedCore.start(ksfRoot: activeKSFRoot)
-            sharedCoreEnabled = true
+            try await coreService.start(ksfRoot: activeKSFRoot)
+            coreServiceEnabled = true
             await refreshPricingCatalog()
             await refreshSharedDashboard()
-            startSharedCoreTimers()
+            startCoreServiceTimers()
             return
         } catch {
-            sharedCoreEnabled = false
-        }
-
-        configureClientIfNeeded()
-        taskActivityUpdateTask = Task { [weak self, taskActivityProvider] in
-            for await update in taskActivityProvider.updates {
-                guard !Task.isCancelled else { break }
-                guard let self else { break }
-                self.applyTaskActivityUpdate(update)
-            }
-        }
-        await taskActivityProvider.start()
-        await refreshUsageData()
-        if isOnboardingComplete {
-            await refreshProjects()
-            await refreshFeishuBridge()
-        }
-        startTimers()
-        if isOnboardingComplete {
-            refreshLocalTokenHistory()
-        }
-    }
-
-    func applyTaskActivityUpdate(_ update: TaskActivitySnapshot) {
-        taskActivity = update
-        updateActiveLocalTokenTimer(for: update)
-        switch update.availability {
-        case .available:
-            projectTaskObservations = update.observations
-            if projectDashboard.observedAt != nil {
-                rebuildProjectDashboard(message: projectDashboard.message)
-            }
-            scheduleProjectRefresh()
-        case .desktopNotRunning, .unsupportedProtocol, .offline:
-            projectTaskObservations = []
-            rebuildProjectDashboard(message: projectDashboard.message)
-        case .loading:
-            break
+            coreServiceEnabled = false
+            status = snapshot?.headlineRemainingPercent == nil ? .offline : .stale
+            lastErrorMessage = "核心服务不可用；正在显示缓存数据。"
+            taskActivity = TaskActivitySnapshot(availability: .offline)
+            projectDashboard = ProjectDashboardSnapshot(
+                availability: .unavailable,
+                projects: unavailablePinnedProjects(),
+                observedAt: Date(),
+                message: "核心服务不可用。"
+            )
+            feishuService = FeishuServiceSnapshot(
+                availability: .unavailable("核心服务不可用。"),
+                targetAliases: [],
+                taskLinkProtocolVersion: 0,
+                taskLinkReady: false,
+                readinessBlockers: ["核心服务不可用"]
+            )
+            return
         }
     }
 
     func refreshAll() async {
-        if sharedCoreEnabled {
+        if coreServiceEnabled {
             await refreshSharedDashboard()
-            return
         }
-        beginRefreshActivity()
-        defer { endRefreshActivity() }
-        await taskActivityProvider.refresh()
-        await refreshUsageData()
-        if isOnboardingComplete {
-            await refreshProjects()
-            await refreshFeishuBridge(showProgress: false)
-        }
-    }
-
-    private func refreshUsageData() async {
-        beginRefreshActivity()
-        defer { endRefreshActivity() }
-        await refreshRateLimits()
-        await refreshTokenUsage()
     }
 
     func popoverDidOpen() {
         popoverIsOpen = true
-        if sharedCoreEnabled {
-            startSharedCorePolling()
+        if coreServiceEnabled {
+            startCoreServicePolling()
             Task { [weak self] in await self?.refreshSharedDashboard() }
             return
         }
-        startFeishuTaskLinkPollingIfNeeded()
         Task { [weak self] in await self?.refreshAll() }
     }
 
     func popoverDidClose() {
         popoverIsOpen = false
-        sharedCorePollTask?.cancel()
-        sharedCorePollTask = nil
-        feishuTaskLinkTimerTask?.cancel()
-        feishuTaskLinkTimerTask = nil
+        coreServicePollTask?.cancel()
+        coreServicePollTask = nil
     }
 
     func completeOnboarding() {
@@ -412,21 +332,16 @@ final class UsageViewModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let bridge = self.bridge
-                try await Task.detached(priority: .utility) {
-                    try bridge.validate(rootURL: rootURL)
-                }.value
+                guard self.coreServiceEnabled else {
+                    throw CoreServiceError.processStopped
+                }
+                try await self.coreService.updateIntegrationContext(ksfRoot: rootURL.path)
                 self.ksfRootPath = rootURL.path
                 self.defaults.set(rootURL.path, forKey: "ksfRootPath")
                 self.defaults.set(true, forKey: "onboardingComplete")
                 self.isOnboardingComplete = true
                 self.onboardingError = nil
-                if self.sharedCoreEnabled {
-                    try await self.sharedCore.updateIntegrationContext(ksfRoot: self.ksfRootPath)
-                    await self.refreshSharedDashboard()
-                } else {
-                    await self.refreshProjects()
-                }
+                await self.refreshSharedDashboard()
                 self.refreshLocalTokenHistory()
             } catch {
                 self.onboardingError = error.localizedDescription
@@ -440,11 +355,11 @@ final class UsageViewModel: ObservableObject {
         isRefreshingLocalTokenHistory = true
         localTokenHistoryError = nil
 
-        if sharedCoreEnabled {
+        if coreServiceEnabled {
             localTokenHistoryTask = Task { [weak self] in
                 guard let self else { return }
                 do {
-                    let comparison = try await self.sharedCore.tokenHistoryComparison(
+                    let comparison = try await self.coreService.tokenHistoryComparison(
                         dayCount: 30,
                         pricingSelection: self.pricingSelection
                     )
@@ -458,42 +373,8 @@ final class UsageViewModel: ObservableObject {
             }
             return
         }
-
-        let rootURL = URL(fileURLWithPath: ksfRootPath, isDirectory: true).standardizedFileURL
-        localTokenHistoryTask = Task { [weak self, localTokenHistoryCache] in
-            do {
-                let cached = try await localTokenHistoryCache.load(ksfRootURL: rootURL)
-                guard let self, !Task.isCancelled else { return }
-
-                // The cache is the history page's fast path. Show it before touching session
-                // logs; archived sessions can span many gigabytes even though the cache is tiny.
-                self.localTokenHistory = Array(cached.days.suffix(30))
-                self.rebuildTokenHistoryComparison()
-
-                let dayCount = Self.localHistoryRefreshDayCount(
-                    cachedAt: cached.updatedAt,
-                    hasCachedDays: !cached.days.isEmpty
-                )
-                let observed = await Task.detached(priority: .utility) {
-                    LocalTokenUsageReader().readHistory(dayCount: dayCount)
-                }.value
-                guard !Task.isCancelled else { return }
-
-                if let observed {
-                    let merged = try await localTokenHistoryCache.merge(
-                        ksfRootURL: rootURL,
-                        observed: observed
-                    )
-                    self.localTokenHistory = Array(merged.days.suffix(30))
-                    self.rebuildTokenHistoryComparison()
-                }
-                self.localTokenHistoryError = nil
-            } catch {
-                self?.localTokenHistoryError = error.localizedDescription
-            }
-            self?.isRefreshingLocalTokenHistory = false
-            self?.localTokenHistoryTask = nil
-        }
+        localTokenHistoryError = "核心服务不可用。"
+        isRefreshingLocalTokenHistory = false
     }
 
     var selectedPricingPlan: PricingPlan? {
@@ -520,8 +401,8 @@ final class UsageViewModel: ObservableObject {
         cachedInputMicroUSDPerMillion: Int64,
         outputMicroUSDPerMillion: Int64
     ) async -> Bool {
-        guard sharedCoreEnabled else {
-            pricingFeedback = "共享核心不可用，暂不能保存价格方案。"
+        guard coreServiceEnabled else {
+            pricingFeedback = "核心服务不可用，暂不能保存价格方案。"
             return false
         }
         let planID = id ?? "custom:\(UUID().uuidString.lowercased())"
@@ -537,7 +418,7 @@ final class UsageViewModel: ObservableObject {
         var proposed = customPricingPlans.filter { $0.id != planID }
         proposed.append(candidate)
         do {
-            let catalog = try await sharedCore.pricingCatalog(customPlans: proposed)
+            let catalog = try await coreService.pricingCatalog(customPlans: proposed)
             guard catalog.plans.contains(where: { $0.id == planID }),
                   !(catalog.rejectedCustomPlanIds ?? []).contains(planID) else {
                 pricingFeedback = "价格方案无效：请检查名称、重复项和 0–1000 美元的六位小数价格。"
@@ -642,11 +523,9 @@ final class UsageViewModel: ObservableObject {
         }
         defaults.set(Array(pinnedProjectIDs).sorted(), forKey: "pinnedProjectIDs")
         defaults.set(projectListOrder, forKey: "projectListOrder")
-        if sharedCoreEnabled {
+        if coreServiceEnabled {
             Task { [weak self] in await self?.refreshSharedDashboard() }
-            return
         }
-        rebuildProjectDashboard()
     }
 
     func openKSFFolder() {
@@ -697,83 +576,14 @@ final class UsageViewModel: ObservableObject {
     private func createTask(for project: KSFProject, purpose: ProjectTaskPurpose) {
         guard !creatingProjectTaskIDs.contains(project.id) else { return }
 
-        if sharedCoreEnabled {
-            createTaskUsingSharedCore(for: project, purpose: purpose)
+        if coreServiceEnabled {
+            createTaskUsingCoreService(for: project, purpose: purpose)
             return
         }
-
-        guard isDirectory(atPath: ksfRootPath) else {
-            projectTaskCreationErrors[project.id] = "KSF 根目录不存在，无法在 KSF 项目中新建任务。"
-            return
-        }
-        guard FileManager.default.fileExists(atPath: project.cardPath),
-              FileManager.default.fileExists(atPath: URL(
-                fileURLWithPath: ksfRootPath,
-                isDirectory: true
-              ).appendingPathComponent("AGENTS.md").path) else {
-            projectTaskCreationErrors[project.id] = "项目基础上下文入口不存在，请先检查 KSF 目录。"
-            return
-        }
-
-        let bootstrap: ProjectTaskBootstrap
-        do {
-            bootstrap = try ProjectTaskBootstrap.prepare(
-                project: project,
-                ksfRootPath: ksfRootPath,
-                purpose: purpose
-            )
-        } catch {
-            projectTaskCreationErrors[project.id] = error.localizedDescription
-            return
-        }
-
-        configureClientIfNeeded()
-        guard let client else {
-            projectTaskCreationErrors[project.id] = "未找到 Codex，无法新建任务。"
-            return
-        }
-
-        projectTaskCreationErrors[project.id] = nil
-        creatingProjectTaskIDs.insert(project.id)
-        if purpose == .archiveProject {
-            archivingProjectTaskIDs.insert(project.id)
-        }
-        Task { [weak self] in
-            guard let self else { return }
-            defer {
-                self.creatingProjectTaskIDs.remove(project.id)
-                self.archivingProjectTaskIDs.remove(project.id)
-            }
-            do {
-                let threadID = try await client.createDraftThread(
-                    cwd: bootstrap.cwd,
-                    name: bootstrap.name
-                )
-                do {
-                    try await self.taskSubmissionClient.submitInitialTurn(
-                        threadID: threadID,
-                        cwd: bootstrap.cwd,
-                        prompt: bootstrap.prompt,
-                        openTask: { @MainActor [weak self] in
-                            guard let self else {
-                                throw CodexTaskOpeningError.applicationRejectedURL
-                            }
-                            try self.taskOpener.openTask(id: threadID)
-                        }
-                    )
-                    self.projectTaskCreationErrors[project.id] = nil
-                } catch {
-                    self.projectTaskCreationErrors[project.id] = self.taskCreationErrorMessage(for: error)
-                }
-                await self.taskActivityProvider.refresh()
-                self.scheduleProjectRefresh()
-            } catch {
-                self.projectTaskCreationErrors[project.id] = self.taskCreationErrorMessage(for: error)
-            }
-        }
+        projectTaskCreationErrors[project.id] = "核心服务不可用，无法新建任务。"
     }
 
-    private func createTaskUsingSharedCore(for project: KSFProject, purpose: ProjectTaskPurpose) {
+    private func createTaskUsingCoreService(for project: KSFProject, purpose: ProjectTaskPurpose) {
         projectTaskCreationErrors[project.id] = nil
         creatingProjectTaskIDs.insert(project.id)
         if purpose == .archiveProject {
@@ -787,7 +597,7 @@ final class UsageViewModel: ObservableObject {
                 self.archivingProjectTaskIDs.remove(project.id)
             }
             do {
-                let created = try await self.sharedCore.createTask(
+                let created = try await self.coreService.createTask(
                     projectID: project.id,
                     ksfRoot: self.ksfRootPath,
                     purpose: purposeValue
@@ -795,7 +605,7 @@ final class UsageViewModel: ObservableObject {
                 try self.taskOpener.openTask(id: created.threadId)
                 do {
                     try await Task.sleep(nanoseconds: 700_000_000)
-                    try await self.sharedCore.submitTask(
+                    try await self.coreService.submitTask(
                         threadID: created.threadId,
                         cwd: self.ksfRootPath,
                         prompt: created.prompt
@@ -824,7 +634,6 @@ final class UsageViewModel: ObservableObject {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         ksfRootPath = url.standardizedFileURL.path
         defaults.set(ksfRootPath, forKey: "ksfRootPath")
-        bridgeEnabledAt = nil
         projectDashboard = ProjectDashboardSnapshot(availability: .loading)
         localTokenHistoryTask?.cancel()
         localTokenHistoryTask = nil
@@ -857,13 +666,13 @@ final class UsageViewModel: ObservableObject {
     }
 
     func setFeishuProfile(_ profile: String) {
-        guard sharedCoreEnabled, ["primary", "manual-only"].contains(profile) else { return }
+        guard coreServiceEnabled, ["primary", "manual-only"].contains(profile) else { return }
         feishuActionInProgress = true
         Task { [weak self] in
             guard let self else { return }
             defer { self.feishuActionInProgress = false }
             do {
-                try await self.sharedCore.setFeishuProfile(profile)
+                try await self.coreService.setFeishuProfile(profile)
                 await self.refreshSharedDashboard()
             } catch {
                 self.feishuFeedback = error.localizedDescription
@@ -872,13 +681,13 @@ final class UsageViewModel: ObservableObject {
     }
 
     func controlFeishuService(_ action: String) {
-        guard sharedCoreEnabled, ["start", "restart"].contains(action) else { return }
+        guard coreServiceEnabled, ["start", "restart"].contains(action) else { return }
         feishuActionInProgress = true
         Task { [weak self] in
             guard let self else { return }
             defer { self.feishuActionInProgress = false }
             do {
-                try await self.sharedCore.controlFeishuService(action)
+                try await self.coreService.controlFeishuService(action)
                 await self.refreshSharedDashboard()
             } catch {
                 self.feishuFeedback = error.localizedDescription
@@ -887,13 +696,13 @@ final class UsageViewModel: ObservableObject {
     }
 
     func configureFeishu(appID: String, appSecret: String) {
-        guard sharedCoreEnabled, !appID.isEmpty, !appSecret.isEmpty else { return }
+        guard coreServiceEnabled, !appID.isEmpty, !appSecret.isEmpty else { return }
         feishuActionInProgress = true
         Task { [weak self] in
             guard let self else { return }
             defer { self.feishuActionInProgress = false }
             do {
-                try await self.sharedCore.configureFeishu(appID: appID, appSecret: appSecret)
+                try await self.coreService.configureFeishu(appID: appID, appSecret: appSecret)
                 self.feishuFeedback = "已有机器人凭据已写入安全存储。"
             } catch {
                 self.feishuFeedback = error.localizedDescription
@@ -902,13 +711,13 @@ final class UsageViewModel: ObservableObject {
     }
 
     func startFeishuAuth() {
-        guard sharedCoreEnabled else { return }
+        guard coreServiceEnabled else { return }
         feishuActionInProgress = true
         Task { [weak self] in
             guard let self else { return }
             defer { self.feishuActionInProgress = false }
             do {
-                let auth = try await self.sharedCore.startFeishuAuth()
+                let auth = try await self.coreService.startFeishuAuth()
                 self.feishuAuthQRCode = auth.qrDataURL
                 self.feishuAuthUserCode = auth.userCode
                 self.feishuFeedback = nil
@@ -919,13 +728,13 @@ final class UsageViewModel: ObservableObject {
     }
 
     func finishFeishuAuth() {
-        guard sharedCoreEnabled else { return }
+        guard coreServiceEnabled else { return }
         feishuActionInProgress = true
         Task { [weak self] in
             guard let self else { return }
             defer { self.feishuActionInProgress = false }
             do {
-                try await self.sharedCore.finishFeishuAuth()
+                try await self.coreService.finishFeishuAuth()
                 self.feishuAuthQRCode = nil
                 self.feishuAuthUserCode = nil
                 self.feishuFeedback = "飞书 OAuth 认证完成。"
@@ -937,13 +746,13 @@ final class UsageViewModel: ObservableObject {
     }
 
     func refreshFeishuPermissions() {
-        guard sharedCoreEnabled else { return }
+        guard coreServiceEnabled else { return }
         feishuActionInProgress = true
         Task { [weak self] in
             guard let self else { return }
             defer { self.feishuActionInProgress = false }
             do {
-                let result = try await self.sharedCore.feishuPermissions()
+                let result = try await self.coreService.feishuPermissions()
                 let user = result.permissions.identities.user
                 let missing = Set((user.application?.missing ?? []) + user.oauth.missing)
                 self.feishuPermissionStatus = result.permissions.verified && user.ready && missing.isEmpty
@@ -956,46 +765,46 @@ final class UsageViewModel: ObservableObject {
     }
 
     func refreshFeishuSettingsOverview() async {
-        guard sharedCoreEnabled else { return }
-        do { feishuSettingsOverview = try await sharedCore.feishuSettingsOverview() }
+        guard coreServiceEnabled else { return }
+        do { feishuSettingsOverview = try await coreService.feishuSettingsOverview() }
         catch { feishuFeedback = error.localizedDescription }
     }
 
     func updateFeishuFeature(_ feature: String, mode: String, confirmRealWrite: Bool = false) {
-        guard sharedCoreEnabled, !feishuActionInProgress else { return }
+        guard coreServiceEnabled, !feishuActionInProgress else { return }
         feishuActionInProgress = true
         feishuFeedback = nil
         Task { [weak self] in
             guard let self else { return }
             defer { self.feishuActionInProgress = false }
             do {
-                self.feishuSettingsOverview = try await self.sharedCore.updateFeishuFeature(feature, mode: mode, confirmRealWrite: confirmRealWrite)
+                self.feishuSettingsOverview = try await self.coreService.updateFeishuFeature(feature, mode: mode, confirmRealWrite: confirmRealWrite)
                 await self.refreshSharedDashboard()
             } catch { self.feishuFeedback = error.localizedDescription }
         }
     }
 
     func refreshFeishuSetup() async {
-        guard sharedCoreEnabled else {
+        guard coreServiceEnabled else {
             feishuSetup = .notStarted
             return
         }
         do {
-            feishuSetup = try await sharedCore.feishuSetup()
+            feishuSetup = try await coreService.feishuSetup()
         } catch {
             feishuFeedback = error.localizedDescription
         }
     }
 
     func beginFeishuSetup(mode: String, appID: String = "", appSecret: String = "") {
-        guard sharedCoreEnabled, ["new", "existing"].contains(mode) else { return }
+        guard coreServiceEnabled, ["new", "existing"].contains(mode) else { return }
         feishuActionInProgress = true
         feishuFeedback = nil
         Task { [weak self] in
             guard let self else { return }
             defer { self.feishuActionInProgress = false }
             do {
-                let result = try await self.sharedCore.beginFeishuSetup(mode: mode, appID: appID, appSecret: appSecret)
+                let result = try await self.coreService.beginFeishuSetup(mode: mode, appID: appID, appSecret: appSecret)
                 self.applyFeishuSetup(result)
             } catch {
                 self.feishuFeedback = error.localizedDescription
@@ -1005,14 +814,14 @@ final class UsageViewModel: ObservableObject {
     }
 
     func continueFeishuSetup() {
-        guard sharedCoreEnabled else { return }
+        guard coreServiceEnabled else { return }
         feishuActionInProgress = true
         feishuFeedback = nil
         Task { [weak self] in
             guard let self else { return }
             defer { self.feishuActionInProgress = false }
             do {
-                self.applyFeishuSetup(try await self.sharedCore.continueFeishuSetup())
+                self.applyFeishuSetup(try await self.coreService.continueFeishuSetup())
             } catch {
                 self.feishuFeedback = error.localizedDescription
                 await self.refreshFeishuSetup()
@@ -1021,14 +830,14 @@ final class UsageViewModel: ObservableObject {
     }
 
     func verifyFeishuSetup() {
-        guard sharedCoreEnabled else { return }
+        guard coreServiceEnabled else { return }
         feishuActionInProgress = true
         feishuFeedback = nil
         Task { [weak self] in
             guard let self else { return }
             defer { self.feishuActionInProgress = false }
             do {
-                self.applyFeishuSetup(try await self.sharedCore.verifyFeishuSetup())
+                self.applyFeishuSetup(try await self.coreService.verifyFeishuSetup())
                 await self.refreshSharedDashboard()
             } catch {
                 self.feishuFeedback = error.localizedDescription
@@ -1038,7 +847,7 @@ final class UsageViewModel: ObservableObject {
     }
 
     func activateFeishuSetup() {
-        guard sharedCoreEnabled, !feishuActionInProgress, !selectedFeishuTargetAlias.isEmpty else { return }
+        guard coreServiceEnabled, !feishuActionInProgress, !selectedFeishuTargetAlias.isEmpty else { return }
         feishuActionInProgress = true
         feishuFeedback = nil
         Task { [weak self] in
@@ -1046,9 +855,9 @@ final class UsageViewModel: ObservableObject {
             defer { self.feishuActionInProgress = false }
             do {
                 self.applyFeishuSetup(
-                    try await self.sharedCore.activateFeishuSetup(targetAlias: self.selectedFeishuTargetAlias)
+                    try await self.coreService.activateFeishuSetup(targetAlias: self.selectedFeishuTargetAlias)
                 )
-                self.feishuFeedback = "飞书桥已启用，测试消息已发送到“\(self.selectedFeishuTargetAlias)”。"
+                self.feishuFeedback = "飞书服务已启用，测试消息已发送到“\(self.selectedFeishuTargetAlias)”。"
                 await self.refreshSharedDashboard()
             } catch {
                 self.feishuFeedback = error.localizedDescription
@@ -1059,11 +868,11 @@ final class UsageViewModel: ObservableObject {
     }
 
     func cancelFeishuSetup() {
-        guard sharedCoreEnabled else { return }
+        guard coreServiceEnabled else { return }
         Task { [weak self] in
             guard let self else { return }
             do {
-                self.feishuSetup = try await self.sharedCore.cancelFeishuSetup()
+                self.feishuSetup = try await self.coreService.cancelFeishuSetup()
                 self.feishuSetupQRCode = nil
                 self.feishuFeedback = nil
             } catch {
@@ -1073,11 +882,11 @@ final class UsageViewModel: ObservableObject {
     }
 
     func restartFeishuSupervisor() {
-        guard sharedCoreEnabled else { return }
+        guard coreServiceEnabled else { return }
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.sharedCore.restartFeishuSupervisor()
+                try await self.coreService.restartFeishuSupervisor()
                 await self.refreshSharedDashboard()
             } catch {
                 self.feishuFeedback = error.localizedDescription
@@ -1097,19 +906,19 @@ final class UsageViewModel: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
-    private func applyFeishuSetup(_ result: SharedCoreFeishuSetupResult) {
+    private func applyFeishuSetup(_ result: CoreServiceFeishuSetupResult) {
         feishuSetup = result.setup
         feishuSetupQRCode = result.qrDataURL
         feishuFeedback = nil
     }
 
-    func refreshFeishuBridge(showProgress: Bool = true) async {
-        if sharedCoreEnabled {
+    func refreshFeishuService(showProgress: Bool = true) async {
+        if coreServiceEnabled {
             await refreshSharedDashboard()
             return
         }
-        feishuBridge = .notConfigured
-        feishuFeedback = "共享核心未运行，飞书桥不会单独启动。"
+        feishuService = .notConfigured
+        feishuFeedback = "核心服务未运行，飞书服务不会单独启动。"
     }
 
     func sendFeishuTestMessage() {
@@ -1120,8 +929,8 @@ final class UsageViewModel: ObservableObject {
             guard let self else { return }
             defer { self.feishuActionInProgress = false }
             do {
-                guard self.sharedCoreEnabled else { throw SharedCoreError.processStopped }
-                try await self.sharedCore.sendFeishuTest(targetAlias: self.selectedFeishuTargetAlias)
+                guard self.coreServiceEnabled else { throw CoreServiceError.processStopped }
+                try await self.coreService.sendFeishuTest(targetAlias: self.selectedFeishuTargetAlias)
                 self.feishuFeedback = "测试消息已发送到“\(self.selectedFeishuTargetAlias)”。"
                 await self.refreshSharedDashboard()
             } catch {
@@ -1131,7 +940,7 @@ final class UsageViewModel: ObservableObject {
     }
 
     func feishuTaskLink(for task: ProjectTaskItem) -> FeishuTaskLinkSnapshot? {
-        guard let link = feishuTaskLinks[FeishuBridgeClient.taskKey(task.threadID)],
+        guard let link = feishuTaskLinks[FeishuTaskLinkSnapshot.taskKey(for: task.threadID)],
               link.linkState == "active" else { return nil }
         return link
     }
@@ -1142,8 +951,8 @@ final class UsageViewModel: ObservableObject {
 
     func toggleFeishuTaskLink(_ task: ProjectTaskItem) {
         guard !feishuActionInProgress,
-              sharedCoreEnabled,
-              feishuBridge.availability == .ready,
+              coreServiceEnabled,
+              feishuService.availability == .ready,
               !selectedFeishuTargetAlias.isEmpty,
               !feishuTaskLinkActions.contains(task.id)
         else { return }
@@ -1160,11 +969,11 @@ final class UsageViewModel: ObservableObject {
             do {
                 let link: FeishuTaskLinkSnapshot
                 if existing != nil {
-                    link = try await self.sharedCore.releaseTaskLink(
+                    link = try await self.coreService.releaseTaskLink(
                         threadID: task.threadID
                     )
                 } else {
-                    link = try await self.sharedCore.createTaskLink(
+                    link = try await self.coreService.createTaskLink(
                         threadID: task.threadID,
                         title: title,
                         projectName: projectName,
@@ -1174,7 +983,6 @@ final class UsageViewModel: ObservableObject {
                 self.feishuTaskLinks[link.taskKey] = link
                 self.feishuTaskLinkErrors.removeValue(forKey: task.id)
                 self.feishuFeedback = existing == nil ? "“\(title)”已连接到飞书。" : "“\(title)”的飞书连接已解除。"
-                self.startFeishuTaskLinkPollingIfNeeded()
             } catch {
                 let message = error.localizedDescription
                 self.feishuTaskLinkErrors[task.id] = message
@@ -1183,25 +991,16 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    var sharedCoreStatusText: String {
-        sharedCoreEnabled ? "运行中" : "不可用"
+    var coreServiceStatusText: String {
+        coreServiceEnabled ? "运行中" : "不可用"
     }
 
     func shutdown() async {
         guard !shutdownStarted else { return }
         shutdownStarted = true
         rateTimerTask?.cancel()
-        accountTokenTimerTask?.cancel()
-        activeLocalTokenTimerTask?.cancel()
-        localTokenReadTask?.cancel()
-        retryTask?.cancel()
-        taskActivityUpdateTask?.cancel()
-        projectRefreshTask?.cancel()
-        feishuTaskLinkTimerTask?.cancel()
-        sharedCorePollTask?.cancel()
-        await sharedCore.stop()
-        await client?.stop()
-        await taskActivityProvider.stop()
+        coreServicePollTask?.cancel()
+        await coreService.stop()
     }
 
     func quit() {
@@ -1216,18 +1015,6 @@ final class UsageViewModel: ObservableObject {
         )
     }
 
-    private func configureClientIfNeeded() {
-        guard client == nil else { return }
-        guard let executable = CodexLocator.locate() else {
-            status = snapshot?.headlineRemainingPercent == nil ? .codexMissing : .stale
-            lastErrorMessage = "已检查以下位置：\n\(CodexLocator.searchDescription)"
-            return
-        }
-        client = CodexAppServerClient {
-            ProcessAppServerTransport(executableURL: executable)
-        }
-    }
-
     private func configureLoginItem() {
         if launchAtLoginEnabled && !defaults.bool(forKey: "didConfigureLaunchAtLogin") {
             loginItemState = loginItems.setEnabled(true)
@@ -1239,21 +1026,20 @@ final class UsageViewModel: ObservableObject {
     }
 
     private func refreshSharedDashboard() async {
-        guard sharedCoreEnabled, !refreshingSharedCore else { return }
-        refreshingSharedCore = true
+        guard coreServiceEnabled, !refreshingCoreService else { return }
+        refreshingCoreService = true
         beginRefreshActivity()
         defer {
-            refreshingSharedCore = false
+            refreshingCoreService = false
             endRefreshActivity()
         }
         do {
             let activeKSFRoot = isOnboardingComplete ? ksfRootPath : ""
-            let dashboard = try await sharedCore.dashboard(
+            let dashboard = try await coreService.dashboard(
                 ksfRoot: activeKSFRoot,
                 pinnedProjectIDs: pinnedProjectIDs,
                 pricingSelection: pricingSelection
             )
-            await refreshFeishuSetup()
             snapshot = dashboard.usage
             store.save(dashboard.usage)
             switch dashboard.usageStatus {
@@ -1267,7 +1053,6 @@ final class UsageViewModel: ObservableObject {
             tokenErrorMessage = dashboard.tokenError
             taskActivity = dashboard.activity
 
-            projectCatalog = dashboard.projects.catalog
             projectUsage = Dictionary(uniqueKeysWithValues: dashboard.projects.projects.compactMap { item in
                 item.usage.map { (item.id, $0) }
             })
@@ -1300,7 +1085,7 @@ final class UsageViewModel: ObservableObject {
                 message: dashboard.projects.message
             )
 
-            feishuBridge = dashboard.feishu
+            feishuService = dashboard.feishu
             feishuTaskLinks = Dictionary(uniqueKeysWithValues: dashboard.feishuLinks.map { ($0.taskKey, $0) })
             if !dashboard.feishu.targetAliases.contains(selectedFeishuTargetAlias) {
                 setFeishuTargetAlias(dashboard.feishu.targetAliases.count == 1 ? dashboard.feishu.targetAliases[0] : "")
@@ -1329,9 +1114,9 @@ final class UsageViewModel: ObservableObject {
     }
 
     private func refreshPricingCatalog() async {
-        guard sharedCoreEnabled else { return }
+        guard coreServiceEnabled else { return }
         do {
-            let catalog = try await sharedCore.pricingCatalog(customPlans: customPricingPlans)
+            let catalog = try await coreService.pricingCatalog(customPlans: customPricingPlans)
             pricingCatalog = catalog
             customPricingPlans = catalog.plans.filter { !$0.builtIn }
             if !catalog.plans.contains(where: { $0.id == selectedPricingPlanID }) {
@@ -1345,13 +1130,13 @@ final class UsageViewModel: ObservableObject {
     }
 
     private func repriceLoadedTokenHistory() async {
-        guard sharedCoreEnabled else { return }
+        guard coreServiceEnabled else { return }
         guard !tokenHistoryComparison.days.isEmpty else {
             await refreshSharedDashboard()
             return
         }
         do {
-            let comparison = try await sharedCore.tokenHistoryComparison(
+            let comparison = try await coreService.tokenHistoryComparison(
                 dayCount: 30,
                 pricingSelection: pricingSelection,
                 repriceOnly: true
@@ -1390,7 +1175,7 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    private func startSharedCoreTimers() {
+    private func startCoreServiceTimers() {
         rateTimerTask?.cancel()
         rateTimerTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -1401,9 +1186,9 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    private func startSharedCorePolling() {
-        guard popoverIsOpen, sharedCorePollTask == nil else { return }
-        sharedCorePollTask = Task { [weak self] in
+    private func startCoreServicePolling() {
+        guard popoverIsOpen, coreServicePollTask == nil else { return }
+        coreServicePollTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self, self.popoverIsOpen else { break }
                 let hasLiveState = self.taskActivity.runningCount > 0
@@ -1414,242 +1199,10 @@ final class UsageViewModel: ObservableObject {
                 guard !Task.isCancelled else { break }
                 await self.refreshSharedDashboard()
             }
-            self?.sharedCorePollTask = nil
+            self?.coreServicePollTask = nil
         }
     }
 
-    private func startTimers() {
-        rateTimerTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 300_000_000_000)
-                guard !Task.isCancelled else { break }
-                await self?.refreshRateLimits()
-                await self?.refreshProjects()
-            }
-        }
-        accountTokenTimerTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_800_000_000_000)
-                guard !Task.isCancelled else { break }
-                await self?.refreshTokenUsage()
-                await self?.refreshProjects()
-            }
-        }
-    }
-
-    private func startFeishuTaskLinkPollingIfNeeded() {
-        guard popoverIsOpen,
-              feishuTaskLinkTimerTask == nil,
-              feishuTaskLinks.values.contains(where: { $0.linkState == "active" })
-        else { return }
-        feishuTaskLinkTimerTask = Task { [weak self] in
-            while !Task.isCancelled {
-                do { try await Task.sleep(nanoseconds: 3_000_000_000) } catch { break }
-                guard let self, self.popoverIsOpen else { break }
-                await self.refreshFeishuBridge(showProgress: false)
-                if !self.feishuTaskLinks.values.contains(where: { $0.linkState == "active" }) { break }
-            }
-            self?.feishuTaskLinkTimerTask = nil
-        }
-    }
-
-    private func updateActiveLocalTokenTimer(for activity: TaskActivitySnapshot) {
-        guard LocalTokenRefreshPolicy.shouldPoll(for: activity) else {
-            activeLocalTokenTimerTask?.cancel()
-            activeLocalTokenTimerTask = nil
-            return
-        }
-        guard activeLocalTokenTimerTask == nil else { return }
-
-        activeLocalTokenTimerTask = Task { [weak self] in
-            guard let self else { return }
-            await self.refreshLocalTokenUsage()
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(
-                        nanoseconds: LocalTokenRefreshPolicy.activeIntervalNanoseconds
-                    )
-                } catch {
-                    break
-                }
-                guard !Task.isCancelled else { break }
-                await self.refreshLocalTokenUsage()
-            }
-        }
-    }
-
-    private func scheduleProjectRefresh() {
-        projectRefreshTask?.cancel()
-        projectRefreshTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            guard !Task.isCancelled else { return }
-            await self?.refreshProjects()
-        }
-    }
-
-    private func refreshProjects() async {
-        guard !refreshingProjects else { return }
-        refreshingProjects = true
-        isRefreshingProjects = true
-        defer {
-            refreshingProjects = false
-            isRefreshingProjects = false
-        }
-
-        let rootURL = URL(fileURLWithPath: ksfRootPath, isDirectory: true).standardizedFileURL
-        guard FileManager.default.fileExists(atPath: rootURL.path) else {
-            await taskActivityProvider.reconcileLocalTaskCandidates([])
-            projectDashboard = ProjectDashboardSnapshot(
-                availability: .unavailable,
-                projects: unavailablePinnedProjects(),
-                observedAt: Date(),
-                message: "KSF 目录不存在，请在设置中重新选择。"
-            )
-            return
-        }
-
-        do {
-            let bridge = self.bridge
-            let bridgeResult = try await Task.detached(priority: .utility) {
-                let enabledAt = try bridge.enable(rootURL: rootURL)
-                let catalog = try bridge.fetchCatalog(rootURL: rootURL)
-                return (enabledAt, catalog)
-            }.value
-            bridgeEnabledAt = bridgeResult.0
-            projectCatalog = bridgeResult.1.projects
-        } catch {
-            await taskActivityProvider.reconcileLocalTaskCandidates([])
-            projectDashboard = ProjectDashboardSnapshot(
-                availability: error is KSFBridgeError ? .unsupportedProtocol : .unavailable,
-                projects: unavailablePinnedProjects(),
-                observedAt: Date(),
-                message: error.localizedDescription
-            )
-            return
-        }
-
-        var partialMessage: String?
-        configureClientIfNeeded()
-        if let client {
-            do {
-                projectThreads = try await client.fetchThreads()
-                let threadIDs = projectThreads.map(\.id)
-                if threadIDs.isEmpty {
-                    projectProjections = [:]
-                } else {
-                    let bridge = self.bridge
-                    projectProjections = try await Task.detached(priority: .utility) {
-                        try bridge.resolve(rootURL: rootURL, threadIDs: threadIDs).byThreadID
-                    }.value
-                }
-                await taskActivityProvider.reconcileLocalTaskCandidates(
-                    KSFProjectDashboardBuilder.localTaskCandidateIDs(
-                        catalog: projectCatalog,
-                        threads: projectThreads,
-                        projections: projectProjections
-                    )
-                )
-
-                let timelines = projectProjections.map { threadID, projection in
-                    ProjectTaskTimeline(
-                        threadID: threadID,
-                        transitions: projection.bindings.compactMap { binding in
-                            guard let date = Self.parseISO8601(binding.boundAt) else { return nil }
-                            return ProjectBindingTransition(projectID: binding.projectCard, boundAt: date)
-                        }
-                    )
-                }
-                let trackingStart = bridgeEnabledAt ?? Date()
-                let catalog = projectCatalog
-                let threads = projectThreads
-                let usage = await Task.detached(priority: .utility) {
-                    ProjectTokenUsageReader().read(
-                        projectIDs: catalog.map(\.id),
-                        threads: threads,
-                        timelines: timelines,
-                        trackingStartedAt: trackingStart
-                    )
-                }.value
-                projectUsage = usage
-                projectUsageStore.save(usage)
-            } catch {
-                partialMessage = "项目任务与 Token 暂不可用；目录信息仍可使用。"
-                projectThreads = []
-                projectProjections = [:]
-                await taskActivityProvider.reconcileLocalTaskCandidates([])
-            }
-        } else {
-            partialMessage = "未找到 Codex；项目目录仍可使用。"
-            await taskActivityProvider.reconcileLocalTaskCandidates([])
-        }
-
-        let catalog = projectCatalog
-        let loaderResult = await Task.detached(priority: .utility) {
-            var actions: [String: ProjectLaunchAction] = [:]
-            var errors = 0
-            let resolver = ProjectStartScriptResolver()
-            for project in catalog {
-                do {
-                    actions[project.id] = try resolver.load(project: project)
-                } catch {
-                    errors += 1
-                }
-            }
-            return (actions, errors)
-        }.value
-        projectLaunchActions = loaderResult.0
-        if loaderResult.1 > 0 {
-            partialMessage = [partialMessage, "有 \(loaderResult.1) 个项目的 start.sh 未通过安全校验。"]
-                .compactMap { $0 }.joined(separator: " ")
-        }
-
-        rebuildProjectDashboard(message: partialMessage)
-    }
-
-    private func rebuildProjectDashboard(message: String? = nil) {
-        let items = KSFProjectDashboardBuilder.build(
-            catalog: projectCatalog,
-            activeTasks: projectTaskObservations,
-            threads: projectThreads,
-            projections: projectProjections,
-            pinnedProjectIDs: pinnedProjectIDs,
-            usage: projectUsage,
-            launchActions: projectLaunchActions
-        )
-        let reconciledOrder = KSFProjectListOrdering.reconcile(
-            previous: projectListOrder,
-            candidates: projectCatalog.map(\.id) + items.filter { !$0.isUnassigned }.map(\.id)
-        )
-        if reconciledOrder != projectListOrder {
-            projectListOrder = reconciledOrder
-            defaults.set(projectListOrder, forKey: "projectListOrder")
-        }
-        let taskOrderedItems = items.map { item -> ProjectDashboardItem in
-            let stableTaskOrder = ProjectTaskListOrdering.reconcile(
-                previous: projectTaskOrder[item.id] ?? [],
-                candidates: item.tasks
-            )
-            projectTaskOrder[item.id] = stableTaskOrder
-            return item.replacingTasks(ProjectTaskListOrdering.sort(
-                item.tasks,
-                stableOrder: stableTaskOrder
-            ))
-        }
-        let orderedItems = KSFProjectListOrdering.sort(taskOrderedItems, stableOrder: projectListOrder)
-        if let failure = taskOpenFailure,
-           !orderedItems.contains(where: { item in
-               item.id == failure.projectID && !item.tasks.isEmpty
-           }) {
-            taskOpenFailure = nil
-        }
-        projectDashboard = ProjectDashboardSnapshot(
-            availability: .available,
-            projects: orderedItems,
-            catalog: projectCatalog,
-            observedAt: Date(),
-            message: message
-        )
-    }
 
     private func unavailablePinnedProjects() -> [ProjectDashboardItem] {
         let items = pinnedProjectIDs.sorted().map {
@@ -1664,91 +1217,6 @@ final class UsageViewModel: ObservableObject {
         return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
     }
 
-    private func refreshRateLimits() async {
-        guard !refreshingRateLimits else { return }
-        configureClientIfNeeded()
-        guard let client else { return }
-        refreshingRateLimits = true
-        beginRefreshActivity()
-        defer {
-            refreshingRateLimits = false
-            endRefreshActivity()
-        }
-
-        let previousSnapshot = snapshot
-        do {
-            let response = try await client.fetchRateLimits()
-            let now = Date()
-            var updated = snapshot ?? UsageSnapshot()
-            updated.buckets = response.normalizedBuckets.map(\.cacheRepresentation)
-            updated.rateUpdatedAt = now
-            snapshot = updated
-            store.save(updated)
-            status = response.generalBucket?.headlineRemainingPercent == nil ? .unsupportedProtocol : .available
-            lastErrorMessage = nil
-            retryAttempt = 0
-            retryTask?.cancel()
-            await configureNotificationsAfterFirstSnapshot()
-            processResetEvents(previous: previousSnapshot, current: updated, now: now)
-        } catch {
-            applyRateError(error)
-            scheduleRetry()
-        }
-    }
-
-    private func refreshTokenUsage() async {
-        guard !refreshingTokenUsage else { return }
-        configureClientIfNeeded()
-        refreshingTokenUsage = true
-        beginRefreshActivity()
-        defer {
-            refreshingTokenUsage = false
-            endRefreshActivity()
-        }
-
-        let localUsageTask = Task { [weak self] () -> DailyUsageBucket? in
-            guard let self else { return nil }
-            return await self.readLocalTokenUsage()
-        }
-        let localPreviousUsageTask = Task { [weak self] () -> DailyUsageBucket? in
-            guard let self else { return nil }
-            return await self.readLocalPreviousTokenUsage()
-        }
-
-        guard let client else {
-            persistLocalUsage(
-                await localUsageTask.value,
-                previousDayUsage: await localPreviousUsageTask.value
-            )
-            return
-        }
-
-        do {
-            let response = try await client.fetchTokenUsage()
-            let localUsage = await localUsageTask.value
-            let localPreviousUsage = await localPreviousUsageTask.value
-            let now = Date()
-            var updated = snapshot ?? UsageSnapshot()
-            updated.tokenSummary = response.summary
-            updated.dailyUsageBuckets = response.normalizedDailyBuckets()
-            mergeLocalUsage(
-                localUsage,
-                previousDayUsage: localPreviousUsage,
-                into: &updated
-            )
-            updated.tokenUpdatedAt = now
-            updated.localTokenUpdatedAt = now
-            snapshot = updated
-            store.save(updated)
-            tokenErrorMessage = nil
-        } catch {
-            persistLocalUsage(
-                await localUsageTask.value,
-                previousDayUsage: await localPreviousUsageTask.value
-            )
-            tokenErrorMessage = tokenUsageErrorMessage(for: error)
-        }
-    }
 
     private var todayDateString: String {
         LocalTokenUsageReader.dateString(for: Date())
@@ -1781,97 +1249,6 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    private func persistLocalUsage(
-        _ usage: DailyUsageBucket?,
-        previousDayUsage: DailyUsageBucket? = nil
-    ) {
-        var updated = snapshot ?? UsageSnapshot()
-        mergeLocalUsage(usage, previousDayUsage: previousDayUsage, into: &updated)
-        updated.localTokenUpdatedAt = Date()
-        snapshot = updated
-        store.save(updated)
-        persistLocalHistoryCache(
-            [usage, previousDayUsage].compactMap { $0 }
-        )
-    }
-
-    private func mergeLocalUsage(
-        _ usage: DailyUsageBucket?,
-        previousDayUsage: DailyUsageBucket?,
-        into snapshot: inout UsageSnapshot
-    ) {
-        let expectedPreviousDate = yesterdayDateString
-        let rolledOverUsage = snapshot.localDailyUsage.flatMap { existing in
-            existing.startDate == expectedPreviousDate ? existing : nil
-        }
-        let verifiedPreviousUsage = previousDayUsage.flatMap { previous in
-            previous.startDate == expectedPreviousDate ? previous : nil
-        }
-        let retainedPreviousUsage = snapshot.localPreviousDailyUsage.flatMap { previous in
-            previous.startDate == expectedPreviousDate ? previous : nil
-        }
-        snapshot.localPreviousDailyUsage = verifiedPreviousUsage
-            ?? rolledOverUsage
-            ?? retainedPreviousUsage
-        snapshot.localDailyUsage = usage
-    }
-
-    private func refreshLocalTokenUsage() async {
-        persistLocalUsage(await readLocalTokenUsage())
-    }
-
-    private func persistLocalHistoryCache(_ observed: [DailyUsageBucket]) {
-        guard !observed.isEmpty else { return }
-        let rootURL = URL(fileURLWithPath: ksfRootPath, isDirectory: true).standardizedFileURL
-        Task { [weak self, localTokenHistoryCache] in
-            do {
-                let cached = try await localTokenHistoryCache.merge(
-                    ksfRootURL: rootURL,
-                    observed: observed
-                )
-                guard let self else { return }
-                if !self.localTokenHistory.isEmpty {
-                    self.localTokenHistory = Array(cached.days.suffix(30))
-                    self.rebuildTokenHistoryComparison()
-                }
-            } catch {
-                self?.localTokenHistoryError = error.localizedDescription
-            }
-        }
-    }
-
-    private func readLocalTokenUsage() async -> DailyUsageBucket? {
-        if let localTokenReadTask {
-            return await localTokenReadTask.value
-        }
-
-        let task = Task.detached(priority: .utility) {
-            LocalTokenUsageReader().readToday()
-        }
-        localTokenReadTask = task
-        let usage = await task.value
-        localTokenReadTask = nil
-        return usage
-    }
-
-    private func rebuildTokenHistoryComparison() {
-        tokenHistoryComparison = TokenHistoryComparison(
-            days: TokenHistoryComparisonSeries(
-                localDays: localTokenHistory,
-                serverDays: snapshot?.dailyUsageBuckets ?? []
-            ).days
-        )
-    }
-
-    private func readLocalPreviousTokenUsage() async -> DailyUsageBucket? {
-        let calendar = Calendar.current
-        guard let previousDay = calendar.date(byAdding: .day, value: -1, to: Date()) else {
-            return nil
-        }
-        return await Task.detached(priority: .utility) {
-            LocalTokenUsageReader().read(on: previousDay, calendar: calendar)
-        }.value
-    }
 
     private func configureNotificationsAfterFirstSnapshot() async {
         guard resetNotificationsEnabled else { return }
@@ -1951,9 +1328,6 @@ final class UsageViewModel: ObservableObject {
     }
 
     private func taskCreationErrorMessage(for error: Error) -> String {
-        if let submissionError = error as? CodexDesktopTaskSubmissionError {
-            return "任务已创建，但首次说明提交失败：\(submissionError.localizedDescription)"
-        }
         if error is CodexTaskOpeningError {
             return "任务已创建，但 Codex 未能打开它。"
         }
@@ -1976,18 +1350,6 @@ final class UsageViewModel: ObservableObject {
         var isDirectory: ObjCBool = false
         return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
             && isDirectory.boolValue
-    }
-
-    private func scheduleRetry() {
-        retryTask?.cancel()
-        let delays: [UInt64] = [5, 30, 120, 300]
-        let seconds = delays[min(retryAttempt, delays.count - 1)]
-        retryAttempt += 1
-        retryTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
-            guard !Task.isCancelled else { return }
-            await self?.refreshRateLimits()
-        }
     }
 
     private func taskCountText(_ value: Int) -> String {

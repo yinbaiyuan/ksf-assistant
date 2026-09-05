@@ -182,6 +182,38 @@ func (server *Server) dispatch(ctx context.Context, method string, params json.R
 			return nil, err
 		}
 		return map[string]bool{"sent": true}, nil
+	case "feishu/operation/prepare":
+		var input service.FeishuOperationPrepareRequest
+		if err := decodeParams(params, &input); err != nil {
+			return nil, err
+		}
+		return server.service.PrepareFeishuOperation(ctx, input)
+	case "feishu/operation/confirm":
+		var input service.FeishuOperationConfirmRequest
+		if err := decodeParams(params, &input); err != nil {
+			return nil, err
+		}
+		return server.service.ConfirmFeishuOperation(ctx, input)
+	case "feishu/operation/cancel":
+		var input service.FeishuOperationRequest
+		if err := decodeParams(params, &input); err != nil {
+			return nil, err
+		}
+		return server.service.CancelFeishuOperation(ctx, input)
+	case "feishu/operation/status":
+		var input service.FeishuOperationRequest
+		if err := decodeParams(params, &input); err != nil {
+			return nil, err
+		}
+		return server.service.FeishuOperationStatus(ctx, input)
+	case "feishu/policy/read":
+		return server.service.FeishuCapabilityPolicy(ctx)
+	case "feishu/policy/update":
+		var input service.FeishuPolicyUpdateRequest
+		if err := decodeParams(params, &input); err != nil {
+			return nil, err
+		}
+		return server.service.UpdateFeishuCapabilityPolicy(ctx, input)
 	case "feishu/profile/read":
 		return server.service.FeishuProfile(ctx)
 	case "feishu/auth/configure":

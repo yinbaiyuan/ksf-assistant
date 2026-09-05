@@ -2,6 +2,7 @@ package feishu
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,6 +51,22 @@ func TestPublicLinksDeduplicatesLegacyTaskKeys(t *testing.T) {
 	}
 }
 
+func TestPublicTaskLinkUsesOnlyCanonicalStateFields(t *testing.T) {
+	now := time.Now().UTC()
+	links := PublicLinks([]TaskLink{{TaskKey: "canonical", LinkState: "active", TurnState: "idle", TurnOwner: "none", ExpiresAt: now.Add(time.Hour), UpdatedAt: now}})
+	encoded, err := json.Marshal(links[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := fields["state"]; exists {
+		t.Fatalf("legacy duplicate state leaked into the Go domain projection: %s", encoded)
+	}
+}
+
 func TestFindAnyByTaskKeyReturnsLatestReleasedLink(t *testing.T) {
 	root := t.TempDir()
 	store := NewTaskLinkStore(root)
@@ -93,5 +110,146 @@ func TestReleaseUsesSharedTransitionAndMarksCardSyncPending(t *testing.T) {
 	}
 	if !TaskLinkCardSyncPending(link) {
 		t.Fatal("linked card was not marked for durable synchronization")
+	}
+}
+
+func TestReconnectUsesNewCardDeliveryIdentity(t *testing.T) {
+	store := NewTaskLinkStore(t.TempDir())
+	first, err := store.Upsert("thread-reconnect", "Reconnect me", "Project", "me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstKey, err := TaskLinkCardIdempotencyKey(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Release(first.TaskKey); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := store.Upsert("thread-reconnect", "Reconnect me", "Project", "me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondKey, err := TaskLinkCardIdempotencyKey(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if first.TaskKey != second.TaskKey {
+		t.Fatalf("task identity changed across reconnect: %q != %q", first.TaskKey, second.TaskKey)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("connection record identity was reused: %q", first.ID)
+	}
+	if firstKey == secondKey {
+		t.Fatalf("card delivery identity was reused: %q", firstKey)
+	}
+	if second.RootMessageID != "" {
+		t.Fatalf("new connection inherited the previous card: %q", second.RootMessageID)
+	}
+}
+
+func TestTaskLinkCardIdempotencyKeyIsStableForRetry(t *testing.T) {
+	link := TaskLink{ID: "LINK-1234", TaskKey: "stable-task"}
+	first, err := TaskLinkCardIdempotencyKey(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := TaskLinkCardIdempotencyKey(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Fatalf("retry identity changed: %q != %q", first, second)
+	}
+	if _, err := TaskLinkCardIdempotencyKey(TaskLink{}); err == nil {
+		t.Fatal("missing connection record id was accepted")
+	}
+}
+
+func TestFindByIDDoesNotCollapseReconnectHistory(t *testing.T) {
+	store := NewTaskLinkStore(t.TempDir())
+	first, err := store.Upsert("thread-by-id", "Task", "Project", "me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Release(first.TaskKey); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Upsert("thread-by-id", "Task", "Project", "me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, ok, err := store.FindByID(first.ID)
+	if err != nil || !ok || found.ID != first.ID || found.ID == second.ID {
+		t.Fatalf("historical connection was not resolved exactly: %#v %v %v", found, ok, err)
+	}
+}
+
+func TestTaskLinkCleanupKeepsActiveAndProtectedHistory(t *testing.T) {
+	root := t.TempDir()
+	store := NewTaskLinkStore(root)
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	protected := TaskLink{ID: "protected", TaskKey: "protected", LinkState: "released", UpdatedAt: now.Add(-10 * 24 * time.Hour)}
+	protected.SetExtraValue("cardSyncPending", true)
+	file := TaskLinkFile{Protocol: TaskLinkProtocol, SchemaVersion: TaskLinkSchema, Links: []TaskLink{
+		{ID: "active", TaskKey: "active", LinkState: "active", UpdatedAt: now.Add(-40 * 24 * time.Hour), ExpiresAt: now.Add(time.Hour)},
+		{ID: "old", TaskKey: "old", LinkState: "released", UpdatedAt: now.Add(-8 * 24 * time.Hour)},
+		{ID: "recent", TaskKey: "recent", LinkState: "released", UpdatedAt: now.Add(-6 * 24 * time.Hour)},
+		protected,
+	}}
+	if err := store.Save(file); err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.CleanupAt(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Removed != 1 || report.Protected != 1 {
+		t.Fatalf("unexpected cleanup report: %#v", report)
+	}
+	stored, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]bool{}
+	for _, link := range stored.Links {
+		ids[link.ID] = true
+	}
+	if !ids["active"] || !ids["recent"] || !ids["protected"] || ids["old"] {
+		t.Fatalf("unexpected retained links: %#v", ids)
+	}
+}
+
+func TestTaskLinkCleanupCapsTerminalHistoryAndAbandonsStaleProtection(t *testing.T) {
+	store := NewTaskLinkStore(t.TempDir())
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	links := make([]TaskLink, 0, 503)
+	for index := 0; index < 502; index++ {
+		links = append(links, TaskLink{ID: fmt.Sprintf("terminal-%03d", index), TaskKey: fmt.Sprintf("task-%03d", index), LinkState: "released", UpdatedAt: now.Add(-time.Duration(502-index) * time.Minute)})
+	}
+	staleProtected := TaskLink{ID: "stale-protected", TaskKey: "stale-protected", LinkState: "released", UpdatedAt: now.Add(-31 * 24 * time.Hour)}
+	staleProtected.SetExtraString("pendingCleanupDir", "/private/attachment")
+	links = append(links, staleProtected)
+	if err := store.Save(TaskLinkFile{Protocol: TaskLinkProtocol, SchemaVersion: TaskLinkSchema, Links: links}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.CleanupAt(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.AbandonedProtected != 1 {
+		t.Fatalf("stale protection was not abandoned: %#v", report)
+	}
+	stored, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Links) != 500 {
+		t.Fatalf("terminal history was not capped: %d", len(stored.Links))
+	}
+	if stored.Links[0].ID != "terminal-002" {
+		t.Fatalf("oldest removable records were not pruned first: %s", stored.Links[0].ID)
 	}
 }

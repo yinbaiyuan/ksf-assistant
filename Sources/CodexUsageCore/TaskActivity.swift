@@ -30,21 +30,6 @@ public struct TaskActivitySnapshot: Equatable, Sendable {
     }
 }
 
-public protocol CodexTaskActivityProviding: AnyObject {
-    var updates: AsyncStream<TaskActivitySnapshot> { get }
-    func start() async
-    func reconcileLocalTaskCandidates(_ threadIDs: Set<String>) async
-    func refresh() async
-    func stop() async
-}
-
-public protocol DesktopIPCTransport: AnyObject {
-    var incoming: AsyncStream<Data> { get }
-    func start() throws
-    func send(_ data: Data) throws
-    func stop()
-}
-
 public enum CodexTaskRuntimeStatus: String, Codable, Equatable, Sendable {
     case active
     case idle
@@ -176,56 +161,5 @@ private extension CodexTaskObservation {
         if let agentNickname, !agentNickname.isEmpty { return true }
         guard let sourceKind else { return false }
         return sourceKind.lowercased().contains("subagent")
-    }
-}
-
-public enum DesktopIPCFrameError: Error, Equatable, LocalizedError {
-    case invalidLength(Int)
-    case frameTooLarge(Int)
-
-    public var errorDescription: String? {
-        switch self {
-        case let .invalidLength(length):
-            return "Codex desktop IPC returned an invalid frame length: \(length)."
-        case let .frameTooLarge(length):
-            return "Codex desktop IPC frame exceeds the local safety limit: \(length) bytes."
-        }
-    }
-}
-
-public enum DesktopIPCFrameEncoder {
-    public static func encode(_ payload: Data) -> Data {
-        var length = UInt32(payload.count).littleEndian
-        var frame = Data(bytes: &length, count: MemoryLayout<UInt32>.size)
-        frame.append(payload)
-        return frame
-    }
-}
-
-public struct DesktopIPCFrameDecoder {
-    private var buffer = Data()
-    private let maxFrameBytes: Int
-
-    public init(maxFrameBytes: Int = 64 * 1_024 * 1_024) {
-        self.maxFrameBytes = maxFrameBytes
-    }
-
-    public mutating func append<D: DataProtocol>(_ bytes: D) throws -> [Data] {
-        buffer.append(contentsOf: bytes)
-        var frames: [Data] = []
-
-        while buffer.count >= MemoryLayout<UInt32>.size {
-            let length = Int(buffer.prefix(4).enumerated().reduce(UInt32(0)) { value, entry in
-                value | UInt32(entry.element) << UInt32(entry.offset * 8)
-            })
-            guard length > 0 else { throw DesktopIPCFrameError.invalidLength(length) }
-            guard length <= maxFrameBytes else { throw DesktopIPCFrameError.frameTooLarge(length) }
-            guard buffer.count >= length + 4 else { break }
-
-            frames.append(buffer.subdata(in: 4..<(length + 4)))
-            buffer.removeSubrange(0..<(length + 4))
-        }
-
-        return frames
     }
 }

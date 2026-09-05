@@ -9,7 +9,7 @@ Move the packaged Feishu Bridge implementation from Node.js to Go without changi
 ## Contracts To Preserve
 
 - messages and cards;
-- all 219 fixed capabilities and all 23 reviewed non-Approval events;
+- the frozen 219-capability baseline, the v2 fixed long-tail and Approval additions, and all 26 reviewed events;
 - outbox, docbox, and actionbox terminal-state behavior;
 - idempotency, permission checks, redaction, and audit;
 - existing OAuth material, target aliases, profiles, queues, and task links under `~/.config/feishu-bridge`;
@@ -36,14 +36,20 @@ Platform differences may exist only in adapters. macOS uses Keychain, POSIX perm
   pinned lark-cli packaging; macOS arm64 install, restart recovery and real
   outbound acceptance and a real inbound message round trip through Codex and
   the Feishu reply path.
-- macOS arm64 now uses Go in production. Node is retained only for explicit
-  manual rollback and is not an automatic failure path. Windows remains on Node
-  until its platform acceptance is complete.
-- Remaining parity is limited to the old convenience-command orchestration
-  layer (directory/name lookup, selected domain shortcuts and read-only composed
-  workflows). The fixed 219-capability execution surface is already native.
-- Remaining live acceptance: a card click on the switched macOS arm64 build,
-  then macOS x64, Windows x64 and Windows arm64 installation,
+- macOS and Windows production packages now select the Go service explicitly.
+  Node is a frozen offline replay baseline only; it is not packaged, started,
+  or used as an automatic failure path.
+- The registry contains 816 fixed definitions, 812 published capabilities, and
+  explicit governance for all 101 destructive capabilities. The native client,
+  directory/name resolution, selected shortcuts, and composed workflows all
+  call the same Go application service.
+- The Go v2 registry also publishes the reviewed Approval surface: 14 fixed
+  business operations, four explicit event-subscription operations, and two
+  Approval status events. Approval decisions remain confirmation-governed and
+  cancellation/rollback remain disabled by default.
+- Remaining live acceptance: three consecutive Plan card selections that
+  release Desktop waiting on macOS arm64, then macOS x64, Windows x64 and
+  Windows arm64 installation,
   setup, send/receive, recovery, exit and upgrade tests.
 
 ## Done

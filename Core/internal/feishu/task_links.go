@@ -14,11 +14,20 @@ import (
 )
 
 const (
-	TaskLinkProtocol = "codex-feishu-task-link-v1"
-	TaskLinkSchema   = 2
+	TaskLinkProtocol        = "codex-feishu-task-link-v1"
+	TaskLinkSchema          = 2
+	taskLinkHistoryTTL      = 7 * 24 * time.Hour
+	taskLinkProtectionLimit = 30 * 24 * time.Hour
+	taskLinkTerminalHistory = 500
 )
 
 type TaskLinkStore struct{ path string }
+
+type TaskLinkCleanupReport struct {
+	Removed            int `json:"removed"`
+	Protected          int `json:"protected"`
+	AbandonedProtected int `json:"abandonedProtected"`
+}
 
 type TaskLinkFile struct {
 	Protocol      string     `json:"protocol"`
@@ -104,7 +113,6 @@ type PublicTaskLink struct {
 	TurnOwner         string `json:"turnOwner"`
 	ActionRequired    string `json:"actionRequired"`
 	Controls          any    `json:"controls"`
-	State             string `json:"state"`
 	CreatedAt         string `json:"createdAt"`
 	UpdatedAt         string `json:"updatedAt"`
 	ExpiresAt         string `json:"expiresAt"`
@@ -121,6 +129,22 @@ func (link TaskLink) ExtraString(name string) string {
 		_ = json.Unmarshal(raw, &value)
 	}
 	return value
+}
+func (link TaskLink) ExtraRaw(name string) json.RawMessage {
+	if raw := link.Extra[name]; len(raw) > 0 {
+		return append(json.RawMessage(nil), raw...)
+	}
+	return nil
+}
+func (link *TaskLink) SetExtraRaw(name string, value json.RawMessage) {
+	if link.Extra == nil {
+		link.Extra = map[string]json.RawMessage{}
+	}
+	if len(value) == 0 || string(value) == "null" {
+		delete(link.Extra, name)
+		return
+	}
+	link.Extra[name] = append(json.RawMessage(nil), value...)
 }
 func (link *TaskLink) SetExtraString(name, value string) {
 	if link.Extra == nil {
@@ -169,6 +193,86 @@ func (store TaskLinkStore) Load() (TaskLinkFile, error) {
 func (store TaskLinkStore) Save(value TaskLinkFile) error {
 	return withProcessFileLock(store.path+".lock", func() error { return store.saveUnlocked(value) })
 }
+
+// CleanupAt applies the bounded history policy without changing the v2 disk
+// schema. Active records are never removed. Terminal records with unfinished
+// remote or attachment work remain protected for at most 30 days.
+func (store TaskLinkStore) CleanupAt(now time.Time) (TaskLinkCleanupReport, error) {
+	report := TaskLinkCleanupReport{}
+	err := withProcessFileLock(store.path+".lock", func() error {
+		file, err := store.Load()
+		if err != nil {
+			return err
+		}
+		kept := make([]TaskLink, 0, len(file.Links))
+		terminal := make([]int, 0, len(file.Links))
+		for _, link := range file.Links {
+			state := effectiveTaskLinkState(link, now)
+			if state == "active" {
+				kept = append(kept, link)
+				continue
+			}
+			age := now.Sub(link.UpdatedAt)
+			protected := taskLinkCleanupProtected(link)
+			if protected && age <= taskLinkProtectionLimit {
+				report.Protected++
+				kept = append(kept, link)
+				continue
+			}
+			if protected {
+				report.AbandonedProtected++
+			}
+			if age > taskLinkHistoryTTL {
+				report.Removed++
+				continue
+			}
+			terminal = append(terminal, len(kept))
+			kept = append(kept, link)
+		}
+
+		if len(terminal) > taskLinkTerminalHistory {
+			removeCount := len(terminal) - taskLinkTerminalHistory
+			sort.SliceStable(terminal, func(i, j int) bool {
+				return kept[terminal[i]].UpdatedAt.Before(kept[terminal[j]].UpdatedAt)
+			})
+			remove := map[int]bool{}
+			for _, index := range terminal[:removeCount] {
+				remove[index] = true
+			}
+			compacted := make([]TaskLink, 0, len(kept)-removeCount)
+			for index, link := range kept {
+				if remove[index] {
+					report.Removed++
+					continue
+				}
+				compacted = append(compacted, link)
+			}
+			kept = compacted
+		}
+		if report.Removed == 0 {
+			return nil
+		}
+		file.Links = kept
+		return store.saveUnlocked(file)
+	})
+	if err != nil {
+		return TaskLinkCleanupReport{}, err
+	}
+	if report.AbandonedProtected > 0 {
+		_ = NewAuditLog(filepath.Dir(store.path)).Record("task_link_cleanup_abandoned", map[string]any{
+			"count": report.AbandonedProtected,
+		})
+	}
+	return report, nil
+}
+
+func taskLinkCleanupProtected(link TaskLink) bool {
+	var pending, recovering bool
+	_ = link.ExtraValue("cardSyncPending", &pending)
+	_ = link.ExtraValue("recovering", &recovering)
+	recoveryState := strings.ToLower(strings.TrimSpace(link.ExtraString("recoveryState")))
+	return pending || recovering || strings.TrimSpace(link.ExtraString("pendingCleanupDir")) != "" || (recoveryState != "" && recoveryState != "completed" && recoveryState != "failed")
+}
 func (store TaskLinkStore) saveUnlocked(value TaskLinkFile) error {
 	if value.Protocol != TaskLinkProtocol || value.SchemaVersion != TaskLinkSchema {
 		return errors.New("invalid task link store")
@@ -188,6 +292,18 @@ func randomLinkID() (string, error) {
 		return "", err
 	}
 	return "LINK-" + strings.ToUpper(hex.EncodeToString(b)), nil
+}
+
+// TaskLinkCardIdempotencyKey identifies one connection lifecycle, rather than
+// the task itself. Reusing TaskKey here would make Feishu deduplicate a new
+// card after the previous connection was released and the task reconnected.
+func TaskLinkCardIdempotencyKey(link TaskLink) (string, error) {
+	id := strings.TrimSpace(link.ID)
+	if id == "" {
+		return "", errors.New("task link id is required for card delivery")
+	}
+	sum := sha256.Sum256([]byte(TaskLinkProtocol + "\x00" + id))
+	return "task-link-" + hex.EncodeToString(sum[:16]), nil
 }
 
 func (store TaskLinkStore) Upsert(threadID, title, projectName, targetAlias string) (TaskLink, error) {
@@ -246,6 +362,20 @@ func (store TaskLinkStore) Update(taskKey string, patch func(*TaskLink)) (TaskLi
 // reconciled by the long-lived bridge.
 func (store TaskLinkStore) Release(taskKey string) (TaskLink, error) {
 	return store.Update(taskKey, func(link *TaskLink) {
+		link.LinkState = "released"
+		link.TurnState = "idle"
+		link.TurnOwner = "none"
+		link.ActionRequired = "none"
+		link.Phase = "已断开"
+		link.Detail = "任务连接已释放。"
+		if TaskLinkCardMessageID(*link) != "" {
+			link.SetExtraValue("cardSyncPending", true)
+		}
+	})
+}
+
+func (store TaskLinkStore) ReleaseByID(id string) (TaskLink, error) {
+	return store.UpdateByID(id, func(link *TaskLink) {
 		link.LinkState = "released"
 		link.TurnState = "idle"
 		link.TurnOwner = "none"
@@ -317,6 +447,19 @@ func (store TaskLinkStore) FindByMessage(messageID string) (TaskLink, bool, erro
 		}
 		if link.RootMessageID == messageID || contains(link.MessageIDs, messageID) {
 			return link, true, nil
+		}
+	}
+	return TaskLink{}, false, nil
+}
+
+func (store TaskLinkStore) FindByID(id string) (TaskLink, bool, error) {
+	file, err := store.Load()
+	if err != nil {
+		return TaskLink{}, false, err
+	}
+	for index := len(file.Links) - 1; index >= 0; index-- {
+		if file.Links[index].ID == id {
+			return file.Links[index], true, nil
 		}
 	}
 	return TaskLink{}, false, nil
@@ -403,12 +546,5 @@ func projectTaskLink(link TaskLink, now time.Time) PublicTaskLink {
 		remaining = max(0, int(link.ExpiresAt.Sub(now).Seconds()))
 	}
 	controls := map[string]bool{"canSend": state == "active" && link.TurnState != "running", "canSteer": false, "canInterrupt": state == "active" && link.TurnState == "running", "canAnswer": state == "active" && link.TurnState == "waiting_input", "canRelease": state == "active", "acceptsAttachments": state == "active"}
-	legacy := link.TurnState
-	if state != "active" {
-		legacy = state
-	}
-	if legacy == "idle" {
-		legacy = "connected"
-	}
-	return PublicTaskLink{TaskKey: link.TaskKey, Title: link.Title, ProjectName: link.ProjectName, TargetAlias: link.TargetAlias, LinkState: state, TurnState: link.TurnState, TurnOwner: link.TurnOwner, ActionRequired: link.ActionRequired, Controls: controls, State: legacy, CreatedAt: link.CreatedAt.Format(time.RFC3339), UpdatedAt: link.UpdatedAt.Format(time.RFC3339), ExpiresAt: link.ExpiresAt.Format(time.RFC3339), RemainingSeconds: remaining, DetailAvailable: link.Detail != "", Phase: link.Phase, DetailSummary: link.Detail}
+	return PublicTaskLink{TaskKey: link.TaskKey, Title: link.Title, ProjectName: link.ProjectName, TargetAlias: link.TargetAlias, LinkState: state, TurnState: link.TurnState, TurnOwner: link.TurnOwner, ActionRequired: link.ActionRequired, Controls: controls, CreatedAt: link.CreatedAt.Format(time.RFC3339), UpdatedAt: link.UpdatedAt.Format(time.RFC3339), ExpiresAt: link.ExpiresAt.Format(time.RFC3339), RemainingSeconds: remaining, DetailAvailable: link.Detail != "", Phase: link.Phase, DetailSummary: link.Detail}
 }

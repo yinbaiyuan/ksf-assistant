@@ -1,10 +1,43 @@
 package feishu
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
 )
+
+func PendingQuestionRevision(turnID, requestID string, questions []map[string]any) string {
+	raw, _ := json.Marshal(strings.TrimSpace(requestID))
+	return PendingQuestionRevisionRaw(turnID, raw, questions)
+}
+
+func PendingQuestionRevisionRaw(turnID string, requestID json.RawMessage, questions []map[string]any) string {
+	return PendingQuestionRevisionScoped("", turnID, "", requestID, questions)
+}
+
+func PendingQuestionRevisionScoped(taskKey, turnID, ownerClientID string, requestID json.RawMessage, questions []map[string]any) string {
+	taskKey = strings.TrimSpace(taskKey)
+	turnID = strings.TrimSpace(turnID)
+	ownerClientID = strings.TrimSpace(ownerClientID)
+	requestID = json.RawMessage(strings.TrimSpace(string(requestID)))
+	if len(requestID) == 0 || string(requestID) == "null" || len(questions) == 0 {
+		return ""
+	}
+	payload, err := json.Marshal(struct {
+		TaskKey       string           `json:"taskKey,omitempty"`
+		TurnID        string           `json:"turnId"`
+		OwnerClientID string           `json:"ownerClientId,omitempty"`
+		RequestID     json.RawMessage  `json:"requestId"`
+		Questions     []map[string]any `json:"questions"`
+	}{TaskKey: taskKey, TurnID: turnID, OwnerClientID: ownerClientID, RequestID: requestID, Questions: questions})
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:10])
+}
 
 func TaskLinkCardJSON(link TaskLink) (string, error) {
 	statusLabel, statusColor := taskLinkStatusTag(link)
@@ -168,6 +201,10 @@ func taskLinkQuestionElements(link TaskLink) []any {
 	if secret, _ := question["isSecret"].(bool); secret {
 		return nil
 	}
+	questionRevision := strings.TrimSpace(link.ExtraString("pendingQuestionRevision"))
+	if len(questionRevision) != 20 {
+		return nil
+	}
 	questionID, prompt := fmt.Sprint(question["id"]), strings.TrimSpace(fmt.Sprint(question["question"]))
 	elements := []any{markdown("**Codex · 需要选择**\n" + prompt)}
 	options, _ := question["options"].([]any)
@@ -185,13 +222,13 @@ func taskLinkQuestionElements(link TaskLink) []any {
 		if description != "" {
 			content += "\n<font color='grey'>" + boundedCardText(description, 500) + "</font>"
 		}
-		elements = append(elements, cardControlRow(markdown(content), []any{taskCardButton("answer_option_"+fmt.Sprint(index+1), "选择", "task_link_answer", "default", false, link, map[string]any{"questionId": questionID, "answer": label})}, "center"))
+		elements = append(elements, cardControlRow(markdown(content), []any{taskCardButton("answer_option_"+fmt.Sprint(index+1), "选择", "task_link_answer", "default", false, link, map[string]any{"questionId": questionID, "questionRevision": questionRevision, "answer": label})}, "center"))
 	}
 	return elements
 }
 
 func taskCardButton(name, label, actionName, style string, submit bool, link TaskLink, extra map[string]any) map[string]any {
-	value := map[string]any{"namespace": "feishu_bridge", "version": 1, "action": actionName, "taskKey": link.TaskKey}
+	value := map[string]any{"namespace": "feishu_bridge", "version": 1, "action": actionName, "taskKey": link.TaskKey, "linkId": link.ID}
 	for key, item := range extra {
 		value[key] = item
 	}

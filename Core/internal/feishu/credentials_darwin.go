@@ -18,3 +18,7 @@ func readPlatformMasterKey() ([]byte, error) {
 func loadWindowsOfficialCredentials(string) (OfficialCredentials, error) {
 	return OfficialCredentials{}, errors.New("Windows credentials are unavailable on macOS")
 }
+
+func storePlatformOfficialCredentials(string, string, string, string) error { return nil }
+
+func platformOfficialCredentialStatus() string { return "lark-cli-keychain" }

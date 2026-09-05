@@ -1,5 +1,9 @@
 # Feishu Bot Bridge
 
+> 冻结离线基线：本目录保留 Node 实现用于契约回放，不进入 macOS 或
+> Windows 安装包、生产运行入口和自动回退链路。当前实现位于 `Core`，
+> 两个平台均只运行 Go 飞书服务。
+
 在 macOS 或 Windows 本机运行的飞书工作桥：使用飞书官方 SDK 的单一长连接接收入站事件，通过固定版本 `lark-cli` 执行受控飞书能力，并把授权消息连接到本机 Codex。
 
 核心能力包括消息与群聊、通讯录和群目录、Docs/Wiki/评论、Whiteboard/Mindnotes/Markdown、日历任务、Sheets/Base、会议妙记、妙搭 Apps、固定事件收件箱、Codex 任务卡和结果审计。

@@ -1,16 +1,13 @@
 package feishu
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -20,6 +17,7 @@ type DocumentContent struct {
 }
 type DocumentRequest struct {
 	ID                    string          `json:"id"`
+	OperationID           string          `json:"operationId,omitempty"`
 	Type                  string          `json:"type"`
 	Action                string          `json:"action"`
 	Identity              string          `json:"identity"`
@@ -38,24 +36,26 @@ type DocumentRequest struct {
 	Selection             map[string]any  `json:"selection,omitempty"`
 }
 type DocumentResult struct {
-	ID           string         `json:"id"`
-	Status       string         `json:"status"`
-	Action       string         `json:"action,omitempty"`
-	Error        string         `json:"error,omitempty"`
-	Response     map[string]any `json:"response,omitempty"`
-	Preflight    map[string]any `json:"preflight,omitempty"`
-	Verification map[string]any `json:"verification,omitempty"`
-	Version      map[string]any `json:"version,omitempty"`
-	Verified     bool           `json:"verified"`
-	CompletedAt  time.Time      `json:"completedAt"`
+	ID                string         `json:"id"`
+	Status            string         `json:"status"`
+	Action            string         `json:"action,omitempty"`
+	Error             string         `json:"error,omitempty"`
+	FailurePhase      string         `json:"failurePhase,omitempty"`
+	Response          map[string]any `json:"response,omitempty"`
+	Preflight         map[string]any `json:"preflight,omitempty"`
+	Verification      map[string]any `json:"verification,omitempty"`
+	VerificationState string         `json:"verificationState,omitempty"`
+	Version           map[string]any `json:"version,omitempty"`
+	Verified          bool           `json:"verified"`
+	CompletedAt       time.Time      `json:"completedAt"`
 }
 type Docbox struct {
 	root, dataRoot string
-	mu             sync.Mutex
+	repository     workRepository
 }
 
 func NewDocbox(dataRoot string) *Docbox {
-	return &Docbox{root: filepath.Join(dataRoot, "logs"), dataRoot: dataRoot}
+	return &Docbox{root: filepath.Join(dataRoot, "logs"), dataRoot: dataRoot, repository: newWorkRepository(dataRoot, "docbox")}
 }
 func (box *Docbox) queuePath() string  { return filepath.Join(box.root, "docbox.jsonl") }
 func (box *Docbox) resultPath() string { return filepath.Join(box.root, "docbox-results.jsonl") }
@@ -67,7 +67,14 @@ func (box *Docbox) Submit(request DocumentRequest) error {
 	if err := validateDocumentRequest(request); err != nil {
 		return err
 	}
-	return appendPrivateJSONL(box.queuePath(), request)
+	if err := box.repository.migrateLegacy(box.queuePath(), box.resultPath(), box.statePath()); err != nil {
+		return err
+	}
+	conflictKey := "docs/create"
+	if request.Target != nil {
+		conflictKey = "docs/" + request.Target.Kind + ":" + AuditFingerprint(request.Target.Value)
+	}
+	return box.repository.enqueue(request.ID, request, conflictKey, "lark-cli", "standard", "never", request.CreatedAt)
 }
 func validateDocumentRequest(request DocumentRequest) error {
 	if request.ID == "" {
@@ -110,69 +117,53 @@ func validateDocumentRequest(request DocumentRequest) error {
 	if request.UpdateMode != "" && !contains([]string{"append", "overwrite", "str_replace"}, request.UpdateMode) {
 		return errors.New("unsupported_update_mode")
 	}
+	if (request.UpdateMode == "overwrite" || request.UpdateMode == "str_replace") && !operationIDPattern.MatchString(request.OperationID) {
+		return errors.New("destructive_operation_requires_governance")
+	}
 	return nil
 }
 
 func (box *Docbox) Process(ctx context.Context, executor CapabilityExecutor, globalDryRun bool) error {
-	box.mu.Lock()
-	defer box.mu.Unlock()
-	return withProcessFileLock(box.lockPath(), func() error { return box.processLocked(ctx, executor, globalDryRun) })
+	for {
+		processed, err := box.ProcessOne(ctx, executor, globalDryRun)
+		if err != nil || !processed {
+			return err
+		}
+	}
 }
-func (box *Docbox) processLocked(ctx context.Context, executor CapabilityExecutor, globalDryRun bool) error {
-	state := defaultQueueState()
-	if missing, err := readPrivateJSON(box.statePath(), &state); err != nil && !missing {
+
+func (box *Docbox) ProcessOne(ctx context.Context, executor CapabilityExecutor, globalDryRun bool) (bool, error) {
+	if err := box.repository.migrateLegacy(box.queuePath(), box.resultPath(), box.statePath()); err != nil {
+		return false, err
+	}
+	item, found, err := box.repository.claim()
+	if err != nil || !found {
+		return found, err
+	}
+	return true, box.processClaimed(ctx, item, executor, globalDryRun)
+}
+
+func (box *Docbox) processClaimed(ctx context.Context, item WorkItemV3, executor CapabilityExecutor, globalDryRun bool) error {
+	var request DocumentRequest
+	result := DocumentResult{ID: item.ID, CompletedAt: time.Now().UTC()}
+	if err := json.Unmarshal(item.Request, &request); err != nil {
+		result.Status, result.Error = "invalid", "invalid_json"
+	} else {
+		result = executeDocumentRequest(ctx, executor, request, globalDryRun)
+	}
+	if err := box.repository.finish(item, result, result.Error); err != nil {
 		return err
 	}
-	normalizeQueueState(&state)
-	file, err := os.Open(box.queuePath())
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
+	target := "-"
+	if request.Target != nil {
+		target = request.Target.Kind + ":" + AuditFingerprint(request.Target.Value)
 	}
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 65536), 4*1024*1024)
-	line := 0
-	for scanner.Scan() {
-		line++
-		if line <= state.ProcessedLineCount {
-			continue
-		}
-		var request DocumentRequest
-		result := DocumentResult{CompletedAt: time.Now().UTC()}
-		if json.Unmarshal(scanner.Bytes(), &request) != nil {
-			result.ID, result.Status, result.Error = "invalid-line", "invalid", "invalid_json"
-		} else if _, done := state.ProcessedIDs[request.ID]; done {
-			result.ID, result.Status, result.Error = request.ID, "duplicate", "duplicate_id"
-		} else {
-			result = executeDocumentRequest(ctx, executor, request, globalDryRun)
-		}
-		if err := appendPrivateJSONL(box.resultPath(), result); err != nil {
-			return err
-		}
-		target := "-"
-		if request.Target != nil {
-			target = request.Target.Kind + ":" + AuditFingerprint(request.Target.Value)
-		}
-		_ = NewAuditLog(box.dataRoot).Record("docbox_result", map[string]any{"id": result.ID, "action": result.Action, "status": result.Status, "target": target, "content": AuditContentDescriptor(request.Content.Text), "error": result.Error})
-		state.ProcessedLineCount = line
-		if result.ID != "" {
-			state.ProcessedIDs[result.ID] = result.Status
-			trimProcessedIDs(state.ProcessedIDs, 5000)
-		}
-		state.LastProcessedAt = result.CompletedAt.Format(time.RFC3339)
-		state.LastError = result.Error
-		if err := writePrivateJSON(box.statePath(), state); err != nil {
-			return err
-		}
-	}
-	return scanner.Err()
+	_ = NewAuditLog(box.dataRoot).Record("docbox_result", map[string]any{"id": result.ID, "action": result.Action, "status": result.Status, "target": target, "content": AuditContentDescriptor(request.Content.Text), "error": result.Error})
+	return nil
 }
 
 func executeDocumentRequest(ctx context.Context, executor CapabilityExecutor, request DocumentRequest, globalDryRun bool) DocumentResult {
-	result := DocumentResult{ID: request.ID, Action: request.Action, CompletedAt: time.Now().UTC()}
+	result := DocumentResult{ID: request.ID, Action: request.Action, VerificationState: string(VerificationInconclusive), CompletedAt: time.Now().UTC()}
 	if err := validateDocumentRequest(request); err != nil {
 		result.Status, result.Error = "invalid", err.Error()
 		return result
@@ -204,16 +195,20 @@ func executeDocumentRequest(ctx context.Context, executor CapabilityExecutor, re
 	result.Version = version
 	response, err := executor.documentUpdate(ctx, request)
 	if err != nil {
-		result.Status, result.Error = "failed", safeCommandError(err.Error())
+		result.Status, result.Error, result.FailurePhase = string(OperationOutcomeUnknown), safeCommandError(err.Error()), "write"
 		return result
 	}
 	result.Response = response
 	verification, err := executor.documentFetch(ctx, *request.Target)
 	if err != nil {
-		result.Status, result.Error = "failed", safeCommandError(err.Error())
+		result.Status, result.Error, result.FailurePhase = string(OperationOutcomeUnknown), safeCommandError(err.Error()), "verification"
+		result.VerificationState = string(VerificationInconclusive)
 		return result
 	}
-	result.Verification, result.Verified, result.Status = verification, true, "completed"
+	result.Verification = verification
+	result.VerificationState = string(VerificationInconclusive)
+	result.Verified = false
+	result.Status = "completed"
 	return result
 }
 
@@ -282,25 +277,10 @@ func documentToken(target DocumentTarget, response map[string]any) string {
 }
 
 func (box *Docbox) FindResult(id string) (DocumentResult, bool, error) {
+	if err := box.repository.migrateLegacy(box.queuePath(), box.resultPath(), box.statePath()); err != nil {
+		return DocumentResult{}, false, err
+	}
 	var result DocumentResult
-	found := false
-	err := withProcessFileLock(box.resultPath()+".lock", func() error {
-		file, err := os.Open(box.resultPath())
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		defer file.Close()
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			var item DocumentResult
-			if json.Unmarshal(scanner.Bytes(), &item) == nil && item.ID == id {
-				result, found = item, true
-			}
-		}
-		return scanner.Err()
-	})
+	found, err := box.repository.findResult(id, &result)
 	return result, found, err
 }

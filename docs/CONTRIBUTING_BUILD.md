@@ -6,10 +6,10 @@
 
 - Go 1.23+
 - macOS 构建：Swift 5.8+ Command Line Tools
-- Windows 宿主：Node.js 20+ 与 npm
+- Windows Electron 宿主构建及冻结 Node 回放基线：Node.js 20+ 与 npm
 - 仅使用 KSF 开发集成时：Ruby 3.2+
 
-普通用户安装包会携带运行所需的 Go 飞书桥和固定版 lark-cli。迁移期安装包仍携带 Windows 默认入口及人工回退所需的 Node 兼容运行时；macOS arm64 健康路径不启动 Node。
+macOS 与 Windows 安装包都会携带运行所需的 Go 飞书服务和固定版 lark-cli，不携带独立 Node runtime、飞书 npm 生产依赖或 Node 服务源码。Windows 的 Electron 宿主仍使用其内建 Node，但飞书业务不会在 renderer 或 JavaScript 主进程中执行。
 
 ## 验证
 

@@ -1,6 +1,7 @@
 package feishu
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"codexusagebar/core/internal/privateipc"
 )
 
 const (
@@ -27,14 +30,19 @@ type SupervisorOptions struct {
 	Arguments   []string
 	Environment []string
 	Directory   string
+	DataRoot    string
+	Handler     privateipc.Handler
 }
 
 type SupervisorStatus struct {
-	State        string `json:"state"`
-	Configured   bool   `json:"configured"`
-	PID          int    `json:"pid"`
-	RestartCount int    `json:"restartCount"`
-	LastError    string `json:"lastError,omitempty"`
+	State                 string `json:"state"`
+	Configured            bool   `json:"configured"`
+	PID                   int    `json:"pid"`
+	RestartCount          int    `json:"restartCount"`
+	LastError             string `json:"lastError,omitempty"`
+	LastDiagnosticAt      string `json:"lastDiagnosticAt,omitempty"`
+	LastDiagnosticCode    string `json:"lastDiagnosticCode,omitempty"`
+	LastDiagnosticSummary string `json:"lastDiagnosticSummary,omitempty"`
 }
 
 type Supervisor struct {
@@ -42,12 +50,15 @@ type Supervisor struct {
 	options        SupervisorOptions
 	cmd            *exec.Cmd
 	stdin          io.WriteCloser
+	stdout         io.ReadCloser
+	peer           *privateipc.Peer
 	tree           processTree
 	state          string
 	configured     bool
 	stopping       bool
 	restartCount   int
 	lastError      string
+	lastDiagnostic SupervisorDiagnostic
 	startedAt      time.Time
 	restartTimer   *time.Timer
 	restartDelays  []time.Duration
@@ -64,6 +75,16 @@ func NewSupervisor(options SupervisorOptions) *Supervisor {
 		restartWindow: 5 * time.Minute,
 		healthyReset:  5 * time.Minute,
 	}
+}
+
+func (supervisor *Supervisor) SetHandler(handler privateipc.Handler) error {
+	supervisor.mu.Lock()
+	defer supervisor.mu.Unlock()
+	if supervisor.cmd != nil {
+		return errors.New("cannot replace CodexAssistant Feishu private IPC handler while running")
+	}
+	supervisor.options.Handler = handler
+	return nil
 }
 
 func (supervisor *Supervisor) SetConfigured(configured bool) {
@@ -107,14 +128,25 @@ func (supervisor *Supervisor) startLocked() error {
 	if err != nil {
 		return err
 	}
-	command.Stdout = io.Discard
-	command.Stderr = io.Discard
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		_ = stdin.Close()
+		return err
+	}
+	stderr, err := command.StderrPipe()
+	if err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		return err
+	}
 	prepareProcessTree(command)
 	supervisor.state = StateStarting
 	if err := command.Start(); err != nil {
 		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = stderr.Close()
 		supervisor.state = StateDegraded
-		supervisor.lastError = fmt.Sprintf("unable to start Feishu Bridge: %v", err)
+		supervisor.lastError = fmt.Sprintf("unable to start CodexAssistant Feishu: %v", err)
 		return errors.New(supervisor.lastError)
 	}
 	tree, err := attachProcessTree(command)
@@ -122,12 +154,16 @@ func (supervisor *Supervisor) startLocked() error {
 		_ = command.Process.Kill()
 		_, _ = command.Process.Wait()
 		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = stderr.Close()
 		supervisor.state = StateDegraded
-		supervisor.lastError = fmt.Sprintf("unable to own Feishu Bridge process tree: %v", err)
+		supervisor.lastError = fmt.Sprintf("unable to own CodexAssistant Feishu process tree: %v", err)
 		return errors.New(supervisor.lastError)
 	}
 	supervisor.cmd = command
 	supervisor.stdin = stdin
+	supervisor.stdout = stdout
+	supervisor.peer = privateipc.NewPeer(stdout, stdin, supervisor.options.Handler)
 	supervisor.tree = tree
 	supervisor.startedAt = time.Now()
 	if supervisor.configured {
@@ -135,8 +171,46 @@ func (supervisor *Supervisor) startLocked() error {
 	} else {
 		supervisor.state = StateIdleUnconfigured
 	}
+	peer := supervisor.peer
+	go supervisor.drainStderr(command, stderr)
+	go supervisor.servePeer(command, peer)
 	go supervisor.wait(command, tree)
 	return nil
+}
+
+func (supervisor *Supervisor) drainStderr(command *exec.Cmd, stderr io.ReadCloser) {
+	defer stderr.Close()
+	reader := bufio.NewReaderSize(stderr, 64*1024)
+	for {
+		line, prefix, err := reader.ReadLine()
+		if len(line) > 0 {
+			diagnostic := ParseSupervisorDiagnostic(line)
+			if prefix {
+				diagnostic.Code = "child_stderr_chunk"
+				diagnostic.SafeSummary = fmt.Sprintf("child_stderr_chunk · length=%d · %s", len(line), diagnostic.Fingerprint)
+			}
+			_ = NewDiagnosticLog(supervisor.options.DataRoot).Record(diagnostic)
+			supervisor.mu.Lock()
+			if supervisor.cmd == command {
+				supervisor.lastDiagnostic = diagnostic
+			}
+			supervisor.mu.Unlock()
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func (supervisor *Supervisor) servePeer(command *exec.Cmd, peer *privateipc.Peer) {
+	if err := peer.Serve(context.Background()); err != nil && !errors.Is(err, privateipc.ErrPeerClosed) {
+		supervisor.mu.Lock()
+		if supervisor.cmd == command && !supervisor.stopping {
+			supervisor.lastError = "CodexAssistant Feishu private IPC stopped: " + err.Error()
+			supervisor.state = StateDegraded
+		}
+		supervisor.mu.Unlock()
+	}
 }
 
 func (supervisor *Supervisor) wait(command *exec.Cmd, tree processTree) {
@@ -151,6 +225,8 @@ func (supervisor *Supervisor) wait(command *exec.Cmd, tree processTree) {
 	}
 	supervisor.cmd = nil
 	supervisor.stdin = nil
+	supervisor.stdout = nil
+	supervisor.peer = nil
 	supervisor.tree = processTree{}
 	if supervisor.stopping {
 		supervisor.state = StateStopped
@@ -165,7 +241,7 @@ func (supervisor *Supervisor) wait(command *exec.Cmd, tree processTree) {
 		supervisor.firstFailureAt = now
 	}
 	if err == nil {
-		supervisor.lastError = "Feishu Bridge exited unexpectedly"
+		supervisor.lastError = "CodexAssistant Feishu exited unexpectedly"
 	} else {
 		supervisor.lastError = err.Error()
 	}
@@ -176,6 +252,18 @@ func (supervisor *Supervisor) wait(command *exec.Cmd, tree processTree) {
 	delay := supervisor.restartDelays[supervisor.restartCount]
 	supervisor.state = StateStarting
 	supervisor.restartTimer = time.AfterFunc(delay, supervisor.restart)
+}
+
+// Call invokes one whitelisted operation on the managed child over its
+// anonymous stdin/stdout pipes. No standalone client process is launched.
+func (supervisor *Supervisor) Call(ctx context.Context, method string, params any, target any) error {
+	supervisor.mu.Lock()
+	peer := supervisor.peer
+	supervisor.mu.Unlock()
+	if peer == nil {
+		return errors.New("CodexAssistant Feishu private IPC is unavailable")
+	}
+	return peer.Call(ctx, method, params, target)
 }
 
 func (supervisor *Supervisor) restart() {
@@ -258,6 +346,11 @@ func (supervisor *Supervisor) Status() SupervisorStatus {
 		RestartCount: supervisor.restartCount,
 		LastError:    supervisor.lastError,
 	}
+	if !supervisor.lastDiagnostic.At.IsZero() {
+		status.LastDiagnosticAt = supervisor.lastDiagnostic.At.UTC().Format(time.RFC3339Nano)
+		status.LastDiagnosticCode = supervisor.lastDiagnostic.Code
+		status.LastDiagnosticSummary = supervisor.lastDiagnostic.SafeSummary
+	}
 	if supervisor.cmd != nil && supervisor.cmd.Process != nil {
 		status.PID = supervisor.cmd.Process.Pid
 	}
@@ -267,15 +360,15 @@ func (supervisor *Supervisor) Status() SupervisorStatus {
 func validateExecutable(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return "", errors.New("Feishu Bridge executable is not configured")
+		return "", errors.New("CodexAssistant Feishu executable is not configured")
 	}
 	absolute, err := filepath.Abs(value)
 	if err != nil {
-		return "", errors.New("Feishu Bridge executable path is invalid")
+		return "", errors.New("CodexAssistant Feishu executable path is invalid")
 	}
 	info, err := os.Stat(absolute)
 	if err != nil || !info.Mode().IsRegular() {
-		return "", errors.New("Feishu Bridge executable is unavailable")
+		return "", errors.New("CodexAssistant Feishu executable is unavailable")
 	}
 	return absolute, nil
 }

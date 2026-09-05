@@ -323,14 +323,14 @@ struct UsagePopoverView: View {
                 } else {
                     let link = viewModel.feishuTaskLink(for: task)
                     projectRowIconButton(
-                        systemName: link == nil ? "paperplane" : feishuTaskLinkSymbol(link!.state),
-                        label: link == nil ? "连接此任务到飞书" : "解除飞书连接，当前状态：\(feishuTaskLinkText(link!.state))",
-                        tint: link.map { feishuTaskLinkColor($0.state) } ?? .secondary
+                        systemName: link == nil ? "paperplane" : feishuTaskLinkSymbol(link!.presentationState),
+                        label: link == nil ? "连接此任务到飞书" : "解除飞书连接，当前状态：\(feishuTaskLinkText(link!.presentationState))",
+                        tint: link.map { feishuTaskLinkColor($0.presentationState) } ?? .secondary
                     ) {
                         viewModel.toggleFeishuTaskLink(task)
                     }
                     .disabled(
-                        viewModel.feishuBridge.availability != .ready
+                        viewModel.feishuService.availability != .ready
                             || viewModel.selectedFeishuTargetAlias.isEmpty
                     )
                 }
@@ -597,7 +597,7 @@ struct UsagePopoverView: View {
                 .buttonStyle(.bordered)
                 .disabled(
                     isUpdatingLink
-                        || viewModel.feishuBridge.availability != .ready
+                        || viewModel.feishuService.availability != .ready
                         || viewModel.selectedFeishuTargetAlias.isEmpty
                 )
             }
@@ -606,11 +606,11 @@ struct UsagePopoverView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Label(
                         "\(link.targetAlias) · 全权限 · 24 小时",
-                        systemImage: feishuTaskLinkSymbol(link.state)
+                        systemImage: feishuTaskLinkSymbol(link.presentationState)
                     )
-                    .foregroundStyle(feishuTaskLinkColor(link.state))
+                    .foregroundStyle(feishuTaskLinkColor(link.presentationState))
                     HStack(spacing: 4) {
-                        Text(feishuTaskLinkText(link.state))
+                        Text(feishuTaskLinkText(link.presentationState))
                         Text("·")
                         Text("当前控制：\(feishuTurnOwnerText(link.turnOwner))")
                     }
@@ -1389,7 +1389,7 @@ struct UsagePopoverView: View {
                 } label: {
                     HStack(spacing: 8) {
                         VStack(alignment: .leading, spacing: 1) {
-                            Text("飞书桥").font(.caption)
+                            Text("飞书服务").font(.caption)
                             Text(viewModel.feishuStatusText)
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
@@ -1403,7 +1403,7 @@ struct UsagePopoverView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.vertical, 7)
-                .accessibilityLabel("飞书桥，\(viewModel.feishuStatusText)")
+                .accessibilityLabel("飞书服务，\(viewModel.feishuStatusText)")
             }
             .padding(.horizontal, 10)
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
@@ -1630,21 +1630,21 @@ struct UsagePopoverView: View {
         VStack(alignment: .leading, spacing: 10) {
             secondaryHeader(title: "飞书配置", backLabel: "返回设置") { page = .settings }
 
-            if viewModel.feishuSetup.stage != "ready" || viewModel.feishuBridge.processState == "degraded" {
+            if viewModel.feishuSetup.stage != "ready" || viewModel.feishuService.processState == "degraded" {
             VStack(alignment: .leading, spacing: 8) {
                 Text("运行组件")
                     .font(.caption.weight(.semibold))
-                componentStatusRow(name: "Shared Core", status: viewModel.sharedCoreStatusText, color: viewModel.sharedCoreStatusText == "运行中" ? .green : .red)
-                componentStatusRow(name: "飞书桥", status: feishuProcessStatusText, color: viewModel.feishuBridge.processRunning ? .green : feishuStatusColor)
+                componentStatusRow(name: "核心服务", status: viewModel.coreServiceStatusText, color: viewModel.coreServiceStatusText == "运行中" ? .green : .red)
+                componentStatusRow(name: "飞书服务", status: feishuProcessStatusText, color: viewModel.feishuService.processRunning ? .green : feishuStatusColor)
                 componentStatusRow(name: "本机事件", status: feishuProfileText, color: .secondary)
                 Text("\(feishuSetupStageText) · \(feishuStatusDetail)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                Text("退出 CodexAssistant 将停止 Shared Core、飞书桥及其子进程。")
+                Text("退出 CodexAssistant 将停止核心服务、飞书服务及其子进程。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
 
-                if viewModel.feishuBridge.processState == "degraded" {
+                if viewModel.feishuService.processState == "degraded" {
                     Button("重新启动") { viewModel.restartFeishuSupervisor() }
                         .controlSize(.small)
                 }
@@ -1755,11 +1755,11 @@ struct UsagePopoverView: View {
     private var feishuReadySettings: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline) {
-                Text("飞书桥").font(.headline)
+                Text("飞书服务").font(.headline)
                 Spacer()
-                Text(viewModel.feishuBridge.processState == "degraded" ? "需要处理" : "已就绪")
+                Text(viewModel.feishuService.processState == "degraded" ? "需要处理" : "已就绪")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(viewModel.feishuBridge.processState == "degraded" ? .orange : .green)
+                    .foregroundStyle(viewModel.feishuService.processState == "degraded" ? .orange : .green)
             }
             Text(viewModel.feishuSettingsOverview?.summary ?? "正在读取可用范围…")
                 .font(.caption2).foregroundStyle(.secondary)
@@ -1782,7 +1782,7 @@ struct UsagePopoverView: View {
             Divider()
             Text("接收与高级功能").font(.caption.weight(.semibold))
             Picker("本机事件角色", selection: Binding(
-                get: { viewModel.feishuBridge.profile.isEmpty ? "manual-only" : viewModel.feishuBridge.profile },
+                get: { viewModel.feishuService.profile.isEmpty ? "manual-only" : viewModel.feishuService.profile },
                 set: { viewModel.setFeishuProfile($0) }
             )) {
                 Text("主设备").tag("primary")
@@ -1798,26 +1798,26 @@ struct UsagePopoverView: View {
             Divider()
             Text("诊断").font(.caption.weight(.semibold))
             let health = viewModel.feishuSettingsOverview?.health
-            feishuStatusRow("Shared Core", state: health?.core == "running" ? "运行中" : "需要处理", healthy: health?.core == "running")
-            feishuStatusRow("飞书桥", state: health?.bridge == "running" ? "运行中" : (health?.bridge ?? "未知"), healthy: health?.bridge == "running")
+            feishuStatusRow("核心服务", state: health?.core == "running" ? "运行中" : "需要处理", healthy: health?.core == "running")
+            feishuStatusRow("飞书服务", state: health?.bridge == "running" ? "运行中" : (health?.bridge ?? "未知"), healthy: health?.bridge == "running")
             feishuStatusRow("本机事件", state: health?.inbound == "connected" ? "已连接" : (health?.inbound == "manual_only" ? "仅手动能力" : "未连接"), healthy: health?.inbound == "connected" || health?.inbound == "manual_only")
             if let detail = health?.detail, !detail.isEmpty {
                 Text(detail).font(.caption2).foregroundStyle(.secondary)
             }
-            if viewModel.feishuBridge.processState == "degraded" {
+            if viewModel.feishuService.processState == "degraded" {
                 Button("重新启动") { viewModel.restartFeishuSupervisor() }
                     .controlSize(.small)
             }
 
             Divider()
             Text("连接测试").font(.caption.weight(.semibold))
-            if !viewModel.feishuBridge.targetAliases.isEmpty {
+            if !viewModel.feishuService.targetAliases.isEmpty {
                 Picker("测试目标", selection: Binding(
                     get: { viewModel.selectedFeishuTargetAlias },
                     set: { viewModel.setFeishuTargetAlias($0) }
                 )) {
                     Text("请选择").tag("")
-                    ForEach(viewModel.feishuBridge.targetAliases, id: \.self) { Text($0).tag($0) }
+                    ForEach(viewModel.feishuService.targetAliases, id: \.self) { Text($0).tag($0) }
                 }
             }
             Button("确认发送测试消息") { viewModel.sendFeishuTestMessage() }
@@ -1882,9 +1882,9 @@ struct UsagePopoverView: View {
             set: { viewModel.setFeishuTargetAlias($0) }
         )) {
             Text("请选择").tag("")
-            ForEach(viewModel.feishuBridge.targetAliases, id: \.self) { Text($0).tag($0) }
+            ForEach(viewModel.feishuService.targetAliases, id: \.self) { Text($0).tag($0) }
         }
-        .disabled(viewModel.feishuBridge.targetAliases.isEmpty)
+        .disabled(viewModel.feishuService.targetAliases.isEmpty)
     }
 
     private func feishuQRCode(_ dataURL: String) -> NSImage? {
@@ -1908,7 +1908,7 @@ struct UsagePopoverView: View {
     }
 
     private var feishuProfileText: String {
-        switch viewModel.feishuBridge.profile {
+        switch viewModel.feishuService.profile {
         case "primary": return "主设备"
         case "manual-only": return "仅手动能力"
         default: return "未配置"
@@ -1929,8 +1929,8 @@ struct UsagePopoverView: View {
     }
 
     private var feishuProcessStatusText: String {
-        if viewModel.feishuBridge.processRunning { return "运行中" }
-        switch viewModel.feishuBridge.availability {
+        if viewModel.feishuService.processRunning { return "运行中" }
+        switch viewModel.feishuService.availability {
         case .stopped: return "已停止"
         case .notConfigured: return "不可用"
         case .unavailable: return "受限"
@@ -1939,7 +1939,7 @@ struct UsagePopoverView: View {
     }
 
     private var feishuStatusSymbol: String {
-        switch viewModel.feishuBridge.availability {
+        switch viewModel.feishuService.availability {
         case .ready: return "checkmark.circle.fill"
         case .dryRun: return "testtube.2"
         case .unavailable: return "exclamationmark.triangle.fill"
@@ -1949,7 +1949,7 @@ struct UsagePopoverView: View {
     }
 
     private var feishuStatusColor: Color {
-        switch viewModel.feishuBridge.availability {
+        switch viewModel.feishuService.availability {
         case .ready: return .green
         case .dryRun, .unavailable: return .orange
         default: return .secondary
@@ -1957,10 +1957,10 @@ struct UsagePopoverView: View {
     }
 
     private var feishuStatusDetail: String {
-        switch viewModel.feishuBridge.availability {
-        case .notConfigured: return "安装包内飞书桥服务不可用"
+        switch viewModel.feishuService.availability {
+        case .notConfigured: return "安装包内飞书服务不可用"
         case let .unavailable(message): return message
-        case .stopped: return "产品托管的飞书桥尚未启动"
+        case .stopped: return "产品托管的飞书服务尚未启动"
         case .dryRun: return "主动出站仍处于 dry-run"
         case .ready: return "单聊收发、卡片回调与 Codex 控制均已就绪"
         }
@@ -2063,7 +2063,7 @@ struct UsagePopoverView: View {
     private func feishuTurnOwnerText(_ owner: String) -> String {
         switch owner {
         case "desktop": return "Codex Desktop"
-        case "bridge": return "飞书桥"
+        case "bridge": return "飞书服务"
         default: return "无运行轮次"
         }
     }

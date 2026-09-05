@@ -14,24 +14,42 @@ test('bundled Feishu runtime manifest is complete and pinned', () => {
     encoding: 'utf8',
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Node 24\.20\.0, lark-cli 1\.0\.92/);
+	assert.match(result.stdout, /lark-cli 1\.0\.92/);
+	assert.doesNotMatch(result.stdout, /Node/);
 });
 
-test('Windows package copies Feishu production dependencies as an explicit resource', () => {
+test('runtime preparation can unpack Windows artifacts on non-Windows build hosts', () => {
+	const source = fs.readFileSync(path.join(repoRoot, 'scripts', 'prepare-feishu-runtime.mjs'), 'utf8');
+	assert.match(source, /process\.platform === 'win32'/);
+	assert.match(source, /run\('unzip', \['-q', '-o', archive, '-d', unpack\]\)/);
+});
+
+test('Windows package copies only Go Feishu production dependencies', () => {
   const packageConfig = JSON.parse(fs.readFileSync(path.join(repoRoot, 'Windows', 'package.json'), 'utf8'));
   const resources = packageConfig.build.extraResources;
-  assert.ok(resources.some((item) => item.from === '../dist/services/feishu-bridge/node_modules'
-    && item.to === 'services/feishu-bridge/node_modules'));
-  assert.ok(resources.some((item) => item.from === '../dist/runtime/feishu-bridge/windows-${arch}'
+	assert.ok(resources.some((item) => item.from === '../dist/runtime/feishu-bridge/windows-${arch}'
     && item.to === 'runtime/feishu-bridge/windows-${arch}'));
-  assert.ok(resources.some((item) => item.from === '../dist/runtime/lark-cli/windows-${arch}'
-    && item.to === 'runtime/lark-cli/windows-${arch}'));
+	assert.ok(resources.some((item) => item.from === '../dist/runtime/lark-cli/windows-${arch}'
+		&& item.to === 'runtime/lark-cli/windows-${arch}'));
+	assert.ok(!resources.some((item) => /runtime\/node|services\/feishu-bridge/.test(`${item.from} ${item.to}`)));
 });
 
-test('both desktop hosts give the compatibility bridge the pinned packaged lark-cli', () => {
+test('Windows and macOS both inject only the native bridge and lark-cli', () => {
   const windowsMain = fs.readFileSync(path.join(repoRoot, 'Windows', 'src', 'main.cjs'), 'utf8');
-  const macClient = fs.readFileSync(path.join(repoRoot, 'Sources', 'CodexUsageBar', 'SharedCoreProcessClient.swift'), 'utf8');
-  assert.match(windowsMain, /CODEX_USAGE_BAR_LARK_CLI:\s*runtime\.larkCLI/);
-  assert.doesNotMatch(windowsMain, /CODEX_USAGE_BAR_LARK_CLI:[^\n]*FEISHU_GO_PREVIEW/);
-  assert.match(macClient, /if let larkCLI = runtime\.larkCLI \{\s*environment\["CODEX_USAGE_BAR_LARK_CLI"\] = larkCLI\.path\s*\}/);
+  const macClient = fs.readFileSync(path.join(repoRoot, 'Sources', 'CodexUsageBar', 'CoreServiceProcessClient.swift'), 'utf8');
+	assert.match(windowsMain, /CODEX_USAGE_BAR_LARK_CLI:\s*runtime\.larkCLI/);
+	assert.match(windowsMain, /CODEX_USAGE_BAR_FEISHU_BRIDGE:\s*runtime\.bridge/);
+	assert.doesNotMatch(windowsMain, /CODEX_USAGE_BAR_NODE|CODEX_USAGE_BAR_FEISHU_SERVICE_ROOT|FEISHU_GO_PREVIEW/);
+  assert.match(macClient, /environment\["CODEX_USAGE_BAR_FEISHU_BRIDGE"\] = runtime\.bridge\.path/);
+  assert.match(macClient, /environment\["CODEX_USAGE_BAR_LARK_CLI"\] = runtime\.larkCLI\.path/);
+  assert.doesNotMatch(macClient, /CODEX_USAGE_BAR_NODE/);
+  assert.doesNotMatch(macClient, /CODEX_USAGE_BAR_FEISHU_SERVICE_ROOT/);
+});
+
+test('macOS package has no Node build or runtime dependency', () => {
+  const buildScript = fs.readFileSync(path.join(repoRoot, 'scripts', 'build-app.sh'), 'utf8');
+  assert.doesNotMatch(buildScript, /node\s+"\$repo_root\/scripts\//);
+  assert.doesNotMatch(buildScript, /runtime\/node\/darwin/);
+  assert.doesNotMatch(buildScript, /services\/feishu-bridge\/scripts\/bridge-client\.js/);
+  assert.match(buildScript, /go run \.\/cmd\/codex-build-assets/);
 });

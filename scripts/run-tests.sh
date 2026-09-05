@@ -7,6 +7,7 @@ build_dir="$repo_root/.build/direct-tests"
 mkdir -p "$build_dir"
 
 (cd "$repo_root/Core" && go test ./...)
+(cd "$repo_root/Services/FeishuBridge" && npm test)
 (cd "$repo_root/Windows" && npm test)
 
 host_arch="$(uname -m)"
@@ -29,11 +30,11 @@ esac
     -I "$build_dir" \
     -L "$build_dir" \
     -lCodexUsageCore \
-    "$repo_root/Sources/CodexUsageBar/FeishuBridgeClient.swift" \
-    "$repo_root/Sources/CodexUsageBar/SharedCoreProcessClient.swift" \
-    "$repo_root/Tests/SharedCoreProcessStandalone/main.swift" \
-    -o "$build_dir/shared-core-process-tests"
-"$build_dir/shared-core-process-tests"
+    "$repo_root/Sources/CodexUsageBar/FeishuModels.swift" \
+    "$repo_root/Sources/CodexUsageBar/CoreServiceProcessClient.swift" \
+    "$repo_root/Tests/CoreServiceProcessStandalone/main.swift" \
+    -o "$build_dir/core-service-process-tests"
+"$build_dir/core-service-process-tests"
 bash "$repo_root/scripts/test-quit-lifecycle.sh"
 
 if /usr/bin/xcrun --sdk macosx --show-sdk-platform-path >/dev/null 2>&1; then
@@ -51,30 +52,6 @@ echo "Command Line Tools cannot provide SDK PlatformPath; using the Swift 5.8 di
     "$repo_root/Tests/Standalone/main.swift" \
     -o "$build_dir/model-tests"
 "$build_dir/model-tests"
-
-/usr/bin/swiftc \
-    -parse-as-library \
-    -target arm64-apple-macos13.0 \
-    "$repo_root"/Sources/CodexUsageCore/*.swift \
-    "$repo_root/Tests/ProtocolStandalone/main.swift" \
-    -o "$build_dir/protocol-tests"
-"$build_dir/protocol-tests"
-
-/usr/bin/swiftc \
-    -parse-as-library \
-    -target arm64-apple-macos13.0 \
-    "$repo_root"/Sources/CodexUsageCore/*.swift \
-    "$repo_root/Tests/TaskActivityStandalone/main.swift" \
-    -o "$build_dir/task-activity-tests"
-"$build_dir/task-activity-tests"
-
-/usr/bin/swiftc \
-    -parse-as-library \
-    -target arm64-apple-macos13.0 \
-    "$repo_root"/Sources/CodexUsageCore/*.swift \
-    "$repo_root/Tests/TaskSubmissionStandalone/main.swift" \
-    -o "$build_dir/task-submission-tests"
-"$build_dir/task-submission-tests"
 
 /usr/bin/swiftc \
     -parse-as-library \
@@ -105,25 +82,6 @@ echo "Command Line Tools cannot provide SDK PlatformPath; using the Swift 5.8 di
     -o "$build_dir/task-opening-tests"
 "$build_dir/task-opening-tests"
 
-/usr/bin/swiftc \
-    -parse-as-library \
-    -target arm64-apple-macos13.0 \
-    -I "$build_dir" \
-    -L "$build_dir" \
-    -lCodexUsageCore \
-    "$repo_root/Sources/CodexUsageBar/KSFBridgeClient.swift" \
-    "$repo_root/Tests/KSFBridgeStandalone/main.swift" \
-    -o "$build_dir/ksf-bridge-tests"
-"$build_dir/ksf-bridge-tests"
-
-/usr/bin/swiftc \
-    -parse-as-library \
-    -target arm64-apple-macos13.0 \
-    "$repo_root/Sources/CodexUsageBar/FeishuBridgeClient.swift" \
-    "$repo_root/Tests/FeishuBridgeStandalone/main.swift" \
-    -o "$build_dir/feishu-bridge-tests"
-"$build_dir/feishu-bridge-tests"
-
 view_model_test_app="$build_dir/UsageViewModelTests.app"
 view_model_test_binary="$view_model_test_app/Contents/MacOS/CodexUsageBar"
 mkdir -p "$view_model_test_app/Contents/MacOS"
@@ -135,17 +93,14 @@ cp "$repo_root/Resources/Info.plist" "$view_model_test_app/Contents/Info.plist"
     -L "$build_dir" \
     -lCodexUsageCore \
     "$repo_root/Sources/CodexUsageBar/AppConfiguration.swift" \
-    "$repo_root/Sources/CodexUsageBar/CodexLocator.swift" \
     "$repo_root/Sources/CodexUsageBar/CodexTaskOpener.swift" \
-    "$repo_root/Sources/CodexUsageBar/FeishuBridgeClient.swift" \
+    "$repo_root/Sources/CodexUsageBar/FeishuModels.swift" \
     "$repo_root/Sources/CodexUsageBar/LegacyWeChatDataCleaner.swift" \
-    "$repo_root/Sources/CodexUsageBar/KSFBridgeClient.swift" \
-    "$repo_root/Sources/CodexUsageBar/ProcessAppServerTransport.swift" \
     "$repo_root/Sources/CodexUsageBar/ProjectUsageStore.swift" \
+    "$repo_root/Sources/CodexUsageBar/CoreServiceProcessClient.swift" \
     "$repo_root/Sources/CodexUsageBar/SnapshotStore.swift" \
     "$repo_root/Sources/CodexUsageBar/SystemServices.swift" \
     "$repo_root/Sources/CodexUsageBar/TerminalActionLauncher.swift" \
-    "$repo_root/Sources/CodexUsageBar/UnixSocketDesktopIPCTransport.swift" \
     "$repo_root/Sources/CodexUsageBar/UsageViewModel.swift" \
     "$repo_root/Tests/UsageViewModelStandalone/main.swift" \
     -framework AppKit \
@@ -169,7 +124,6 @@ cp "$repo_root/Resources/Info.plist" "$view_model_test_app/Contents/Info.plist"
     -target arm64-apple-macos13.0 \
     "$repo_root/Tests/UILayoutStandalone/main.swift" \
     -o "$build_dir/ui-layout-tests"
-"$build_dir/ui-layout-tests" \
-    "$repo_root/Sources/CodexUsageBar/UsagePopoverView.swift"
+"$build_dir/ui-layout-tests" "$repo_root/Sources/CodexUsageBar/UsagePopoverView.swift"
 
 "$repo_root/scripts/build-app.sh"

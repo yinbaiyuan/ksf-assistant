@@ -2,12 +2,26 @@ package feishu
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestCapabilityResultIsClippedBeforePersistence(t *testing.T) {
+	input := map[string]any{"data": strings.Repeat("x", maximumCapabilityResultBytes*2)}
+	result := boundCapabilityResult(input)
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > maximumCapabilityResultBytes+4096 || result["_truncated"] != true {
+		t.Fatalf("bounded result bytes=%d result=%#v", len(encoded), result)
+	}
+}
 
 func TestCapabilityInvocationKeepsPrivateTextOutOfArguments(t *testing.T) {
 	definition, ok := CapabilityByID("im.message.reply")
@@ -55,6 +69,74 @@ func TestForbiddenPayloadTraversesArrays(t *testing.T) {
 	}
 }
 
+func TestApprovalCarrierPayloadIsNotRejectedByLegacyDomainBan(t *testing.T) {
+	if forbiddenPayload(map[string]any{"data": map[string]any{"approval": "approved", "instance_code": "instance_1"}}) {
+		t.Fatal("fixed approval capability payload was rejected by the retired domain ban")
+	}
+}
+
+func TestApprovalDecisionInvocationUsesPrivateDataAndCLIGate(t *testing.T) {
+	definition, ok := CapabilityByID("approval.tasks.approve")
+	if !ok {
+		t.Fatal("missing approval decision capability")
+	}
+	args, _, files, err := capabilityInvocation(definition, map[string]any{"data": map[string]any{"instance_code": "instance_1", "task_id": "task_1", "comment": "private approval comment"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--yes") || strings.Contains(joined, "private approval comment") || len(files) != 1 {
+		t.Fatalf("unsafe approval invocation: args=%#v files=%d", args, len(files))
+	}
+}
+
+func TestEnabledApprovalCancellationStillUsesTheCLIGate(t *testing.T) {
+	definition, ok := CapabilityByID("approval.instances.cancel")
+	if !ok || definition.Risk != "destructive" {
+		t.Fatal("missing destructive approval cancellation capability")
+	}
+	args, _, _, err := capabilityInvocation(definition, map[string]any{"data": map[string]any{"instance_code": "instance_1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(args, "--yes") {
+		t.Fatalf("destructive approval invocation omitted CLI confirmation: %#v", args)
+	}
+}
+
+func TestApprovalEventSubscriptionUsesFixedRawEndpoint(t *testing.T) {
+	definition, ok := CapabilityByID("approval.events.instance.subscribe")
+	if !ok {
+		t.Fatal("missing approval event subscription capability")
+	}
+	args, _, files, err := capabilityInvocation(definition, map[string]any{"subscription-type": "INVOLVED_APPROVAL"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "api POST /open-apis/approval/v4/instances/subscription") || strings.Contains(joined, "INVOLVED_APPROVAL") || len(files) != 1 {
+		t.Fatalf("unexpected approval subscription invocation: args=%#v files=%d", args, len(files))
+	}
+}
+
+func TestApprovalWritePayloadUsesFixedNestedSchema(t *testing.T) {
+	definition, _ := CapabilityByID("approval.tasks.approve")
+	valid := map[string]any{"data": map[string]any{"instance_code": "instance_1", "task_id": "task_1", "comment": "同意"}}
+	if err := validateCapabilityInput(definition, valid); err != nil {
+		t.Fatalf("valid approval input rejected: %v", err)
+	}
+	for _, input := range []map[string]any{
+		{"data": map[string]any{"instance_code": "instance_1"}},
+		{"data": map[string]any{"instance_code": "instance_1", "task_id": "task_1", "unexpected": true}},
+		{"data": map[string]any{"instance_code": "instance_1", "task_id": "task_1", "form": "not-json"}},
+		{"data": map[string]any{"instance_code": "instance_1", "task_id": "task_1", "form": `{}`}},
+	} {
+		if err := validateCapabilityInput(definition, input); err == nil {
+			t.Fatalf("invalid approval input accepted: %#v", input)
+		}
+	}
+}
+
 func TestExecuteRunsPreflightWriteAndReread(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fixture uses a POSIX shell")
@@ -80,7 +162,7 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result["verified"] != true || result["preflight"] == nil || result["verification"] == nil {
+	if result["verified"] != false || result["verificationState"] != string(VerificationInconclusive) || result["preflight"] == nil || result["verification"] == nil {
 		t.Fatalf("execution did not preserve verification envelope: %#v", result)
 	}
 	calls, err := os.ReadFile(logPath)
@@ -96,11 +178,82 @@ esac
 	}
 }
 
+func TestRawCapabilityExecutorRejectsSDKAndServiceRoutes(t *testing.T) {
+	runner := CapabilityExecutor{}
+	tests := []struct {
+		id    string
+		input map[string]any
+	}{
+		{
+			id: "im.sdk.message.send",
+			input: map[string]any{
+				"request-id": "OUT-raw-route", "target-type": "open_id", "target-id": "ou_private",
+				"format": "text", "text": "private", "source": "test",
+			},
+		},
+		{
+			id: "docs.service.document.create",
+			input: map[string]any{
+				"content": "private", "format": "markdown", "source": "test",
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.id, func(t *testing.T) {
+			if _, err := runner.ExecuteWithOptions(context.Background(), test.id, test.input, CapabilityExecutionOptions{}); err == nil || err.Error() != "capability_requires_unified_executor" {
+				t.Fatalf("raw executor route error = %v", err)
+			}
+		})
+	}
+}
+
+func TestRereadFailureReturnsPartialWriteEvidenceForReconciliation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses a POSIX shell")
+	}
+	root := t.TempDir()
+	fetchCount := filepath.Join(root, "fetch-count")
+	bin := filepath.Join(root, "fake-lark-cli")
+	script := `#!/bin/sh
+case "$*" in
+  *markdown\ +fetch*)
+    count=0
+    if [ -f "` + fetchCount + `" ]; then count=$(cat "` + fetchCount + `"); fi
+    count=$((count + 1))
+    printf '%s' "$count" > "` + fetchCount + `"
+    if [ "$count" -gt 1 ]; then printf 'reread unavailable\n' >&2; exit 1; fi
+    printf '{"data":{"content":"before"}}\n'
+    ;;
+  *markdown\ +overwrite*) printf '{"data":{"file_token":"fm_test"}}\n' ;;
+  *) printf '{}\n' ;;
+esac
+`
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner := CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root}
+	result, err := runner.Execute(context.Background(), "markdown.overwrite", map[string]any{"file-token": "fm_test", "content": "replacement"})
+	if err == nil || !CapabilityOutcomeUncertain(err) {
+		t.Fatalf("reread error = %v", err)
+	}
+	if result == nil || result["response"] == nil || result["verified"] != false || result["verificationState"] != string(VerificationInconclusive) {
+		t.Fatalf("partial result = %#v", result)
+	}
+}
+
 func TestMappedCapabilityInputReadsNestedAndRecursiveResult(t *testing.T) {
 	step := &CapabilityStep{Map: map[string]string{"release-id": "$result.release_id"}}
 	value := mappedCapabilityInput(step, nil, map[string]any{"data": map[string]any{"release_id": "rel_1"}})
 	if value["release-id"] != "rel_1" {
 		t.Fatalf("result mapping failed: %#v", value)
+	}
+}
+
+func TestMappedCapabilityInputReadsNestedRequestValues(t *testing.T) {
+	step := &CapabilityStep{Map: map[string]string{"instance-code": "$input.data.instance_code"}}
+	got := mappedCapabilityInput(step, map[string]any{"data": map[string]any{"instance_code": "instance_1"}}, nil)
+	if got["instance-code"] != "instance_1" {
+		t.Fatalf("nested input mapping = %#v", got)
 	}
 }
 
@@ -135,5 +288,75 @@ func TestCapabilityPathPreparationRejectsSymlinkInputAndOutputParent(t *testing.
 	outputDefinition := CapabilityDefinition{Flags: map[string]CapabilityField{"file": {Type: "path", Output: true}}}
 	if _, err := runner.prepareCapabilityPaths(outputDefinition, map[string]any{"file": "output/result.txt"}); err == nil {
 		t.Fatal("symlink output parent was accepted")
+	}
+}
+
+func TestNoteTranscriptUsesPrivateTemporaryArtifactAndCleansIt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses a POSIX shell")
+	}
+	root := t.TempDir()
+	bin := filepath.Join(root, "fake-lark-cli")
+	script := `#!/bin/sh
+output=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output" ]; then shift; output="$1"; fi
+  shift
+done
+mkdir -p "$(dirname "$output")"
+printf 'private transcript' > "$output"
+printf '{"data":{"ok":true}}\n'
+`
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner := CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root}
+	result, err := runner.Execute(context.Background(), "note.shortcut.transcript", map[string]any{"note-id": "note_test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, _ := result["response"].(map[string]any)
+	if response["transcript"] != "private transcript" {
+		t.Fatalf("transcript artifact was not returned: %#v", result)
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "private-cache", "transcripts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("transcript artifact was not cleaned: %#v", entries)
+	}
+}
+
+func TestCapabilityExecutorRejectsOversizedCLIOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses a POSIX shell")
+	}
+	root := t.TempDir()
+	bin := filepath.Join(root, "fake-lark-cli")
+	script := "#!/bin/sh\ndd if=/dev/zero bs=1048576 count=5 2>/dev/null | tr '\\000' x\n"
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner := CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root}
+	_, err := runner.run(context.Background(), CapabilityDefinition{Command: []string{"fake"}}, []string{"fake"}, nil, nil, time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "output exceeds safe limit") {
+		t.Fatalf("oversized output result = %v", err)
+	}
+}
+
+func TestBoundedDestructivePreflightUsesOnlyLocalRedactedEvidence(t *testing.T) {
+	const target = "wb_private_target"
+	runner := CapabilityExecutor{}
+	evidence, err := runner.ReadPreflight(context.Background(), "events.watch.whiteboard.remove", map[string]any{"target": target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence["kind"] != "input_summary" || strings.Contains(string(encoded), target) || !strings.Contains(string(encoded), "sha256:") {
+		t.Fatalf("bounded preflight exposed raw input or lost its fingerprint: %s", encoded)
 	}
 }

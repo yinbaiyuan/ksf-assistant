@@ -1,7 +1,6 @@
 package feishu
 
 import (
-	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -10,11 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 )
 
-const QueueSchemaVersion = 2
+const QueueSchemaVersion = 3
 
 type ActionRequest struct {
 	ID                    string         `json:"id"`
@@ -22,6 +20,7 @@ type ActionRequest struct {
 	Domain                string         `json:"domain"`
 	Action                string         `json:"action"`
 	CapabilityID          string         `json:"capabilityId"`
+	OperationID           string         `json:"operationId,omitempty"`
 	Identity              string         `json:"identity"`
 	Input                 map[string]any `json:"input"`
 	ExplicitAuthorization bool           `json:"explicitAuthorization"`
@@ -37,6 +36,7 @@ type ActionRequest struct {
 }
 type ActionResult struct {
 	ID           string         `json:"id"`
+	OperationID  string         `json:"operationId,omitempty"`
 	Status       string         `json:"status"`
 	CapabilityID string         `json:"capabilityId"`
 	Result       map[string]any `json:"result,omitempty"`
@@ -85,11 +85,16 @@ func trimProcessedIDs(values map[string]string, limit int) {
 
 type Actionbox struct {
 	root, dataRoot string
-	mu             sync.Mutex
+	repository     workRepository
+	operations     *OperationService
 }
 
 func NewActionbox(dataRoot string) *Actionbox {
-	return &Actionbox{root: filepath.Join(dataRoot, "logs"), dataRoot: dataRoot}
+	return &Actionbox{root: filepath.Join(dataRoot, "logs"), dataRoot: dataRoot, repository: newWorkRepository(dataRoot, "actionbox")}
+}
+
+func NewGovernedActionbox(dataRoot string, operations *OperationService) *Actionbox {
+	return &Actionbox{root: filepath.Join(dataRoot, "logs"), dataRoot: dataRoot, repository: newWorkRepository(dataRoot, "actionbox"), operations: operations}
 }
 func (box *Actionbox) queuePath() string  { return filepath.Join(box.root, "actionbox.jsonl") }
 func (box *Actionbox) resultPath() string { return filepath.Join(box.root, "actionbox-results.jsonl") }
@@ -112,8 +117,6 @@ func newQueueID(prefix string) (string, error) {
 }
 
 func (box *Actionbox) Submit(request ActionRequest) error {
-	box.mu.Lock()
-	defer box.mu.Unlock()
 	if request.ID == "" || request.Type != "feishu_capability" || request.Domain != "capability" || request.Action != "execute" || !request.ExplicitAuthorization {
 		return errors.New("invalid actionbox request")
 	}
@@ -124,14 +127,26 @@ func (box *Actionbox) Submit(request ActionRequest) error {
 	if definition.Risk == "read" {
 		return errors.New("read_capability_must_not_enter_actionbox")
 	}
-	if definition.Queue != "actionbox" {
+	if definition.Queue != "actionbox" && !(box.operations != nil && definition.Queue == "docbox") {
 		return errors.New("capability_requires_" + definition.Queue)
 	}
 	if definition.Identity != request.Identity {
 		return errors.New("unsupported_identity")
 	}
-	if definition.Risk == "high-impact-write" && !request.ConfirmHighImpact {
-		return errors.New("high_impact_confirmation_required")
+	if request.OperationID != "" {
+		if box.operations == nil {
+			return errors.New("operation_service_unavailable")
+		}
+		if err := box.operations.ValidateQueuedRequest(request.OperationID, request.CapabilityID, request.Input); err != nil {
+			return err
+		}
+	} else {
+		if definition.Risk == "destructive" {
+			return errors.New("destructive_operation_requires_governance")
+		}
+		if definition.Risk == "high-impact-write" && !request.ConfirmHighImpact {
+			return errors.New("high_impact_confirmation_required")
+		}
 	}
 	if definition.Risk == "remote-operation" {
 		if request.RemoteTimeoutMS != 0 && (request.RemoteTimeoutMS < 10000 || request.RemoteTimeoutMS > 30*60*1000) {
@@ -146,111 +161,200 @@ func (box *Actionbox) Submit(request ActionRequest) error {
 	if err := ValidateCapabilityInput(request.CapabilityID, request.Input); err != nil {
 		return err
 	}
-	if err := ensurePrivateDirectory(box.root); err != nil {
+	if err := box.repository.migrateLegacy(box.queuePath(), box.resultPath(), box.statePath()); err != nil {
 		return err
 	}
-	return appendPrivateJSONL(box.queuePath(), request)
+	return box.repository.enqueue(request.ID, request, workConflictKey(definition, request.Input), definition.Backend, definition.ExecutionClass, definition.RetryClass, request.CreatedAt)
 }
 
-func (box *Actionbox) Process(ctx context.Context, executor CapabilityExecutor) error {
-	box.mu.Lock()
-	defer box.mu.Unlock()
-	return withProcessFileLock(box.processLockPath(), func() error {
-		return box.processLocked(ctx, executor)
-	})
+type actionExecutor interface {
+	ExecuteWithOptions(context.Context, string, map[string]any, CapabilityExecutionOptions) (map[string]any, error)
 }
 
-func (box *Actionbox) processLocked(ctx context.Context, executor CapabilityExecutor) error {
-	state := defaultQueueState()
-	if missing, err := readPrivateJSON(box.statePath(), &state); err != nil && !missing {
+type actionPreflightReader interface {
+	ReadPreflight(context.Context, string, map[string]any) (map[string]any, error)
+}
+
+type actionVerificationReader interface {
+	ReadVerification(context.Context, string, map[string]any, map[string]any) (VerificationAssessment, error)
+}
+
+// process is intentionally package-private. Production callers must enter via
+// CapabilityService.ProcessActions so the governed queue cannot be paired with
+// a different executor than the service used for prepare and reconciliation.
+func (box *Actionbox) process(ctx context.Context, executor actionExecutor) error {
+	for {
+		processed, err := box.processOne(ctx, executor)
+		if err != nil || !processed {
+			return err
+		}
+	}
+}
+
+func (box *Actionbox) processOne(ctx context.Context, executor actionExecutor) (bool, error) {
+	if err := box.repository.migrateLegacy(box.queuePath(), box.resultPath(), box.statePath()); err != nil {
+		return false, err
+	}
+	item, found, err := box.repository.claim()
+	if err != nil || !found {
+		return found, err
+	}
+	return true, box.processClaimed(ctx, item, executor)
+}
+
+func (box *Actionbox) processClaimed(ctx context.Context, item WorkItemV3, executor actionExecutor) error {
+	var request ActionRequest
+	result := ActionResult{ID: item.ID, CompletedAt: time.Now().UTC()}
+	if json.Unmarshal(item.Request, &request) != nil {
+		result.Status, result.Error = "failed", "invalid_json_line"
+	} else {
+		result = box.executeRequest(ctx, executor, request)
+	}
+	if err := box.repository.finish(item, result, result.Error); err != nil {
 		return err
 	}
-	normalizeQueueState(&state)
-	file, err := os.Open(box.queuePath())
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
+	inputJSON, _ := json.Marshal(request.Input)
+	_ = NewAuditLog(box.dataRoot).Record("actionbox_result", map[string]any{"id": result.ID, "capability": result.CapabilityID, "status": result.Status, "input": AuditContentDescriptor(string(inputJSON)), "error": result.Error})
+	return nil
+}
+
+func (box *Actionbox) executeRequest(ctx context.Context, executor actionExecutor, request ActionRequest) ActionResult {
+	result := ActionResult{ID: request.ID, OperationID: request.OperationID, CapabilityID: request.CapabilityID, CompletedAt: time.Now().UTC()}
+	definition, knownCapability := CapabilityByID(request.CapabilityID)
+	if request.ID == "" || request.Type != "feishu_capability" || request.Domain != "capability" || request.Action != "execute" || !request.ExplicitAuthorization {
+		result.Status = "failed"
+		result.Error = "invalid_actionbox_request"
+	} else if !knownCapability || !CapabilityPublished(definition) {
+		result.Status = "failed"
+		result.Error = "capability_not_published"
+	} else if definition.Identity != request.Identity {
+		result.Status = "failed"
+		result.Error = "unsupported_identity"
+	} else if inputErr := ValidateCapabilityInput(request.CapabilityID, request.Input); inputErr != nil {
+		result.Status = "failed"
+		result.Error = "invalid_capability_input"
+	} else if request.OperationID == "" && definition.Risk == "destructive" {
+		result.Status = "failed"
+		result.Error = "destructive_operation_requires_governance"
+	} else if request.OperationID == "" && definition.Risk == "high-impact-write" && !request.ConfirmHighImpact {
+		result.Status = "failed"
+		result.Error = "high_impact_confirmation_required"
+	} else if settings, settingsErr := NewSettingsStore(box.dataRoot).Load(); settingsErr != nil {
+		result.Status = "failed"
+		result.Error = safeCommandError(settingsErr.Error())
+	} else if gateErr := validateCapabilityRuntimeGate(definition, settings); gateErr != nil {
+		result.Status = "failed"
+		result.Error = gateErr.Error()
+	} else {
+		request.DryRun = request.DryRun || effectiveCapabilityDryRun(definition, settings)
 	}
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	line := 0
-	for scanner.Scan() {
-		line++
-		if line <= state.ProcessedLineCount {
-			continue
-		}
-		var request ActionRequest
-		if json.Unmarshal(scanner.Bytes(), &request) != nil {
-			state.ProcessedLineCount = line
-			state.LastError = "invalid_json_line"
-			continue
-		}
-		if _, done := state.ProcessedIDs[request.ID]; done {
-			state.ProcessedLineCount = line
-			continue
-		}
-		result := ActionResult{ID: request.ID, CapabilityID: request.CapabilityID, CompletedAt: time.Now().UTC()}
-		if request.DryRun {
-			result.Status = "dry_run"
-		} else if value, runErr := executor.ExecuteWithOptions(ctx, request.CapabilityID, request.Input, CapabilityExecutionOptions{RemoteTimeout: time.Duration(request.RemoteTimeoutMS) * time.Millisecond, RemotePollInterval: time.Duration(request.PollIntervalMS) * time.Millisecond}); runErr != nil {
-			result.Status = "failed"
-			result.Error = safeCommandError(runErr.Error())
-			state.LastError = result.Error
+	if result.Status != "" && request.OperationID != "" && box.operations != nil {
+		if result.Error == "actionbox_disabled" || result.Error == "outbound_disabled" || result.Error == "docbox_disabled" {
+			_, _ = box.operations.RejectBeforeExecution(request.OperationID, result.Error)
 		} else {
-			result.Status = "completed"
-			result.Result = value
-			state.LastError = ""
-		}
-		if err := appendPrivateJSONL(box.resultPath(), result); err != nil {
-			return err
-		}
-		inputJSON, _ := json.Marshal(request.Input)
-		_ = NewAuditLog(box.dataRoot).Record("actionbox_result", map[string]any{"id": result.ID, "capability": result.CapabilityID, "status": result.Status, "input": AuditContentDescriptor(string(inputJSON)), "error": result.Error})
-		state.ProcessedLineCount = line
-		state.ProcessedIDs[request.ID] = result.Status
-		trimProcessedIDs(state.ProcessedIDs, 5000)
-		state.LastProcessedAt = result.CompletedAt.Format(time.RFC3339)
-		if err := writePrivateJSON(box.statePath(), state); err != nil {
-			return err
+			_, _ = box.operations.Fail(request.OperationID, result.Error)
 		}
 	}
-	return scanner.Err()
+	var executionPreflight map[string]any
+	if result.Status == "" && !request.DryRun && request.OperationID != "" && definition.Preflight != nil {
+		reader, ok := executor.(actionPreflightReader)
+		if !ok {
+			result.Status = "failed"
+			result.Error = "preflight_recheck_unavailable"
+		} else if value, preflightErr := reader.ReadPreflight(ctx, request.CapabilityID, request.Input); preflightErr != nil {
+			result.Status = "failed"
+			result.Error = "preflight_recheck_failed"
+		} else {
+			executionPreflight = value
+		}
+		if result.Status != "" && box.operations != nil {
+			_, _ = box.operations.RejectBeforeExecution(request.OperationID, result.Error)
+		}
+	}
+	if result.Status == "" && request.DryRun {
+		if request.OperationID != "" {
+			if box.operations == nil {
+				result.Status = "failed"
+				result.Error = "operation_service_unavailable"
+			} else if _, claimErr := box.operations.ClaimExecution(request.OperationID, request.CapabilityID, request.Input); claimErr != nil {
+				result.Status = "failed"
+				result.Error = safeCommandError(claimErr.Error())
+			} else {
+				_, _ = box.operations.MarkVerifying(request.OperationID)
+				_, _ = box.operations.CompleteWithResult(request.OperationID, map[string]any{"dryRun": true})
+			}
+		}
+		if result.Status == "" {
+			result.Status = "dry_run"
+			result.Result = map[string]any{"dryRun": true}
+		}
+	} else if result.Status == "" {
+		if request.OperationID != "" {
+			if box.operations == nil {
+				result.Status = "failed"
+				result.Error = "operation_service_unavailable"
+			} else if _, claimErr := box.operations.ClaimExecutionWithEvidence(request.OperationID, request.CapabilityID, request.Input, executionPreflight); claimErr != nil {
+				result.Status = "failed"
+				result.Error = safeCommandError(claimErr.Error())
+			}
+		}
+		if result.Status == "" {
+			value, runErr := executor.ExecuteWithOptions(ctx, request.CapabilityID, request.Input, CapabilityExecutionOptions{RemoteTimeout: time.Duration(request.RemoteTimeoutMS) * time.Millisecond, RemotePollInterval: time.Duration(request.PollIntervalMS) * time.Millisecond, OperationID: request.OperationID})
+			if runErr != nil {
+				result.Error = safeCommandError(runErr.Error())
+				operationCode := CapabilityOperationErrorCode(runErr)
+				if request.OperationID != "" && isUncertainExecutionError(runErr) {
+					result.Status = string(OperationOutcomeUnknown)
+					result.Result = value
+					_, _ = box.operations.MarkOutcomeUnknownWithResult(request.OperationID, operationCode, value)
+				} else {
+					result.Status = "failed"
+					if request.OperationID != "" {
+						_, _ = box.operations.Fail(request.OperationID, operationCode)
+					}
+				}
+			} else {
+				if request.OperationID != "" {
+					_, _ = box.operations.MarkVerifyingWithResult(request.OperationID, value)
+					if definition.Risk == "destructive" {
+						assessment := VerificationAssessment{State: VerificationInconclusive}
+						if reader, ok := executor.(actionVerificationReader); ok {
+							if verified, verifyErr := reader.ReadVerification(ctx, request.CapabilityID, request.Input, value); verifyErr == nil {
+								assessment = verified
+							} else {
+								result.Error = safeCommandError(verifyErr.Error())
+							}
+						}
+						view, _ := box.operations.ResolveReconciliation(request.OperationID, assessment)
+						result.Status = string(view.Status)
+						if view.Status == OperationOutcomeUnknown && result.Error == "" {
+							result.Error = "verification_inconclusive"
+						}
+					} else {
+						_, _ = box.operations.CompleteWithResult(request.OperationID, value)
+						result.Status = string(OperationSucceeded)
+					}
+				} else {
+					result.Status = "completed"
+				}
+				result.Result = value
+			}
+		}
+	}
+	return result
+}
+
+func isUncertainExecutionError(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || CapabilityOutcomeUncertain(err)
 }
 
 func (box *Actionbox) FindResult(id string) (ActionResult, bool, error) {
 	var result ActionResult
-	var found bool
-	err := withProcessFileLock(box.resultPath()+".lock", func() error {
-		var innerErr error
-		result, found, innerErr = box.findResultUnlocked(id)
-		return innerErr
-	})
+	if err := box.repository.migrateLegacy(box.queuePath(), box.resultPath(), box.statePath()); err != nil {
+		return result, false, err
+	}
+	found, err := box.repository.findResult(id, &result)
 	return result, found, err
-}
-
-func (box *Actionbox) findResultUnlocked(id string) (ActionResult, bool, error) {
-	file, err := os.Open(box.resultPath())
-	if errors.Is(err, os.ErrNotExist) {
-		return ActionResult{}, false, nil
-	}
-	if err != nil {
-		return ActionResult{}, false, err
-	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	var result ActionResult
-	found := false
-	for scanner.Scan() {
-		var item ActionResult
-		if json.Unmarshal(scanner.Bytes(), &item) == nil && item.ID == id {
-			result = item
-			found = true
-		}
-	}
-	return result, found, scanner.Err()
 }
 func appendPrivateJSONL(path string, value any) error {
 	return withProcessFileLock(path+".lock", func() error {

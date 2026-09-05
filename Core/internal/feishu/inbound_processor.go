@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -16,40 +17,53 @@ type InboundMessage struct {
 	Raw                                                                                     map[string]any
 }
 type InboundCardAction struct {
-	EventID, OperatorOpenID, ChatID, MessageID, Action, TaskKey, Token string
-	Value, FormValue                                                   map[string]any
-	Raw                                                                map[string]any
+	EventID, OperatorOpenID, ChatID, MessageID, Action, TaskKey, LinkID, QuestionRevision, Token string
+	Value, FormValue                                                                             map[string]any
+	Raw                                                                                          map[string]any
 }
 type InboundMessageHandler func(context.Context, InboundMessage) error
 type InboundCardHandler func(context.Context, InboundCardAction) error
 type InboundProcessor struct {
-	inbox    *EventInbox
-	workbox  *InboundWorkbox
-	config   ClientConfig
-	settings Settings
-	message  InboundMessageHandler
-	card     InboundCardHandler
-	audit    AuditLog
+	inbox       *EventInbox
+	workbox     *InboundWorkbox
+	config      ClientConfig
+	settings    Settings
+	message     InboundMessageHandler
+	card        InboundCardHandler
+	audit       AuditLog
+	executionMu sync.Mutex
+	inFlight    map[string]bool
 }
+
+const maxInboundMessageAttempts = 6
 
 func NewInboundProcessor(dataRoot string, settings Settings, message InboundMessageHandler, card InboundCardHandler) (*InboundProcessor, error) {
 	config, err := NewClientConfigStore(dataRoot).Load()
 	if err != nil {
 		return nil, err
 	}
-	return &InboundProcessor{inbox: NewEventInbox(dataRoot), workbox: NewInboundWorkbox(dataRoot), config: config, settings: settings, message: message, card: card, audit: NewAuditLog(dataRoot)}, nil
+	workbox := NewInboundWorkbox(dataRoot)
+	if _, err := workbox.ScrubTerminal(); err != nil {
+		return nil, err
+	}
+	return &InboundProcessor{inbox: NewEventInbox(dataRoot), workbox: workbox, config: config, settings: settings, message: message, card: card, audit: NewAuditLog(dataRoot), inFlight: map[string]bool{}}, nil
 }
 func (processor *InboundProcessor) Handle(ctx context.Context, eventKey string, payload []byte) error {
 	work, err := processor.workbox.Enqueue(eventKey, payload)
 	if err != nil {
 		return err
 	}
+	if !processor.acquire(work.ID) {
+		return nil
+	}
 	_, accepted, err := processor.inbox.Put(eventKey, payload)
 	if err != nil {
+		processor.release(work.ID)
 		_ = processor.workbox.Complete(work.ID)
 		return err
 	}
 	if !accepted {
+		processor.release(work.ID)
 		if work.Existing {
 			return nil
 		}
@@ -60,16 +74,47 @@ func (processor *InboundProcessor) Handle(ctx context.Context, eventKey string, 
 }
 
 func (processor *InboundProcessor) processPersisted(work inboundWork) {
-	delays := []time.Duration{0, 250 * time.Millisecond, time.Second}
-	for _, delay := range delays {
-		if delay > 0 {
-			time.Sleep(delay)
-		}
+	defer processor.release(work.ID)
+	if work.EventKey == "card.action.trigger" {
+		attempt := work.AttemptCount + 1
+		_ = processor.audit.Record("inbound_execution_started", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": attempt})
 		err := processor.dispatch(context.Background(), work.EventKey, work.Payload)
-		if err == nil || terminalInboundError(err) {
+		if err == nil {
+			_ = processor.audit.Record("inbound_execution_succeeded", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": attempt})
 			_ = processor.workbox.Complete(work.ID)
 			return
 		}
+		errorClass := inboundErrorClass(err)
+		_ = processor.audit.Record("inbound_execution_failed", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": attempt, "errorClass": errorClass, "terminal": true})
+		_ = processor.workbox.RecordFailure(work, errorClass, 1, true, time.Time{})
+		return
+	}
+
+	delays := []time.Duration{0, 250 * time.Millisecond, time.Second}
+	attempts := 0
+	for index, delay := range delays {
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+		attempts++
+		_ = processor.audit.Record("inbound_execution_started", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": work.AttemptCount + index + 1})
+		err := processor.dispatch(context.Background(), work.EventKey, work.Payload)
+		if err == nil {
+			_ = processor.audit.Record("inbound_execution_succeeded", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": work.AttemptCount + index + 1})
+			_ = processor.workbox.Complete(work.ID)
+			return
+		}
+		if terminalInboundError(err) {
+			_ = processor.audit.Record("inbound_execution_failed", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": work.AttemptCount + index + 1, "errorClass": inboundErrorClass(err), "terminal": true})
+			_ = processor.workbox.Complete(work.ID)
+			return
+		}
+		_ = processor.audit.Record("inbound_execution_retrying", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": work.AttemptCount + index + 1, "errorClass": inboundErrorClass(err)})
+	}
+	terminal := work.AttemptCount+attempts >= maxInboundMessageAttempts
+	_ = processor.workbox.RecordFailure(work, "temporary_failure", attempts, terminal, time.Now().UTC().Add(time.Minute))
+	if terminal {
+		_ = processor.audit.Record("inbound_execution_failed", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": work.AttemptCount + len(delays), "errorClass": "temporary_failure", "terminal": true})
 	}
 }
 
@@ -81,17 +126,101 @@ func terminalInboundError(err error) bool {
 	return strings.HasPrefix(value, "invalid_") || strings.HasPrefix(value, "unsupported_") || strings.HasSuffix(value, "_not_authorized")
 }
 
+func inboundErrorClass(err error) string {
+	if err == nil {
+		return "none"
+	}
+	value := err.Error()
+	for _, class := range []string{
+		"desktop_user_input_owner_unavailable",
+		"desktop_user_input_snapshot_timeout",
+		"desktop_user_input_request_stale",
+		"desktop_user_input_submit_rejected",
+		"desktop_user_input_not_consumed",
+	} {
+		if strings.HasPrefix(value, class) {
+			return class
+		}
+	}
+	for _, prefix := range []string{"invalid_", "unsupported_"} {
+		if strings.HasPrefix(value, prefix) {
+			return strings.Fields(value)[0]
+		}
+	}
+	if strings.HasSuffix(value, "_not_authorized") {
+		return "not_authorized"
+	}
+	if strings.Contains(strings.ToLower(value), "timeout") {
+		return "timeout"
+	}
+	if strings.Contains(strings.ToLower(value), "owner") {
+		return "owner_unavailable"
+	}
+	return "temporary_failure"
+}
+
 func (processor *InboundProcessor) Recover(ctx context.Context) error {
-	return processor.workbox.Recover(ctx, func(ctx context.Context, eventKey string, payload []byte) error {
-		if _, _, err := processor.inbox.Put(eventKey, payload); err != nil {
-			return err
-		}
-		err := processor.dispatch(ctx, eventKey, payload)
-		if terminalInboundError(err) {
-			return nil
-		}
+	items, err := processor.workbox.Ready(time.Now().UTC())
+	if err != nil {
 		return err
-	})
+	}
+	for _, work := range items {
+		if !processor.acquire(work.ID) {
+			continue
+		}
+		recoverErr := func() error {
+			defer processor.release(work.ID)
+			if work.EventKey == "card.action.trigger" {
+				const errorClass = "stale_card_action_after_restart"
+				_ = processor.audit.Record("inbound_execution_failed", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": work.AttemptCount + 1, "errorClass": errorClass, "terminal": true, "recovered": true})
+				return processor.workbox.RecordFailure(work, errorClass, 1, true, time.Time{})
+			}
+			if _, _, err := processor.inbox.Put(work.EventKey, work.Payload); err != nil {
+				return err
+			}
+			attempt := work.AttemptCount + 1
+			_ = processor.audit.Record("inbound_execution_started", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": attempt, "recovered": true})
+			err := processor.dispatch(ctx, work.EventKey, work.Payload)
+			if err == nil {
+				_ = processor.audit.Record("inbound_execution_succeeded", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": attempt, "recovered": true})
+				return processor.workbox.Complete(work.ID)
+			}
+			if terminalInboundError(err) {
+				_ = processor.audit.Record("inbound_execution_failed", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": attempt, "errorClass": inboundErrorClass(err), "terminal": true, "recovered": true})
+				return processor.workbox.Complete(work.ID)
+			}
+			terminal := attempt >= maxInboundMessageAttempts
+			if err := processor.workbox.RecordFailure(work, inboundErrorClass(err), 1, terminal, time.Now().UTC().Add(time.Minute)); err != nil {
+				return err
+			}
+			direction := "inbound_execution_retrying"
+			if terminal {
+				direction = "inbound_execution_failed"
+			}
+			_ = processor.audit.Record(direction, map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": attempt, "errorClass": inboundErrorClass(err), "terminal": terminal, "recovered": true})
+			return nil
+		}()
+		if recoverErr != nil {
+			return recoverErr
+		}
+	}
+	return nil
+}
+
+func (processor *InboundProcessor) acquire(id string) bool {
+	processor.executionMu.Lock()
+	defer processor.executionMu.Unlock()
+	if processor.inFlight[id] {
+		return false
+	}
+	processor.inFlight[id] = true
+	return true
+}
+
+func (processor *InboundProcessor) release(id string) {
+	processor.executionMu.Lock()
+	delete(processor.inFlight, id)
+	processor.executionMu.Unlock()
 }
 
 func (processor *InboundProcessor) dispatch(ctx context.Context, eventKey string, payload []byte) error {
@@ -204,12 +333,15 @@ func normalizeInboundCard(raw map[string]any) (InboundCardAction, error) {
 	if openID == "" {
 		openID = stringValue(event["operator_id"])
 	}
-	result := InboundCardAction{EventID: eventID(raw), OperatorOpenID: openID, ChatID: firstString(event["chat_id"], event["open_chat_id"], contextValue["open_chat_id"]), MessageID: firstString(event["message_id"], event["open_message_id"], contextValue["open_message_id"]), Action: stringValue(value["action"]), TaskKey: stringValue(value["taskKey"]), Token: stringValue(event["token"]), Value: value, FormValue: form, Raw: event}
+	result := InboundCardAction{EventID: eventID(raw), OperatorOpenID: openID, ChatID: firstString(event["chat_id"], event["open_chat_id"], contextValue["open_chat_id"]), MessageID: firstString(event["message_id"], event["open_message_id"], contextValue["open_message_id"]), Action: stringValue(value["action"]), TaskKey: stringValue(value["taskKey"]), LinkID: stringValue(value["linkId"]), QuestionRevision: stringValue(value["questionRevision"]), Token: stringValue(event["token"]), Value: value, FormValue: form, Raw: event}
 	if result.OperatorOpenID == "" || result.Action == "" || stringValue(value["namespace"]) != "feishu_bridge" || numberValue(value["version"]) != 1 {
 		return InboundCardAction{}, errors.New("invalid_card_action")
 	}
 	if strings.HasPrefix(result.Action, "task_link_") && !regexp.MustCompile(`^[a-f0-9]{20}$`).MatchString(result.TaskKey) {
 		return InboundCardAction{}, errors.New("invalid_card_task_key")
+	}
+	if strings.HasPrefix(result.Action, "task_link_") && !regexp.MustCompile(`^LINK-[A-F0-9]{16}$`).MatchString(result.LinkID) {
+		return InboundCardAction{}, errors.New("invalid_card_link")
 	}
 	allowed := map[string]bool{"task_link_interrupt": true, "task_link_release": true, "task_link_followup": true, "task_link_answer": true, "task_link_implement_plan": true}
 	if !allowed[result.Action] {
@@ -230,6 +362,9 @@ func normalizeInboundCard(raw map[string]any) (InboundCardAction, error) {
 		return InboundCardAction{}, errors.New("invalid_plan_revision")
 	}
 	if result.Action == "task_link_answer" {
+		if !regexp.MustCompile(`^[a-f0-9]{20}$`).MatchString(result.QuestionRevision) {
+			return InboundCardAction{}, errors.New("invalid_card_question_revision")
+		}
 		if !regexp.MustCompile(`^[A-Za-z0-9_-]{1,80}$`).MatchString(stringValue(value["questionId"])) || strings.TrimSpace(stringValue(value["answer"])) == "" || len([]rune(stringValue(value["answer"]))) > 160 {
 			return InboundCardAction{}, errors.New("invalid_card_answer")
 		}

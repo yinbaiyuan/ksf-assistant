@@ -1,7 +1,6 @@
 package feishu
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,7 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -47,11 +45,11 @@ type OutboxResult struct {
 
 type Outbox struct {
 	root, dataRoot string
-	mu             sync.Mutex
+	repository     workRepository
 }
 
 func NewOutbox(dataRoot string) *Outbox {
-	return &Outbox{root: filepath.Join(dataRoot, "logs"), dataRoot: dataRoot}
+	return &Outbox{root: filepath.Join(dataRoot, "logs"), dataRoot: dataRoot, repository: newWorkRepository(dataRoot, "outbox")}
 }
 func (box *Outbox) queuePath() string       { return filepath.Join(box.root, "outbox.jsonl") }
 func (box *Outbox) resultPath() string      { return filepath.Join(box.root, "outbox-results.jsonl") }
@@ -62,7 +60,11 @@ func (box *Outbox) Submit(request OutboxRequest) error {
 	if err := box.validate(request); err != nil {
 		return err
 	}
-	return appendPrivateJSONL(box.queuePath(), request)
+	if err := box.repository.migrateLegacy(box.queuePath(), box.resultPath(), box.statePath()); err != nil {
+		return err
+	}
+	conflictKey := "im/" + request.Target.Type + ":" + AuditFingerprint(request.Target.ID)
+	return box.repository.enqueue(request.ID, request, conflictKey, "go-sdk", "standard", "never", request.CreatedAt)
 }
 
 func (box *Outbox) validate(request OutboxRequest) error {
@@ -155,64 +157,39 @@ func StageOutboundMedia(dataRoot, requestID, source string) (string, error) {
 }
 
 func (box *Outbox) Process(ctx context.Context, sender MessageSender, globalDryRun bool) error {
-	box.mu.Lock()
-	defer box.mu.Unlock()
-	return withProcessFileLock(box.processLockPath(), func() error { return box.processLocked(ctx, sender, globalDryRun) })
+	if err := box.repository.migrateLegacy(box.queuePath(), box.resultPath(), box.statePath()); err != nil {
+		return err
+	}
+	for {
+		item, found, err := box.repository.claim()
+		if err != nil || !found {
+			return err
+		}
+		if err := box.processClaimed(ctx, item, sender, globalDryRun); err != nil {
+			return err
+		}
+	}
 }
 
-func (box *Outbox) processLocked(ctx context.Context, sender MessageSender, globalDryRun bool) error {
-	state := defaultQueueState()
-	if missing, err := readPrivateJSON(box.statePath(), &state); err != nil && !missing {
+func (box *Outbox) processClaimed(ctx context.Context, item WorkItemV3, sender MessageSender, globalDryRun bool) error {
+	var request OutboxRequest
+	result := OutboxResult{ID: item.ID, CompletedAt: time.Now().UTC()}
+	if err := json.Unmarshal(item.Request, &request); err != nil {
+		result.Status, result.Error = "invalid", "invalid_json"
+	} else {
+		result = box.processRequest(ctx, sender, request, globalDryRun)
+	}
+	if err := box.repository.finish(item, result, result.Error); err != nil {
 		return err
 	}
-	normalizeQueueState(&state)
-	file, err := os.Open(box.queuePath())
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	line := 0
-	for scanner.Scan() {
-		line++
-		if line <= state.ProcessedLineCount {
-			continue
-		}
-		var request OutboxRequest
-		result := OutboxResult{CompletedAt: time.Now().UTC()}
-		if json.Unmarshal(scanner.Bytes(), &request) != nil {
-			result.ID, result.Status, result.Error = "invalid-line", "invalid", "invalid_json"
-		} else if _, done := state.ProcessedIDs[request.ID]; done {
-			result.ID, result.Status, result.Error = request.ID, "duplicate", "duplicate_id"
-		} else {
-			result = box.processRequest(ctx, sender, request, globalDryRun)
-		}
-		if err := appendPrivateJSONL(box.resultPath(), result); err != nil {
-			return err
-		}
-		content := request.Text
-		if request.FilePath != "" {
-			if info, err := os.Stat(request.FilePath); err == nil {
-				content = strconv.FormatInt(info.Size(), 10) + " bytes"
-			}
-		}
-		_ = NewAuditLog(box.dataRoot).Record("outbox_result", map[string]any{"id": result.ID, "status": result.Status, "target": AuditTargetDescriptor(request.Target), "content": AuditContentDescriptor(content), "parts": result.PartCount, "error": result.Error})
-		state.ProcessedLineCount = line
-		if result.ID != "" {
-			state.ProcessedIDs[result.ID] = result.Status
-			trimProcessedIDs(state.ProcessedIDs, 5000)
-		}
-		state.LastProcessedAt = result.CompletedAt.Format(time.RFC3339)
-		state.LastError = result.Error
-		if err := writePrivateJSON(box.statePath(), state); err != nil {
-			return err
+	content := request.Text
+	if request.FilePath != "" {
+		if info, err := os.Stat(request.FilePath); err == nil {
+			content = strconv.FormatInt(info.Size(), 10) + " bytes"
 		}
 	}
-	return scanner.Err()
+	_ = NewAuditLog(box.dataRoot).Record("outbox_result", map[string]any{"id": result.ID, "status": result.Status, "target": AuditTargetDescriptor(request.Target), "content": AuditContentDescriptor(content), "parts": result.PartCount, "error": result.Error})
+	return nil
 }
 
 func (box *Outbox) processRequest(ctx context.Context, sender MessageSender, request OutboxRequest, globalDryRun bool) OutboxResult {
@@ -220,6 +197,9 @@ func (box *Outbox) processRequest(ctx context.Context, sender MessageSender, req
 	if err := box.validate(request); err != nil {
 		result.Status, result.Error = "invalid", err.Error()
 		return result
+	}
+	if request.Type == "image" || request.Type == "file" {
+		defer os.Remove(request.FilePath) //nolint:errcheck -- staged private input is best-effort cleanup
 	}
 	parts := []string{request.Text}
 	if request.Type == "text" {
@@ -253,33 +233,15 @@ func (box *Outbox) processRequest(ctx context.Context, sender MessageSender, req
 	} else {
 		result.Status = "failed"
 	}
-	if request.Type == "image" || request.Type == "file" {
-		_ = os.Remove(request.FilePath)
-	}
 	return result
 }
 
 func (box *Outbox) FindResult(id string) (OutboxResult, bool, error) {
+	if err := box.repository.migrateLegacy(box.queuePath(), box.resultPath(), box.statePath()); err != nil {
+		return OutboxResult{}, false, err
+	}
 	var result OutboxResult
-	found := false
-	err := withProcessFileLock(box.resultPath()+".lock", func() error {
-		file, err := os.Open(box.resultPath())
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		defer file.Close()
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			var item OutboxResult
-			if json.Unmarshal(scanner.Bytes(), &item) == nil && item.ID == id {
-				result, found = item, true
-			}
-		}
-		return scanner.Err()
-	})
+	found, err := box.repository.findResult(id, &result)
 	return result, found, err
 }
 

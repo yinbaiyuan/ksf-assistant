@@ -52,6 +52,7 @@ type Settings struct {
 	Version        int           `json:"version"`
 	Profile        string        `json:"profile"`
 	Group          Switch        `json:"group"`
+	MailEvents     Switch        `json:"mailEvents"`
 	Outbound       DryRunSwitch  `json:"outbound"`
 	Directory      Switch        `json:"directory"`
 	GroupDirectory Switch        `json:"groupDirectory"`

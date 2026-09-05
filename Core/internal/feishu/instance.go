@@ -27,7 +27,7 @@ func AcquireInstanceLock(dataRoot string) (*InstanceLock, error) {
 	var existing instanceRecord
 	if missing, err := readInstanceRecord(path, &existing); err == nil && !missing {
 		if processAlive(existing.PID) {
-			return nil, fmt.Errorf("another feishu bridge instance is already running: pid %d", existing.PID)
+			return nil, fmt.Errorf("another CodexAssistant Feishu instance is already running: pid %d", existing.PID)
 		}
 		if err := os.Remove(path); err != nil {
 			return nil, err
@@ -78,7 +78,7 @@ func InstanceStatus(dataRoot string) (present, alive bool, pid int, startedAt ti
 		return false, false, 0, time.Time{}, err
 	}
 	if record.PID <= 0 {
-		return true, false, 0, record.StartedAt, errors.New("invalid Feishu bridge pid")
+		return true, false, 0, record.StartedAt, errors.New("invalid CodexAssistant Feishu pid")
 	}
 	return true, processAlive(record.PID), record.PID, record.StartedAt, nil
 }
@@ -92,17 +92,17 @@ func readInstanceRecord(path string, target *instanceRecord) (bool, error) {
 		return false, err
 	}
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > 4096 {
-		return false, errors.New("unsafe Feishu bridge pid file")
+		return false, errors.New("unsafe CodexAssistant Feishu pid file")
 	}
 	if info.Mode().Perm()&0o022 != 0 {
-		return false, errors.New("writable Feishu bridge pid file")
+		return false, errors.New("writable CodexAssistant Feishu pid file")
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false, err
 	}
 	if json.Unmarshal(data, target) != nil {
-		return false, errors.New("invalid Feishu bridge pid file")
+		return false, errors.New("invalid CodexAssistant Feishu pid file")
 	}
 	return false, nil
 }

@@ -22,13 +22,24 @@ test('formal product identity is CodexAssistant on both desktop hosts', () => {
   assert.match(macInfo, /<string>0\.10\.0-preview\.1<\/string>/);
 });
 
-test('Windows host keeps business reads behind the shared core contract', () => {
+test('Windows host keeps business reads behind the CodexAssistant Core contract', () => {
   assert.match(main, /dashboard\/read/);
   assert.doesNotMatch(app, /spawn\(|readFileSync|\.codex/);
   assert.match(preload, /contextBridge\.exposeInMainWorld/);
   assert.match(main, /contextIsolation: true/);
   assert.match(main, /nodeIntegration: false/);
   assert.match(main, /sandbox: true/);
+});
+
+test('periodic refresh only reads the dashboard while static settings load on demand', () => {
+  const periodicRefresh = app.slice(
+    app.indexOf('async function refreshDashboard('),
+    app.indexOf('function scheduleRefresh()')
+  );
+  assert.match(periodicRefresh, /api\.dashboard\(\)/);
+  assert.doesNotMatch(periodicRefresh, /api\.settings\(\)|api\.pricingCatalog\(\)|api\.readFeishuSetup\(\)|api\.feishuOverview\(\)/);
+  assert.match(app, /async function refreshStaticData\(/);
+  assert.match(app, /await refreshStaticData\(\{ page: state\.page \}\)/);
 });
 
 test('Windows host publishes KSF context at startup and after in-app directory changes', () => {
@@ -72,17 +83,17 @@ test('interactive states and reduced motion are present', () => {
   assert.match(css, /:focus-visible/);
   assert.match(css, /prefers-reduced-motion/);
   assert.match(css, /button:disabled/);
-  assert.match(app, /共享核心暂不可用/);
+  assert.match(app, /核心服务暂不可用/);
   assert.match(app, /KSF 路由/);
   assert.match(app, /data-action="task-detail"/);
 });
 
-test('explicit app exit waits for the shared core to stop the full server tree', () => {
+test('explicit app exit waits for the CodexAssistant Core to stop the full server tree', () => {
   assert.match(main, /event\.preventDefault\(\)/);
   assert.match(main, /Promise\.resolve\(core\?\.close\(\)\)/);
   assert.match(main, /finally\(\(\) => app\.exit\(0\)\)/);
   assert.match(fs.readFileSync(path.join(root, 'src', 'core-client.cjs'), 'utf8'), /taskkill\.exe/);
-  assert.match(app, /退出 CodexAssistant 将停止 Shared Core、飞书桥及其子进程/);
+  assert.match(app, /退出 CodexAssistant 将停止核心服务、飞书服务及其子进程/);
   assert.doesNotMatch(main, /installWindowsService/);
 });
 

@@ -9,7 +9,7 @@ final class PricingModelsTests: XCTestCase {
         XCTAssertEqual(TokenCostFormatter.usd(microUSD: 2_800), "$0.002800")
     }
 
-    func testPricingModelsDecodeSharedCoreContract() throws {
+    func testPricingModelsDecodeCoreServiceContract() throws {
         let data = #"{"defaultPlanId":"openai:gpt-5.6-sol","plans":[{"id":"openai:gpt-5.6-sol","provider":"OpenAI API","model":"GPT-5.6 Sol","displayName":"OpenAI API · GPT-5.6 Sol","regularInputMicroUsdPerMillion":4000000,"cachedInputMicroUsdPerMillion":400000,"outputMicroUsdPerMillion":20000000,"builtIn":true,"sourceUrl":"https://developers.openai.com/api/docs/models/compare","verifiedAt":"2026-09-03"}]}"#.data(using: .utf8)!
         let catalog = try JSONDecoder().decode(PricingCatalog.self, from: data)
         XCTAssertEqual(catalog.defaultPlanId, "openai:gpt-5.6-sol")

@@ -10,9 +10,72 @@ import (
 	"strings"
 	"testing"
 
+	"codexusagebar/core/internal/corebridge"
+	"codexusagebar/core/internal/desktop"
 	"codexusagebar/core/internal/domain"
 	managedfeishu "codexusagebar/core/internal/feishu"
+	"codexusagebar/core/internal/privateipc"
 )
+
+func TestPrivateBridgeCapabilitiesDegradeIndependently(t *testing.T) {
+	root := t.TempDir()
+	service := &Service{
+		hostContextStore: managedfeishu.NewHostContextStore(root),
+		desktop:          desktop.New(""),
+	}
+	result, err := service.HandlePrivateRPC(context.Background(), corebridge.MethodCapabilitiesRead, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities := result.(corebridge.Capabilities)
+	if capabilities.Protocol != corebridge.Protocol {
+		t.Fatalf("unexpected protocol: %s", capabilities.Protocol)
+	}
+	if capabilities.Capabilities["codexAppServer"].State != "unavailable" || capabilities.Capabilities["ksfContext"].State != "unavailable" {
+		t.Fatalf("capabilities did not degrade independently: %#v", capabilities)
+	}
+}
+
+func TestCorePrivateRPCRejectsUnknownAndUnexpectedParams(t *testing.T) {
+	service := &Service{hostContextStore: managedfeishu.NewHostContextStore(t.TempDir())}
+	tests := []struct {
+		method string
+		params json.RawMessage
+	}{
+		{method: corebridge.MethodCapabilitiesRead, params: json.RawMessage(`{"unexpected":true}`)},
+		{method: corebridge.MethodProjectionRead, params: json.RawMessage(`{"runtimeOwner":"desktop","threadId":"thread","unexpected":true}`)},
+	}
+	for _, test := range tests {
+		_, err := service.HandlePrivateRPC(context.Background(), test.method, test.params)
+		var rpcErr *privateipc.RPCError
+		if !errors.As(err, &rpcErr) || rpcErr.Code != -32602 {
+			t.Fatalf("expected -32602, got %T %v", err, err)
+		}
+	}
+}
+
+func TestPrivateBridgeSnapshotRejectsStaleRevision(t *testing.T) {
+	service := &Service{}
+	ctx := context.Background()
+	newer, _ := json.Marshal(domain.FeishuSnapshot{Revision: 9, Availability: "ready", ProcessState: "running"})
+	older, _ := json.Marshal(domain.FeishuSnapshot{Revision: 8, Availability: "unavailable", ProcessState: "stopped"})
+	if _, err := service.HandlePrivateRPC(ctx, corebridge.MethodBridgeSnapshotPush, newer); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.HandlePrivateRPC(ctx, corebridge.MethodBridgeSnapshotPush, older); err != nil {
+		t.Fatal(err)
+	}
+	if service.lastFeishu.Revision != 9 || service.lastFeishu.Availability != "ready" {
+		t.Fatalf("stale snapshot replaced revision 9: %#v", service.lastFeishu)
+	}
+}
+
+func TestControlWorkingDirectoryReadsNestedAuthoritativeState(t *testing.T) {
+	state := map[string]any{"thread": map[string]any{"workspace": map[string]any{"cwd": "/private/project"}}}
+	if value := recursiveControlString(state, "cwd", "workingDirectory", "workspaceRoot"); value != "/private/project" {
+		t.Fatalf("working directory = %q", value)
+	}
+}
 
 func TestTaskBootstrapRequiresProjectCardInsideKSFRoot(t *testing.T) {
 	root := t.TempDir()
@@ -184,6 +247,16 @@ func TestOnlyReadyFeishuSetupConfiguresManagedBridge(t *testing.T) {
 	}
 }
 
+func TestDashboardRecognizesNativeFeishuRuntimeWithoutLegacyServiceRoot(t *testing.T) {
+	nativeOnly := &Service{managedFeishuSupervisor: &managedfeishu.Supervisor{}}
+	if !nativeOnly.hasFeishuRuntime() {
+		t.Fatal("native managed runtime was incorrectly treated as unconfigured")
+	}
+	if (&Service{}).hasFeishuRuntime() {
+		t.Fatal("missing Feishu runtime was treated as configured")
+	}
+}
+
 func TestFeishuSetupSettingsKeepRealWritesDisabledUntilConfirmation(t *testing.T) {
 	settings := managedfeishu.DefaultSettings()
 	prepared := prepareFeishuDryRunSettings(settings)
@@ -237,6 +310,20 @@ func TestFeishuPermissionFailureKeepsMissingAsEmptyArray(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"missing":[]`) {
 		t.Fatalf("permission failure must remain decodable by desktop hosts: %s", data)
+	}
+}
+
+func TestNormalizedFeishuSnapshotKeepsCollectionsAsArrays(t *testing.T) {
+	value := normalizedFeishuSnapshot(domain.FeishuSnapshot{Availability: "notConfigured"})
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, field := range []string{`"targetAliases":[]`, `"readinessBlockers":[]`, `"links":[]`} {
+		if !strings.Contains(text, field) {
+			t.Fatalf("desktop collection contract %s was not preserved: %s", field, text)
+		}
 	}
 }
 

@@ -35,21 +35,6 @@
         "filter": ["codex-usage-core.exe"]
       },
       {
-        "from": "../dist/services/feishu-bridge",
-        "to": "services/feishu-bridge",
-        "filter": ["**/*", "!node_modules/**/*"]
-      },
-      {
-        "from": "../dist/services/feishu-bridge/node_modules",
-        "to": "services/feishu-bridge/node_modules",
-        "filter": ["**/*"]
-      },
-      {
-        "from": "../dist/runtime/node/windows-${arch}",
-        "to": "runtime/node/windows-${arch}",
-        "filter": ["node.exe"]
-      },
-      {
         "from": "../dist/runtime/feishu-bridge/windows-${arch}",
         "to": "runtime/feishu-bridge/windows-${arch}",
         "filter": ["codex-feishu-bridge.exe"]

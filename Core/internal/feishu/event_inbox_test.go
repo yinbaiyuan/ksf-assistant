@@ -20,3 +20,20 @@ func TestEventInboxStoresOnlyMetadataAndDeduplicates(t *testing.T) {
 		t.Fatalf("duplicate accepted after restart: %v", err)
 	}
 }
+
+func TestApprovalEventStoresOnlyFingerprintedMetadata(t *testing.T) {
+	root := t.TempDir()
+	inbox := NewEventInbox(root)
+	payload := []byte(`{"header":{"event_id":"evt-approval"},"event":{"instance_code":"instance-secret","task_id":"task-secret","status":"APPROVED","form":"private form"}}`)
+	record, created, err := inbox.Put(ApprovalTaskStatusChangedEvent, payload)
+	if err != nil || !created {
+		t.Fatalf("put approval event failed: created=%v err=%v", created, err)
+	}
+	if record.ResourceFingerprint == "" || record.ContentFingerprint != "" || record.ContentLength != 0 || record.TranscriptContentStored {
+		t.Fatalf("unsafe approval event record: %#v", record)
+	}
+	items, err := inbox.Recent(1)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("read approval event metadata failed: %#v %v", items, err)
+	}
+}

@@ -2,6 +2,8 @@ package feishu
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -49,6 +51,26 @@ func TestOutboxDryRunDoesNotSend(t *testing.T) {
 	}
 	if len(sender.calls) != 0 {
 		t.Fatal("dry run sent a real message")
+	}
+}
+
+func TestOutboxRemovesStagedMediaAfterDryRun(t *testing.T) {
+	root := t.TempDir()
+	mediaRoot := filepath.Join(root, "private-cache", "media")
+	if err := os.MkdirAll(mediaRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(mediaRoot, "OUT-MEDIA.txt")
+	if err := os.WriteFile(path, []byte("private"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request := OutboxRequest{ID: "OUT-MEDIA", Type: "file", Target: MessageTarget{Type: "open_id", ID: "ou_test"}, FilePath: path, ExplicitAuthorization: true, DryRun: true, Source: "test"}
+	result := NewOutbox(root).processRequest(context.Background(), nil, request, false)
+	if result.Status != "dry_run" {
+		t.Fatalf("result=%#v", result)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("staged media survived terminal dry-run: %v", err)
 	}
 }
 

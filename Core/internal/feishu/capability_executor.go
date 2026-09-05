@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,16 +22,91 @@ import (
 
 type CapabilityExecutor struct{ Binary, Profile, DataRoot, WorkingDirectory string }
 
+const (
+	maximumCapabilityOutputBytes = 4 * 1024 * 1024
+	maximumCapabilityErrorBytes  = 64 * 1024
+	maximumCapabilityResultBytes = 512 * 1024
+)
+
+type boundedCommandBuffer struct {
+	buffer   bytes.Buffer
+	limit    int
+	overflow bool
+}
+
+func (buffer *boundedCommandBuffer) Write(value []byte) (int, error) {
+	original := len(value)
+	remaining := buffer.limit - buffer.buffer.Len()
+	if remaining <= 0 {
+		buffer.overflow = buffer.overflow || original > 0
+		return original, nil
+	}
+	if len(value) > remaining {
+		value = value[:remaining]
+		buffer.overflow = true
+	}
+	_, _ = buffer.buffer.Write(value)
+	return original, nil
+}
+
+func (buffer *boundedCommandBuffer) Len() int       { return buffer.buffer.Len() }
+func (buffer *boundedCommandBuffer) Bytes() []byte  { return buffer.buffer.Bytes() }
+func (buffer *boundedCommandBuffer) String() string { return buffer.buffer.String() }
+
 type CapabilityExecutionOptions struct {
 	Timeout            time.Duration
 	RemoteTimeout      time.Duration
 	RemotePollInterval time.Duration
+	OperationID        string
+}
+
+type CapabilityExecutionError struct {
+	Phase string
+	Err   error
+}
+
+func (err *CapabilityExecutionError) Error() string { return err.Phase + ": " + err.Err.Error() }
+func (err *CapabilityExecutionError) Unwrap() error { return err.Err }
+
+func CapabilityOutcomeUncertain(err error) bool {
+	var executionError *CapabilityExecutionError
+	if !errors.As(err, &executionError) {
+		return false
+	}
+	return executionError.Phase == "write" || executionError.Phase == "remote_verification" || executionError.Phase == "verification"
+}
+
+func CapabilityOperationErrorCode(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return "execution_timeout"
+	}
+	var executionError *CapabilityExecutionError
+	if errors.As(err, &executionError) {
+		switch executionError.Phase {
+		case "preflight":
+			return "preflight_failed"
+		case "write":
+			return "write_outcome_unknown"
+		case "remote_verification":
+			return "remote_outcome_unknown"
+		case "verification":
+			return "verification_outcome_unknown"
+		case "remote_result":
+			return "remote_operation_failed"
+		default:
+			return "execution_failed"
+		}
+	}
+	return "execution_failed"
 }
 
 func ValidateCapabilityInput(id string, input map[string]any) error {
 	definition, ok := CapabilityByID(id)
 	if !ok {
 		return errors.New("unknown_capability")
+	}
+	if !CapabilityPublished(definition) {
+		return errors.New("capability_not_published")
 	}
 	return validateCapabilityInput(definition, input)
 }
@@ -37,10 +115,60 @@ func (runner CapabilityExecutor) Execute(ctx context.Context, id string, input m
 	return runner.ExecuteWithOptions(ctx, id, input, CapabilityExecutionOptions{})
 }
 
+func (runner CapabilityExecutor) ReadPreflight(ctx context.Context, id string, input map[string]any) (map[string]any, error) {
+	definition, ok := CapabilityByID(id)
+	if !ok {
+		return nil, errors.New("unknown_capability")
+	}
+	if !CapabilityPublished(definition) {
+		return nil, errors.New("capability_not_published")
+	}
+	if err := requireLongTailCapability(definition); err != nil {
+		return nil, err
+	}
+	if err := validateCapabilityInput(definition, input); err != nil {
+		return nil, err
+	}
+	if definition.Preflight == nil {
+		return nil, nil
+	}
+	return runner.runPreflightStep(ctx, definition, input, 60*time.Second)
+}
+
+func (runner CapabilityExecutor) ReadVerification(ctx context.Context, id string, input, response map[string]any) (VerificationAssessment, error) {
+	definition, ok := CapabilityByID(id)
+	if !ok {
+		return VerificationAssessment{}, errors.New("unknown_capability")
+	}
+	if !CapabilityPublished(definition) {
+		return VerificationAssessment{}, errors.New("capability_not_published")
+	}
+	if err := requireLongTailCapability(definition); err != nil {
+		return VerificationAssessment{}, err
+	}
+	if definition.Postcondition != nil && definition.Postcondition.Kind == "remote_terminal" && definition.Poll != nil {
+		return VerificationAssessment{State: VerificationConfirmed, Evidence: map[string]any{"postcondition": "remote_terminal", "observed": true}}, nil
+	}
+	if definition.Reread == nil {
+		return VerificationAssessment{State: VerificationInconclusive, Evidence: map[string]any{"postcondition": "manual_review_only", "observed": false}}, nil
+	}
+	evidence, err := runner.runReadStep(ctx, definition.Reread, input, response, 60*time.Second, "reread")
+	if err != nil {
+		return VerificationAssessment{}, err
+	}
+	return VerificationAssessment{State: VerificationInconclusive, Evidence: evidence}, nil
+}
+
 func (runner CapabilityExecutor) ExecuteWithOptions(ctx context.Context, id string, input map[string]any, options CapabilityExecutionOptions) (map[string]any, error) {
 	definition, ok := CapabilityByID(id)
 	if !ok {
 		return nil, errors.New("unknown_capability")
+	}
+	if !CapabilityPublished(definition) {
+		return nil, errors.New("capability_not_published")
+	}
+	if err := requireLongTailCapability(definition); err != nil {
+		return nil, err
 	}
 	if err := validateCapabilityInput(definition, input); err != nil {
 		return nil, err
@@ -56,36 +184,79 @@ func (runner CapabilityExecutor) ExecuteWithOptions(ctx context.Context, id stri
 	}
 	var preflight map[string]any
 	if definition.Preflight != nil {
-		value, err := runner.runReadStep(ctx, definition.Preflight, input, nil, options.Timeout, "preflight")
+		value, err := runner.runPreflightStep(ctx, definition, input, options.Timeout)
 		if err != nil {
-			return nil, err
+			return nil, &CapabilityExecutionError{Phase: "preflight", Err: err}
 		}
 		preflight = value
 	}
 	response, err := runner.runDefinition(ctx, definition, input, options.Timeout)
 	if err != nil {
-		return nil, err
+		return nil, &CapabilityExecutionError{Phase: "write", Err: err}
 	}
 	remote, err := runner.pollRemote(ctx, definition, input, response, options)
 	if err != nil {
-		return nil, err
+		return capabilityExecutionEnvelope(id, response, preflight, nil, VerificationInconclusive, nil, false), &CapabilityExecutionError{Phase: "remote_verification", Err: err}
 	}
 	var verification map[string]any
+	verificationState := string(VerificationInconclusive)
 	if definition.Reread != nil {
 		value, err := runner.runReadStep(ctx, definition.Reread, input, response, options.Timeout, "reread")
 		if err != nil {
-			return nil, err
+			return capabilityExecutionEnvelope(id, response, preflight, nil, VerificationInconclusive, remote, false), &CapabilityExecutionError{Phase: "verification", Err: err}
 		}
 		verification = value
+		verificationState = string(VerificationInconclusive)
 	}
+	verified := false
+	if remote != nil {
+		verified = true
+		verificationState = string(VerificationConfirmed)
+	}
+	return capabilityExecutionEnvelope(id, response, preflight, verification, VerificationState(verificationState), remote, verified), nil
+}
+
+func (runner CapabilityExecutor) runPreflightStep(ctx context.Context, definition CapabilityDefinition, input map[string]any, timeout time.Duration) (map[string]any, error) {
+	if definition.Preflight == nil {
+		return nil, nil
+	}
+	if definition.Preflight.Kind == "input_summary" {
+		fingerprint, err := operationFingerprint(definition.ID, input)
+		if err != nil {
+			return nil, err
+		}
+		targets := map[string]any{}
+		for _, key := range definition.ConflictKey {
+			if key == "$capability" {
+				continue
+			}
+			if value, ok := input[key]; ok {
+				encoded, _ := json.Marshal(value)
+				targets[key] = map[string]any{"fingerprint": AuditFingerprint(string(encoded)), "length": len(encoded)}
+			}
+		}
+		return map[string]any{"kind": "input_summary", "capability": definition.ID, "requestFingerprint": "sha256:" + fingerprint[:20], "targets": targets}, nil
+	}
+	return runner.runReadStep(ctx, definition.Preflight, input, nil, timeout, "preflight")
+}
+
+func capabilityExecutionEnvelope(id string, response, preflight, verification map[string]any, verificationState VerificationState, remote map[string]any, verified bool) map[string]any {
 	return map[string]any{
-		"capabilityId": id,
-		"response":     response,
-		"preflight":    nullableMap(preflight),
-		"verification": nullableMap(verification),
-		"remote":       nullableMap(remote),
-		"verified":     verification != nil || remote != nil,
-	}, nil
+		"capabilityId":      id,
+		"response":          response,
+		"preflight":         nullableMap(preflight),
+		"verification":      nullableMap(verification),
+		"verificationState": string(verificationState),
+		"remote":            nullableMap(remote),
+		"verified":          verified,
+	}
+}
+
+func requireLongTailCapability(definition CapabilityDefinition) error {
+	if definition.Backend == "go-sdk" || definition.Transport == "service" {
+		return errors.New("capability_requires_unified_executor")
+	}
+	return nil
 }
 
 func (runner CapabilityExecutor) DownloadMessageResource(ctx context.Context, messageID, fileKey, resourceType, output string, timeout time.Duration) error {
@@ -336,7 +507,7 @@ func capabilityInvocation(definition CapabilityDefinition, input map[string]any)
 			args = append(args, text)
 		}
 	}
-	if definition.Risk == "high-impact-write" && definition.CLIConfirm {
+	if (definition.Risk == "high-impact-write" || definition.Risk == "destructive") && definition.CLIConfirm {
 		args = append(args, "--yes")
 	}
 	return args, stdin, files, nil
@@ -345,6 +516,9 @@ func capabilityInvocation(definition CapabilityDefinition, input map[string]any)
 func (runner CapabilityExecutor) runDefinition(ctx context.Context, definition CapabilityDefinition, input map[string]any, timeout time.Duration) (map[string]any, error) {
 	if err := validateCapabilityInput(definition, input); err != nil {
 		return nil, err
+	}
+	if definition.ID == "note.shortcut.transcript" || definition.ID == "minutes.shortcut.detail" && input["transcript"] == true {
+		return runner.runTranscriptDefinition(ctx, definition, input, timeout)
 	}
 	input, err := runner.prepareCapabilityPaths(definition, input)
 	if err != nil {
@@ -355,6 +529,127 @@ func (runner CapabilityExecutor) runDefinition(ctx context.Context, definition C
 		return nil, err
 	}
 	return runner.run(ctx, definition, args, stdin, files, timeout)
+}
+
+func (runner CapabilityExecutor) runTranscriptDefinition(ctx context.Context, definition CapabilityDefinition, input map[string]any, timeout time.Duration) (map[string]any, error) {
+	cwd := runner.WorkingDirectory
+	if cwd == "" {
+		cwd = runner.DataRoot
+	}
+	root := filepath.Join(runner.DataRoot, "private-cache", "transcripts")
+	if err := ensurePrivateDirectory(root); err != nil {
+		return nil, err
+	}
+	artifactRoot, err := os.MkdirTemp(root, "transcript-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(artifactRoot)
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(artifactRoot, 0o700); err != nil {
+			return nil, err
+		}
+	}
+	prepared := cloneInput(input)
+	definition.Flags = cloneCapabilityFields(definition.Flags)
+	if definition.ID == "note.shortcut.transcript" {
+		output := filepath.Join(artifactRoot, "transcript.md")
+		relative, err := filepath.Rel(cwd, output)
+		if err != nil || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+			return nil, errors.New("unsafe_transcript_output")
+		}
+		prepared["output"] = filepath.ToSlash(relative)
+		field := definition.Flags["output"]
+		field.Type, field.Output, field.Private = "path", true, false
+		definition.Flags["output"] = field
+	} else {
+		relative, err := filepath.Rel(cwd, artifactRoot)
+		if err != nil || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+			return nil, errors.New("unsafe_transcript_output")
+		}
+		prepared["output-dir"] = filepath.ToSlash(relative)
+		field := definition.Flags["output-dir"]
+		field.Type, field.Output, field.Private = "path", true, false
+		definition.Flags["output-dir"] = field
+	}
+	prepared, err = runner.prepareCapabilityPaths(definition, prepared)
+	if err != nil {
+		return nil, err
+	}
+	args, stdin, files, err := capabilityInvocation(definition, prepared)
+	if err != nil {
+		return nil, err
+	}
+	response, err := runner.run(ctx, definition, args, stdin, files, timeout)
+	if err != nil {
+		return nil, err
+	}
+	transcript, meta, err := readPrivateTranscriptArtifact(artifactRoot, 50_000)
+	if err != nil {
+		return nil, err
+	}
+	response["transcript"] = transcript
+	response["transcriptMeta"] = meta
+	return response, nil
+}
+
+func cloneCapabilityFields(fields map[string]CapabilityField) map[string]CapabilityField {
+	result := make(map[string]CapabilityField, len(fields))
+	for key, value := range fields {
+		result[key] = value
+	}
+	return result
+}
+
+func readPrivateTranscriptArtifact(root string, maximumCharacters int) (string, map[string]any, error) {
+	files := []string{}
+	err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("unsafe_transcript_symlink")
+		}
+		if info.Mode().IsRegular() {
+			extension := strings.ToLower(filepath.Ext(path))
+			if extension == ".txt" || extension == ".md" {
+				files = append(files, path)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	if len(files) != 1 {
+		return "", nil, errors.New("transcript_artifact_count_invalid")
+	}
+	info, err := os.Lstat(files[0])
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return "", nil, errors.New("unsafe_transcript_artifact")
+	}
+	maximumBytes := int64(maximumCharacters*4 + 4)
+	file, err := os.Open(files[0])
+	if err != nil {
+		return "", nil, err
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, maximumBytes))
+	closeErr := file.Close()
+	if readErr != nil {
+		return "", nil, readErr
+	}
+	if closeErr != nil {
+		return "", nil, closeErr
+	}
+	runes := []rune(string(data))
+	truncated := len(runes) > maximumCharacters || info.Size() > int64(len(data))
+	if len(runes) > maximumCharacters {
+		runes = runes[:maximumCharacters]
+	}
+	text := string(runes)
+	clear(data)
+	clear(runes)
+	return text, map[string]any{"sourceBytes": info.Size(), "returnedCharacters": len([]rune(text)), "truncated": truncated}, nil
 }
 
 func (runner CapabilityExecutor) prepareCapabilityPaths(definition CapabilityDefinition, input map[string]any) (map[string]any, error) {
@@ -461,6 +756,8 @@ func mappedCapabilityInput(step *CapabilityStep, input, response map[string]any)
 			if !ok {
 				value, ok = recursiveKey(response, lastPathPart(path))
 			}
+		} else if strings.HasPrefix(source, "$input.") {
+			value, ok = nestedValue(input, strings.TrimPrefix(source, "$input."))
 		} else {
 			value, ok = input[source]
 		}
@@ -544,6 +841,48 @@ func cloneInput(input map[string]any) map[string]any {
 }
 
 func validateSpecialCapabilityInput(definition CapabilityDefinition, input map[string]any) error {
+	if strings.HasPrefix(definition.ID, "approval.") {
+		if err := validateApprovalCapabilityInput(definition.ID, input); err != nil {
+			return err
+		}
+	}
+	if strings.HasPrefix(definition.ID, "docs.service.document.") {
+		_, hasKind := input["target-kind"]
+		_, hasValue := input["target-value"]
+		if hasKind != hasValue {
+			return errors.New("document_target_pair_required")
+		}
+		if definition.ID == "docs.service.document.create" && hasKind && fmt.Sprint(input["target-kind"]) != "folder_token" {
+			return errors.New("document_create_target_invalid")
+		}
+		if definition.ID != "docs.service.document.create" && fmt.Sprint(input["target-kind"]) == "folder_token" {
+			return errors.New("document_update_target_invalid")
+		}
+		_, hasSelection := input["selection-pattern"]
+		if definition.ID != "docs.service.document.overwrite" && hasSelection {
+			return errors.New("document_selection_not_supported")
+		}
+		return nil
+	}
+	if definition.ID == "im.sdk.message.send" {
+		format := fmt.Sprint(input["format"])
+		_, hasText := input["text"]
+		_, hasFile := input["file-path"]
+		if contains([]string{"image", "file"}, format) {
+			if !hasFile || hasText {
+				return errors.New("sdk_media_send_requires_file_only")
+			}
+		} else if !hasText || hasFile {
+			return errors.New("sdk_text_send_requires_text_only")
+		}
+		if format == "card" {
+			var card map[string]any
+			if json.Unmarshal([]byte(fmt.Sprint(input["text"])), &card) != nil {
+				return errors.New("invalid_card_json")
+			}
+		}
+		return nil
+	}
 	if definition.ID == "docs.whiteboard.insert" {
 		_, err := docWhiteboardXML(input)
 		return err
@@ -570,6 +909,123 @@ func validateSpecialCapabilityInput(definition CapabilityDefinition, input map[s
 		}
 	}
 	return nil
+}
+
+func validateApprovalCapabilityInput(id string, input map[string]any) error {
+	type payloadSpec struct {
+		required []string
+		allowed  []string
+	}
+	specs := map[string]payloadSpec{
+		"approval.instances.cancel": {required: []string{"instance_code"}, allowed: []string{"instance_code"}},
+		"approval.instances.cc":     {required: []string{"cc_user_ids", "instance_code"}, allowed: []string{"cc_user_ids", "comment", "instance_code"}},
+		"approval.instances.create": {required: []string{"approval_code"}, allowed: []string{"approval_code", "form", "node_approver_list", "node_cc_list", "uuid"}},
+		"approval.tasks.add_sign":   {required: []string{"add_sign_type", "add_sign_user_ids", "instance_code", "task_id"}, allowed: []string{"add_sign_type", "add_sign_user_ids", "approval_method", "comment", "instance_code", "task_id"}},
+		"approval.tasks.approve":    {required: []string{"instance_code", "task_id"}, allowed: []string{"comment", "form", "instance_code", "task_id"}},
+		"approval.tasks.reject":     {required: []string{"instance_code", "task_id"}, allowed: []string{"comment", "instance_code", "task_id"}},
+		"approval.tasks.remind":     {required: []string{"instance_code", "task_ids"}, allowed: []string{"comment", "instance_code", "task_ids"}},
+		"approval.tasks.rollback":   {required: []string{"instance_code", "node_ids", "task_id"}, allowed: []string{"comment", "instance_code", "node_ids", "task_id"}},
+		"approval.tasks.transfer":   {required: []string{"instance_code", "task_id", "transfer_user_id"}, allowed: []string{"comment", "instance_code", "task_id", "transfer_user_id"}},
+	}
+	spec, governed := specs[id]
+	if !governed {
+		return nil
+	}
+	data, ok := input["data"].(map[string]any)
+	if !ok {
+		return errors.New("invalid_approval_data")
+	}
+	for key := range data {
+		if !contains(spec.allowed, key) {
+			return fmt.Errorf("unsupported_approval_field:%s", key)
+		}
+	}
+	for _, key := range spec.required {
+		value, present := data[key]
+		if !present || value == nil || strings.TrimSpace(fmt.Sprint(value)) == "" {
+			return fmt.Errorf("missing_required_approval_field:%s", key)
+		}
+	}
+	for key, value := range data {
+		switch key {
+		case "cc_user_ids", "add_sign_user_ids", "task_ids", "node_ids":
+			items, valid := approvalStringList(value)
+			if !valid || len(items) < 1 || len(items) > 100 {
+				return fmt.Errorf("invalid_approval_list:%s", key)
+			}
+		case "node_approver_list", "node_cc_list":
+			items, valid := approvalAnyList(value)
+			if !valid || len(items) > 100 {
+				return fmt.Errorf("invalid_approval_list:%s", key)
+			}
+			for _, item := range items {
+				if _, ok := item.(map[string]any); !ok {
+					return fmt.Errorf("invalid_approval_list:%s", key)
+				}
+			}
+		case "add_sign_type", "approval_method":
+			n, valid := number(value)
+			if !valid || math.Trunc(n) != n || n < 1 || n > 3 {
+				return fmt.Errorf("invalid_approval_enum:%s", key)
+			}
+		case "form":
+			text, valid := value.(string)
+			var fields []any
+			if !valid || len(text) > 1024*1024 || json.Unmarshal([]byte(text), &fields) != nil {
+				return errors.New("invalid_approval_form")
+			}
+		case "comment":
+			text, valid := value.(string)
+			if !valid || len([]rune(text)) > 500 {
+				return errors.New("invalid_approval_comment")
+			}
+		default:
+			text, valid := value.(string)
+			if !valid || strings.TrimSpace(text) == "" || len(text) > 4000 {
+				return fmt.Errorf("invalid_approval_identifier:%s", key)
+			}
+		}
+	}
+	return nil
+}
+
+func approvalStringList(value any) ([]string, bool) {
+	switch values := value.(type) {
+	case []string:
+		for _, item := range values {
+			if strings.TrimSpace(item) == "" || len(item) > 400 {
+				return nil, false
+			}
+		}
+		return values, true
+	case []any:
+		result := make([]string, 0, len(values))
+		for _, item := range values {
+			text, ok := item.(string)
+			if !ok || strings.TrimSpace(text) == "" || len(text) > 400 {
+				return nil, false
+			}
+			result = append(result, text)
+		}
+		return result, true
+	default:
+		return nil, false
+	}
+}
+
+func approvalAnyList(value any) ([]any, bool) {
+	switch values := value.(type) {
+	case []any:
+		return values, true
+	case []map[string]any:
+		result := make([]any, len(values))
+		for index := range values {
+			result[index] = values[index]
+		}
+		return result, true
+	default:
+		return nil, false
+	}
 }
 
 func docWhiteboardXML(input map[string]any) (string, error) {
@@ -658,11 +1114,18 @@ func (runner CapabilityExecutor) run(parent context.Context, definition Capabili
 	command := exec.CommandContext(ctx, runner.Binary, full...)
 	command.Dir = cwd
 	command.Stdin = bytes.NewReader(stdin)
-	var stdout, stderr bytes.Buffer
+	stdout := boundedCommandBuffer{limit: maximumCapabilityOutputBytes}
+	stderr := boundedCommandBuffer{limit: maximumCapabilityErrorBytes}
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("lark-cli execution timeout: %w", ctx.Err())
+		}
 		return nil, fmt.Errorf("lark-cli failed: %s", safeCommandError(stderr.String(), stdout.String()))
+	}
+	if stdout.overflow {
+		return nil, errors.New("lark-cli output exceeds safe limit")
 	}
 	var result map[string]any
 	if stdout.Len() == 0 {
@@ -671,7 +1134,100 @@ func (runner CapabilityExecutor) run(parent context.Context, definition Capabili
 	if json.Unmarshal(stdout.Bytes(), &result) != nil {
 		return nil, errors.New("lark-cli returned non-json")
 	}
-	return result, nil
+	return boundCapabilityResult(result), nil
+}
+
+func boundCapabilityResult(result map[string]any) map[string]any {
+	encoded, err := json.Marshal(result)
+	if err == nil && len(encoded) <= maximumCapabilityResultBytes {
+		return result
+	}
+	budget := maximumCapabilityResultBytes - 4096
+	truncated := false
+	clipped, _ := clipCapabilityValue(result, &budget, &truncated).(map[string]any)
+	if clipped == nil {
+		clipped = map[string]any{}
+	}
+	clipped["_truncated"] = true
+	if err == nil {
+		clipped["_sourceBytes"] = len(encoded)
+	}
+	return clipped
+}
+
+func clipCapabilityValue(value any, budget *int, truncated *bool) any {
+	if *budget <= 0 {
+		*truncated = true
+		return nil
+	}
+	switch item := value.(type) {
+	case map[string]any:
+		output := map[string]any{}
+		keys := make([]string, 0, len(item))
+		for key := range item {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if *budget <= len(key)+16 {
+				*truncated = true
+				break
+			}
+			*budget -= len(key) + 4
+			output[key] = clipCapabilityValue(item[key], budget, truncated)
+		}
+		return output
+	case []any:
+		limit := len(item)
+		if limit > 200 {
+			limit = 200
+			*truncated = true
+		}
+		output := make([]any, 0, limit)
+		for index := 0; index < limit && *budget > 0; index++ {
+			output = append(output, clipCapabilityValue(item[index], budget, truncated))
+		}
+		if len(output) < len(item) {
+			*truncated = true
+		}
+		return output
+	case string:
+		maximum := *budget
+		if maximum > 64*1024 {
+			maximum = 64 * 1024
+		}
+		if len(item) <= maximum {
+			*budget -= len(item)
+			return item
+		}
+		*truncated = true
+		prefix := utf8Prefix(item, maximum)
+		*budget -= len(prefix)
+		return prefix + "…"
+	default:
+		encoded, _ := json.Marshal(item)
+		if len(encoded) > *budget {
+			*truncated = true
+			*budget = 0
+			return nil
+		}
+		*budget -= len(encoded)
+		return item
+	}
+}
+
+func utf8Prefix(value string, maximum int) string {
+	if len(value) <= maximum {
+		return value
+	}
+	end := 0
+	for index := range value {
+		if index > maximum {
+			break
+		}
+		end = index
+	}
+	return value[:end]
 }
 
 func safeCommandError(values ...string) string {
@@ -744,7 +1300,7 @@ func forbiddenPayload(value any) bool {
 		normalized := strings.ReplaceAll(strings.ToLower(key), "_", "-")
 		if contains([]string{
 			"delete", "remove", "clear", "permission", "role", "member", "move-to-drive", "wiki-move",
-			"workflow", "automation", "openapi-key", "database", "cache", "plugin", "approval",
+			"workflow", "automation", "openapi-key", "database", "cache", "plugin",
 			"urgent-phone", "urgent-sms", "meeting-join", "meeting-end", "meeting-leave", "minutes-download",
 		}, normalized) || strings.HasPrefix(normalized, "delete-") || strings.HasSuffix(normalized, "-delete") {
 			return true

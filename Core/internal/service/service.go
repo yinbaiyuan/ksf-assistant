@@ -15,6 +15,7 @@ import (
 
 	"codexusagebar/core/internal/bridge"
 	"codexusagebar/core/internal/codex"
+	"codexusagebar/core/internal/corebridge"
 	"codexusagebar/core/internal/desktop"
 	"codexusagebar/core/internal/domain"
 	managedfeishu "codexusagebar/core/internal/feishu"
@@ -52,6 +53,26 @@ type FeishuFeatureUpdateRequest struct {
 	Feature          string `json:"feature"`
 	Mode             string `json:"mode"`
 	ConfirmRealWrite bool   `json:"confirmRealWrite"`
+}
+
+type FeishuOperationPrepareRequest struct {
+	CapabilityID string         `json:"capabilityId"`
+	Input        map[string]any `json:"input"`
+	Source       string         `json:"source,omitempty"`
+}
+
+type FeishuOperationConfirmRequest struct {
+	OperationID string `json:"operationId"`
+	Challenge   string `json:"challenge"`
+}
+
+type FeishuOperationRequest struct {
+	OperationID string `json:"operationId"`
+}
+
+type FeishuPolicyUpdateRequest struct {
+	Policy           managedfeishu.CapabilityPolicy `json:"policy"`
+	ExpectedRevision uint64                         `json:"expectedRevision"`
 }
 
 type CreateTaskRequest struct {
@@ -93,7 +114,6 @@ type Service struct {
 	home                    string
 	codex                   *codex.Client
 	ksf                     bridge.KSFClient
-	feishu                  bridge.FeishuClient
 	desktop                 *desktop.ActivityClient
 	mu                      sync.Mutex
 	lastUsage               domain.UsageSnapshot
@@ -103,12 +123,9 @@ type Service struct {
 	lastLocalTokenAttempt   time.Time
 	lastThreadAttempt       time.Time
 	projectSources          map[string]projectSourceCache
-	feishuRoot              string
 	feishuDataRoot          string
-	legacyFeishuSupervisor  *bridge.FeishuSupervisor
 	managedFeishuSupervisor *managedfeishu.Supervisor
 	hostContextStore        managedfeishu.HostContextStore
-	lastFeishuRoot          string
 	lastFeishuAt            time.Time
 	lastFeishu              domain.FeishuSnapshot
 	lastTokenHistoryAt      time.Time
@@ -131,27 +148,15 @@ type projectSourceCache struct {
 
 func New() *Service {
 	home, _ := os.UserHomeDir()
-	supportRoot := codexAssistantSupportRoot(home)
-	feishuRoot := os.Getenv("CODEX_USAGE_BAR_FEISHU_SERVICE_ROOT")
-	feishuNode := os.Getenv("CODEX_USAGE_BAR_NODE")
 	dataRoot := os.Getenv("FEISHU_BRIDGE_DATA_DIR")
 	if strings.TrimSpace(dataRoot) == "" {
 		dataRoot = filepath.Join(home, ".config", "feishu-bridge")
 	}
 	var managedSupervisor *managedfeishu.Supervisor
 	hostContextStore := managedfeishu.NewHostContextStore(dataRoot)
-	legacySupervisor := bridge.NewFeishuSupervisor(feishuRoot, feishuNode)
-	legacySupervisor.SetEnvironment([]string{
-		"CODEX_USAGE_BAR_MANAGED=1",
-		"CODEX_USAGE_BAR_HOST_CONTEXT=" + hostContextStore.Path(),
-		"CODEX_USAGE_BAR_SUPPORT_DIR=" + supportRoot,
-		"FEISHU_BRIDGE_DATA_DIR=" + dataRoot,
-	})
 	if executable := strings.TrimSpace(os.Getenv("CODEX_USAGE_BAR_FEISHU_BRIDGE")); executable != "" {
 		environment := []string{
 			"FEISHU_BRIDGE_DATA_DIR=" + dataRoot,
-			"CODEX_USAGE_BAR_HOST_CONTEXT=" + hostContextStore.Path(),
-			"CODEX_USAGE_BAR_SUPPORT_DIR=" + supportRoot,
 		}
 		if larkCLI := strings.TrimSpace(os.Getenv("CODEX_USAGE_BAR_LARK_CLI")); larkCLI != "" {
 			environment = append(environment, "LARK_CLI_BIN="+larkCLI)
@@ -159,18 +164,16 @@ func New() *Service {
 		managedSupervisor = managedfeishu.NewSupervisor(managedfeishu.SupervisorOptions{
 			Executable:  executable,
 			Directory:   filepath.Dir(executable),
+			DataRoot:    dataRoot,
 			Environment: environment,
 		})
 		if setup, err := managedfeishu.NewSetupStore(dataRoot).Load(); err == nil {
 			managedSupervisor.SetConfigured(feishuSetupConfiguresBridge(setup.Stage))
 		}
 	}
-	return &Service{
+	service := &Service{
 		home:                    home,
-		feishu:                  bridge.FeishuClient{Node: feishuNode, Executable: strings.TrimSpace(os.Getenv("CODEX_USAGE_BAR_FEISHU_BRIDGE")), LarkCLI: strings.TrimSpace(os.Getenv("CODEX_USAGE_BAR_LARK_CLI"))},
-		feishuRoot:              feishuRoot,
 		feishuDataRoot:          dataRoot,
-		legacyFeishuSupervisor:  legacySupervisor,
 		managedFeishuSupervisor: managedSupervisor,
 		hostContextStore:        hostContextStore,
 		desktop:                 desktop.New(desktop.DefaultEndpoint(home)),
@@ -178,6 +181,10 @@ func New() *Service {
 		projectSources:          map[string]projectSourceCache{},
 		lastUsage:               domain.UsageSnapshot{Buckets: []domain.RateLimitBucket{}, DailyUsageBuckets: []domain.DailyUsageBucket{}, Status: "loading"},
 	}
+	if managedSupervisor != nil {
+		_ = managedSupervisor.SetHandler(service)
+	}
+	return service
 }
 
 func codexAssistantSupportRoot(home string) string {
@@ -202,22 +209,23 @@ func (service *Service) Initialize(ctx context.Context, request InitializeReques
 	}
 	_ = service.desktop.Start(ctx)
 	hostContext, hostContextErr := service.UpdateIntegrationContext(request.Integrations)
-	if hostContextErr == nil {
-		_ = service.startFeishuSupervisor()
-	}
+	bridgeStartErr := service.startFeishuSupervisor()
 	result := map[string]any{
 		"protocol": domain.Protocol,
 		"version":  Version,
 		"platform": runtime.GOOS,
 		"capabilities": map[string]bool{
 			"usage": true, "localTokens": true, "tokenHistory": true, "tokenHistoryComparison": true, "tokenCostEstimate": true, "projects": true, "taskActivity": true,
-			"taskCreation": true, "projectLaunch": true, "feishuTaskLinks": true, "feishuServiceManagement": true,
+			"taskCreation": true, "projectLaunch": true, "feishuTaskLinks": true, "feishuServiceManagement": true, "feishuCapabilityGovernance": true,
 		},
 	}
 	if hostContextErr == nil {
 		result["integrations"] = hostContext
 	} else {
-		result["integrationError"] = "无法安全写入宿主集成上下文，飞书桥未启动"
+		result["integrationError"] = "KSF 上下文暂不可用，飞书传输仍可独立运行"
+	}
+	if bridgeStartErr != nil {
+		result["feishuError"] = bridgeStartErr.Error()
 	}
 	return result
 }
@@ -257,11 +265,15 @@ func (service *Service) Dashboard(ctx context.Context, request DashboardRequest)
 		}
 	}
 	projects := service.readProjects(ctx, request, threads, observations, now)
-	feishu := domain.FeishuSnapshot{Availability: "notConfigured", TargetAliases: []string{}, Links: []domain.FeishuTaskLink{}}
-	if strings.TrimSpace(service.feishuRoot) != "" {
-		feishu = service.readFeishu(ctx, service.feishuRoot, now)
+	feishu := normalizedFeishuSnapshot(domain.FeishuSnapshot{Availability: "notConfigured"})
+	if service.hasFeishuRuntime() {
+		feishu = service.readFeishu(ctx, now)
 	}
 	return domain.DashboardSnapshot{Protocol: domain.Protocol, CoreVersion: Version, Platform: runtime.GOOS, ObservedAt: now, Usage: usage, Activity: activity, Projects: projects, Feishu: feishu}
+}
+
+func (service *Service) hasFeishuRuntime() bool {
+	return service.managedFeishuSupervisor != nil
 }
 
 func (service *Service) PricingCatalog(request PricingCatalogRequest) domain.PricingCatalog {
@@ -300,27 +312,119 @@ func (service *Service) SubmitTask(ctx context.Context, request SubmitTaskReques
 }
 
 func (service *Service) CreateTaskLink(ctx context.Context, request TaskLinkRequest) (domain.FeishuTaskLink, error) {
-	return service.feishu.CreateTaskLink(ctx, service.feishuRoot, request.ThreadID, request.Title, request.ProjectName, request.TargetAlias)
+	if service.managedFeishuSupervisor == nil {
+		return domain.FeishuTaskLink{}, errors.New("CodexAssistant Feishu is unavailable")
+	}
+	var link domain.FeishuTaskLink
+	cwd := ""
+	if service.desktop != nil {
+		if state, found := service.desktop.CachedConversationState(request.ThreadID); found {
+			cwd = recursiveControlString(state, "cwd", "workingDirectory", "workspaceRoot")
+		}
+	}
+	err := service.managedFeishuSupervisor.Call(ctx, "bridge/taskLink/create", map[string]any{"threadId": request.ThreadID, "title": request.Title, "projectName": request.ProjectName, "targetAlias": request.TargetAlias, "cwd": cwd}, &link)
+	if err == nil {
+		service.mergeFeishuLink(link)
+	}
+	return link, err
 }
 
 func (service *Service) ReleaseTaskLink(ctx context.Context, request TaskLinkRequest) (domain.FeishuTaskLink, error) {
-	return service.feishu.ReleaseTaskLink(ctx, service.feishuRoot, request.ThreadID)
+	if service.managedFeishuSupervisor == nil {
+		return domain.FeishuTaskLink{}, errors.New("CodexAssistant Feishu is unavailable")
+	}
+	var link domain.FeishuTaskLink
+	err := service.managedFeishuSupervisor.Call(ctx, "bridge/taskLink/release", map[string]any{"taskKey": domain.PublicTaskKey(request.ThreadID)}, &link)
+	if err == nil {
+		service.mergeFeishuLink(link)
+	}
+	return link, err
 }
 
 func (service *Service) InterruptTaskLink(ctx context.Context, request TaskLinkRequest) (domain.FeishuTaskLink, error) {
-	return service.feishu.InterruptTaskLink(ctx, service.feishuRoot, request.ThreadID)
+	if service.managedFeishuSupervisor == nil {
+		return domain.FeishuTaskLink{}, errors.New("CodexAssistant Feishu is unavailable")
+	}
+	var link domain.FeishuTaskLink
+	err := service.managedFeishuSupervisor.Call(ctx, "bridge/taskLink/interrupt", map[string]any{"taskKey": domain.PublicTaskKey(request.ThreadID)}, &link)
+	if err == nil {
+		service.mergeFeishuLink(link)
+	}
+	return link, err
 }
 
 func (service *Service) SendFeishuTest(ctx context.Context, target string) error {
-	return service.feishu.SendTest(ctx, service.feishuRoot, target)
+	if service.managedFeishuSupervisor == nil {
+		return errors.New("CodexAssistant Feishu is unavailable")
+	}
+	return service.managedFeishuSupervisor.Call(ctx, "bridge/message/test", map[string]any{"targetAlias": target}, nil)
+}
+
+func (service *Service) PrepareFeishuOperation(ctx context.Context, request FeishuOperationPrepareRequest) (managedfeishu.PreparedOperation, error) {
+	if service.managedFeishuSupervisor == nil {
+		return managedfeishu.PreparedOperation{}, errors.New("CodexAssistant Feishu is unavailable")
+	}
+	var result managedfeishu.PreparedOperation
+	err := service.managedFeishuSupervisor.Call(ctx, corebridge.MethodOperationPrepare, request, &result)
+	return result, err
+}
+
+func (service *Service) ConfirmFeishuOperation(ctx context.Context, request FeishuOperationConfirmRequest) (managedfeishu.PreparedOperation, error) {
+	if service.managedFeishuSupervisor == nil {
+		return managedfeishu.PreparedOperation{}, errors.New("CodexAssistant Feishu is unavailable")
+	}
+	var result managedfeishu.PreparedOperation
+	err := service.managedFeishuSupervisor.Call(ctx, corebridge.MethodOperationConfirm, request, &result)
+	return result, err
+}
+
+func (service *Service) CancelFeishuOperation(ctx context.Context, request FeishuOperationRequest) (managedfeishu.OperationView, error) {
+	if service.managedFeishuSupervisor == nil {
+		return managedfeishu.OperationView{}, errors.New("CodexAssistant Feishu is unavailable")
+	}
+	var result managedfeishu.OperationView
+	err := service.managedFeishuSupervisor.Call(ctx, corebridge.MethodOperationCancel, request, &result)
+	return result, err
+}
+
+func (service *Service) FeishuOperationStatus(ctx context.Context, request FeishuOperationRequest) (managedfeishu.OperationView, error) {
+	if service.managedFeishuSupervisor == nil {
+		return managedfeishu.OperationView{}, errors.New("CodexAssistant Feishu is unavailable")
+	}
+	var result managedfeishu.OperationView
+	err := service.managedFeishuSupervisor.Call(ctx, corebridge.MethodOperationStatus, request, &result)
+	return result, err
+}
+
+func (service *Service) FeishuCapabilityPolicy(ctx context.Context) (managedfeishu.CapabilityPolicy, error) {
+	if service.managedFeishuSupervisor == nil {
+		return managedfeishu.CapabilityPolicy{}, errors.New("CodexAssistant Feishu is unavailable")
+	}
+	var result managedfeishu.CapabilityPolicy
+	err := service.managedFeishuSupervisor.Call(ctx, corebridge.MethodPolicyRead, map[string]any{}, &result)
+	return result, err
+}
+
+func (service *Service) UpdateFeishuCapabilityPolicy(ctx context.Context, request FeishuPolicyUpdateRequest) (managedfeishu.CapabilityPolicy, error) {
+	if service.managedFeishuSupervisor == nil {
+		return managedfeishu.CapabilityPolicy{}, errors.New("CodexAssistant Feishu is unavailable")
+	}
+	var result managedfeishu.CapabilityPolicy
+	err := service.managedFeishuSupervisor.Call(ctx, corebridge.MethodPolicyUpdate, request, &result)
+	return result, err
 }
 
 func (service *Service) FeishuProfile(ctx context.Context) (map[string]any, error) {
-	return service.feishu.Profile(ctx, service.feishuRoot)
+	settings, err := service.FeishuSettings()
+	return map[string]any{"status": "ok", "eventConsumer": map[string]any{"profile": settings.Profile, "profileValid": err == nil, "desiredConnection": settings.Profile == managedfeishu.ProfilePrimary}}, err
 }
 
 func (service *Service) ConfigureFeishu(ctx context.Context, appID, appSecret string) error {
-	return service.feishu.ConfigureExisting(ctx, service.feishuRoot, appID, appSecret)
+	if service.managedFeishuSupervisor == nil {
+		return errors.New("CodexAssistant Feishu is unavailable")
+	}
+	var result map[string]any
+	return service.managedFeishuSupervisor.Call(ctx, "bridge/auth/configure", map[string]any{"appId": appID, "appSecret": appSecret, "brand": "feishu", "profile": "default"}, &result)
 }
 
 func (service *Service) FeishuSettings() (managedfeishu.Settings, error) {
@@ -336,13 +440,20 @@ func (service *Service) UpdateFeishuSettings(settings managedfeishu.Settings) (m
 	if err := store.Save(settings); err != nil {
 		return managedfeishu.Settings{}, err
 	}
-	if strings.TrimSpace(service.feishuRoot) != "" {
-		if _, err := service.SetFeishuProfile(context.Background(), settings.Profile); err != nil {
-			if rollbackErr := store.Save(previous); rollbackErr != nil {
-				return managedfeishu.Settings{}, fmt.Errorf("更新飞书配置失败，且无法恢复原配置：%v；恢复失败：%w", err, rollbackErr)
-			}
-			return managedfeishu.Settings{}, err
-		}
+	if service.managedFeishuSupervisor == nil {
+		return store.Load()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	var applied managedfeishu.Settings
+	if err := service.managedFeishuSupervisor.Call(ctx, "bridge/settings/reload", map[string]any{}, &applied); err != nil {
+		_ = store.Save(previous)
+		return managedfeishu.Settings{}, err
+	}
+	if err := service.restartFeishuSupervisor(ctx); err != nil {
+		_ = store.Save(previous)
+		_ = service.restartFeishuSupervisor(context.Background())
+		return managedfeishu.Settings{}, err
 	}
 	return store.Load()
 }
@@ -365,7 +476,10 @@ func (service *Service) BeginFeishuSetup(ctx context.Context, mode, appID, appSe
 		state.Stage = managedfeishu.SetupAppConfigured
 		result = map[string]any{"status": "configured", "flow": "existing-app"}
 	case managedfeishu.SetupModeNew:
-		result, err = service.feishu.StartConfig(ctx, service.feishuRoot)
+		if service.managedFeishuSupervisor == nil {
+			return nil, errors.New("CodexAssistant Feishu is unavailable")
+		}
+		err = service.managedFeishuSupervisor.Call(ctx, "bridge/auth/start", map[string]any{"kind": "config", "profile": "default", "createNew": true}, &result)
 		state.Stage = managedfeishu.SetupAppPending
 		if result != nil {
 			state.VerificationURL, _ = result["verificationUrl"].(string)
@@ -407,11 +521,11 @@ func (service *Service) ContinueFeishuSetup(ctx context.Context) (map[string]any
 			state.UserCode, _ = result["userCode"].(string)
 		}
 	case managedfeishu.SetupAuthorizationPending:
-		err = service.feishu.EnsureCurrentUserTarget(ctx, service.feishuRoot)
+		err = service.ensureCurrentFeishuUser(ctx)
 		if err != nil {
 			err = service.FinishFeishuAuth(ctx)
 			if err == nil {
-				err = service.feishu.EnsureCurrentUserTarget(ctx, service.feishuRoot)
+				err = service.ensureCurrentFeishuUser(ctx)
 			}
 		}
 		if err == nil {
@@ -460,7 +574,7 @@ func (service *Service) VerifyFeishuSetup(ctx context.Context) (map[string]any, 
 	state.Stage = managedfeishu.SetupPlatformPending
 	state.ReadyToActivate = false
 	if permissionsReady(permissions) {
-		if err := service.feishu.EnsureCurrentUserTarget(ctx, service.feishuRoot); err != nil {
+		if err := service.ensureCurrentFeishuUser(ctx); err != nil {
 			state.Stage = managedfeishu.SetupFailed
 			state.LastError = safeSetupError(err)
 			_ = store.Save(state)
@@ -497,8 +611,8 @@ func (service *Service) ActivateFeishuSetup(ctx context.Context, targetAlias str
 	if targetAlias == "" {
 		return nil, errors.New("请选择软件内显示的测试目标")
 	}
-	snapshot, err := service.feishu.Inspect(ctx, service.feishuRoot)
-	if err != nil || !containsString(snapshot.TargetAliases, targetAlias) {
+	snapshot := service.readFeishu(ctx, time.Now())
+	if !containsString(snapshot.TargetAliases, targetAlias) {
 		return nil, errors.New("测试目标已失效，请重新检查飞书配置")
 	}
 
@@ -569,20 +683,9 @@ func (service *Service) saveAndRestartFeishuSettings(ctx context.Context, settin
 	if err := store.Save(settings); err != nil {
 		return err
 	}
-	if strings.TrimSpace(service.feishuRoot) != "" {
-		if _, err := service.feishu.SetProfile(ctx, service.feishuRoot, settings.Profile); err != nil {
-			if rollbackErr := store.Save(previous); rollbackErr != nil {
-				return fmt.Errorf("更新飞书事件档位失败，且无法恢复原设置：%v；恢复失败：%w", err, rollbackErr)
-			}
-			return err
-		}
-	}
 	if err := service.restartFeishuSupervisor(ctx); err != nil {
 		if rollbackErr := store.Save(previous); rollbackErr != nil {
-			return fmt.Errorf("重启飞书桥失败，且无法恢复原设置：%v；恢复失败：%w", err, rollbackErr)
-		}
-		if strings.TrimSpace(service.feishuRoot) != "" {
-			_, _ = service.feishu.SetProfile(context.Background(), service.feishuRoot, previous.Profile)
+			return fmt.Errorf("重启飞书服务失败，且无法恢复原设置：%v；恢复失败：%w", err, rollbackErr)
 		}
 		return err
 	}
@@ -594,7 +697,18 @@ func (service *Service) waitForFeishuAvailability(ctx context.Context, expected 
 	deadline := time.Now().Add(timeout)
 	var lastError error
 	for {
-		snapshot, err := service.feishu.Inspect(ctx, service.feishuRoot)
+		var snapshot domain.FeishuSnapshot
+		var err error
+		if service.managedFeishuSupervisor == nil {
+			return domain.FeishuSnapshot{}, errors.New("CodexAssistant Feishu is unavailable")
+		}
+		err = service.managedFeishuSupervisor.Call(ctx, "bridge/snapshot/read", map[string]any{}, &snapshot)
+		if err == nil {
+			service.mu.Lock()
+			service.lastFeishu = snapshot
+			service.lastFeishuAt = time.Now()
+			service.mu.Unlock()
+		}
 		if err == nil && snapshot.Availability == expected {
 			return snapshot, nil
 		}
@@ -605,7 +719,7 @@ func (service *Service) waitForFeishuAvailability(ctx context.Context, expected 
 		}
 		if time.Now().After(deadline) {
 			if lastError == nil || strings.TrimSpace(lastError.Error()) == "" {
-				lastError = errors.New("飞书桥尚未完成启动")
+				lastError = errors.New("飞书服务尚未完成启动")
 			}
 			return domain.FeishuSnapshot{}, lastError
 		}
@@ -693,15 +807,37 @@ func permissionsReady(result map[string]any) bool {
 }
 
 func (service *Service) StartFeishuAuth(ctx context.Context) (map[string]any, error) {
-	return service.feishu.StartUserAuth(ctx, service.feishuRoot)
+	if service.managedFeishuSupervisor == nil {
+		return nil, errors.New("CodexAssistant Feishu is unavailable")
+	}
+	var result map[string]any
+	err := service.managedFeishuSupervisor.Call(ctx, "bridge/auth/start", map[string]any{"kind": "user", "scope": "required"}, &result)
+	return result, err
 }
 
 func (service *Service) FinishFeishuAuth(ctx context.Context) error {
-	return service.feishu.FinishUserAuth(ctx, service.feishuRoot)
+	if service.managedFeishuSupervisor == nil {
+		return errors.New("CodexAssistant Feishu is unavailable")
+	}
+	var result map[string]any
+	return service.managedFeishuSupervisor.Call(ctx, "bridge/auth/finish", map[string]any{}, &result)
+}
+
+func (service *Service) ensureCurrentFeishuUser(ctx context.Context) error {
+	if service.managedFeishuSupervisor == nil {
+		return errors.New("CodexAssistant Feishu is unavailable")
+	}
+	var result map[string]any
+	return service.managedFeishuSupervisor.Call(ctx, "bridge/auth/ensureCurrentUser", map[string]any{}, &result)
 }
 
 func (service *Service) FeishuPermissions(ctx context.Context) (map[string]any, error) {
-	return service.feishu.Permissions(ctx, service.feishuRoot)
+	if service.managedFeishuSupervisor == nil {
+		return nil, errors.New("CodexAssistant Feishu is unavailable")
+	}
+	var result map[string]any
+	err := service.managedFeishuSupervisor.Call(ctx, "bridge/permissions/read", map[string]any{}, &result)
+	return result, err
 }
 
 func (service *Service) FeishuSettingsOverview(ctx context.Context) (domain.FeishuSettingsOverview, error) {
@@ -709,13 +845,13 @@ func (service *Service) FeishuSettingsOverview(ctx context.Context) (domain.Feis
 	if err != nil {
 		return domain.FeishuSettingsOverview{}, err
 	}
-	snapshot := service.readFeishu(ctx, service.feishuRoot, time.Now())
+	snapshot := service.readFeishu(ctx, time.Now())
 	permissions, permissionErr := service.FeishuPermissions(ctx)
 	overview := domain.FeishuSettingsOverview{
 		State:       snapshot.Availability,
 		Summary:     feishuOverviewSummary(snapshot),
 		Profile:     settings.Profile,
-		Health:      domain.FeishuSettingsHealth{Core: "running", Bridge: feishuBridgeHealth(snapshot), Inbound: feishuInboundHealth(settings.Profile, snapshot), Detail: snapshot.Message},
+		Health:      domain.FeishuSettingsHealth{Core: "running", Bridge: feishuServiceHealth(snapshot), Inbound: feishuInboundHealth(settings.Profile, snapshot), Detail: snapshot.Message},
 		Permissions: feishuPermissionOverview(permissions, permissionErr),
 		Features:    feishuFeatureOverview(settings),
 		Targets:     snapshot.TargetAliases,
@@ -842,7 +978,7 @@ func feishuMissingCapabilities(scopes []string) []string {
 	return uniqueStrings(result)
 }
 
-func feishuBridgeHealth(snapshot domain.FeishuSnapshot) string {
+func feishuServiceHealth(snapshot domain.FeishuSnapshot) string {
 	if snapshot.ProcessRunning && snapshot.Availability == "ready" {
 		return "running"
 	}
@@ -864,7 +1000,7 @@ func feishuOverviewSummary(snapshot domain.FeishuSnapshot) string {
 	if snapshot.Message != "" {
 		return snapshot.Message
 	}
-	return "飞书桥需要处理"
+	return "飞书服务需要处理"
 }
 func uniqueStrings(values []string) []string {
 	seen := map[string]bool{}
@@ -881,7 +1017,14 @@ func uniqueStrings(values []string) []string {
 }
 
 func (service *Service) SetFeishuProfile(ctx context.Context, profile string) (map[string]any, error) {
-	result, err := service.feishu.SetProfile(ctx, service.feishuRoot, profile)
+	if service.managedFeishuSupervisor == nil {
+		return nil, errors.New("CodexAssistant Feishu is unavailable")
+	}
+	var result map[string]any
+	err := service.managedFeishuSupervisor.Call(ctx, "bridge/profile/set", map[string]any{"profile": profile}, &result)
+	if err == nil {
+		err = service.restartFeishuSupervisor(ctx)
+	}
 	service.clearFeishuCache()
 	return result, err
 }
@@ -1123,65 +1266,115 @@ func (service *Service) mergeLocalTokens(usage *domain.UsageSnapshot, now time.T
 	}
 }
 
-func (service *Service) readFeishu(ctx context.Context, root string, now time.Time) domain.FeishuSnapshot {
-	service.mu.Lock()
-	if service.lastFeishuRoot == root && !service.lastFeishuAt.IsZero() && now.Sub(service.lastFeishuAt) < feishuRefreshFloor {
-		cached := service.lastFeishu
-		service.mu.Unlock()
-		return cached
+func (service *Service) readFeishu(ctx context.Context, now time.Time) domain.FeishuSnapshot {
+	if service.managedFeishuSupervisor == nil {
+		return normalizedFeishuSnapshot(domain.FeishuSnapshot{Availability: "unavailable", Message: "CodexAssistant Feishu is unavailable", RuntimeKind: "go", ProcessState: managedfeishu.StateDegraded})
 	}
-	service.mu.Unlock()
-	snapshot, err := service.feishu.Inspect(ctx, root)
-	if err != nil {
-		snapshot = domain.FeishuSnapshot{Availability: "unavailable", Message: err.Error(), TargetAliases: []string{}, Links: []domain.FeishuTaskLink{}}
-	}
-	service.applyFeishuSupervisorStatus(&snapshot)
 	service.mu.Lock()
-	service.lastFeishuRoot = root
-	service.lastFeishuAt = now
-	service.lastFeishu = snapshot
+	cached := service.lastFeishu
 	service.mu.Unlock()
+	if cached.Revision == 0 {
+		if err := service.managedFeishuSupervisor.Call(ctx, "bridge/snapshot/read", map[string]any{}, &cached); err != nil {
+			cached = domain.FeishuSnapshot{Availability: "unavailable", Message: err.Error(), RuntimeKind: "go"}
+		} else {
+			service.mu.Lock()
+			service.lastFeishu = cached
+			service.lastFeishuAt = now
+			service.mu.Unlock()
+		}
+	}
+	service.applyFeishuSupervisorStatus(&cached)
+	return normalizedFeishuSnapshot(cached)
+}
+
+func (service *Service) mergeFeishuLink(link domain.FeishuTaskLink) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	links := service.lastFeishu.Links
+	replaced := false
+	for index := range links {
+		if links[index].TaskKey == link.TaskKey {
+			links[index] = link
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		links = append(links, link)
+	}
+	service.lastFeishu.Links = links
+	service.lastFeishuAt = time.Now()
+}
+
+// JSON clients treat these collections as part of a stable array contract.
+// A nil Go slice would otherwise be encoded as null and make strict desktop
+// decoders reject the entire dashboard even though usage and project data are
+// otherwise available.
+func normalizedFeishuSnapshot(snapshot domain.FeishuSnapshot) domain.FeishuSnapshot {
+	if snapshot.TargetAliases == nil {
+		snapshot.TargetAliases = []string{}
+	}
+	if snapshot.ReadinessBlockers == nil {
+		snapshot.ReadinessBlockers = []string{}
+	}
+	if snapshot.Links == nil {
+		snapshot.Links = []domain.FeishuTaskLink{}
+	}
 	return snapshot
 }
 
 func (service *Service) startFeishuSupervisor() error {
-	if service.managedFeishuSupervisor != nil {
-		return service.managedFeishuSupervisor.Start()
+	if service.managedFeishuSupervisor == nil {
+		return errors.New("CodexAssistant Feishu is unavailable")
 	}
-	return service.legacyFeishuSupervisor.Start()
+	if err := service.managedFeishuSupervisor.Start(); err != nil {
+		return err
+	}
+	return service.initializeManagedBridge(context.Background())
 }
 
 func (service *Service) restartFeishuSupervisor(ctx context.Context) error {
-	if service.managedFeishuSupervisor != nil {
-		return service.managedFeishuSupervisor.Restart(ctx)
+	if service.managedFeishuSupervisor == nil {
+		return errors.New("CodexAssistant Feishu is unavailable")
 	}
-	return service.legacyFeishuSupervisor.Restart()
+	if err := service.managedFeishuSupervisor.Restart(ctx); err != nil {
+		return err
+	}
+	return service.initializeManagedBridge(ctx)
+}
+
+func (service *Service) initializeManagedBridge(parent context.Context) error {
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	var initialized struct {
+		Protocol string `json:"protocol"`
+	}
+	if err := service.managedFeishuSupervisor.Call(ctx, corebridge.MethodBridgeInitialize, corebridge.InitializeRequest{Protocol: corebridge.Protocol}, &initialized); err != nil {
+		return err
+	}
+	if initialized.Protocol != corebridge.Protocol {
+		return errors.New("CodexAssistant Feishu private IPC protocol mismatch")
+	}
+	return nil
 }
 
 func (service *Service) stopFeishuSupervisor(ctx context.Context) error {
-	if service.managedFeishuSupervisor != nil {
-		return service.managedFeishuSupervisor.Stop(ctx)
+	if service.managedFeishuSupervisor == nil {
+		return nil
 	}
-	return service.legacyFeishuSupervisor.Stop(ctx)
+	return service.managedFeishuSupervisor.Stop(ctx)
 }
 
 func (service *Service) feishuSupervisorStatus() map[string]any {
-	if service.managedFeishuSupervisor != nil {
-		status := service.managedFeishuSupervisor.Status()
-		return map[string]any{
-			"state": status.State, "configured": status.Configured, "pid": status.PID,
-			"restartCount": status.RestartCount, "lastError": status.LastError,
-		}
+	if service.managedFeishuSupervisor == nil {
+		return map[string]any{"state": managedfeishu.StateDegraded, "configured": false, "pid": 0, "restartCount": 0, "lastError": "CodexAssistant Feishu is unavailable"}
 	}
-	legacy := service.legacyFeishuSupervisor.Status()
-	running, _ := legacy["running"].(bool)
-	state := managedfeishu.StateStopped
-	if running {
-		state = managedfeishu.StateRunning
-	}
+	status := service.managedFeishuSupervisor.Status()
 	return map[string]any{
-		"state": state, "configured": strings.TrimSpace(service.feishuRoot) != "",
-		"pid": legacy["pid"], "restartCount": 0, "lastError": "",
+		"state": status.State, "configured": status.Configured, "pid": status.PID,
+		"restartCount": status.RestartCount, "lastError": status.LastError,
+		"lastDiagnosticAt": status.LastDiagnosticAt, "lastDiagnosticCode": status.LastDiagnosticCode,
+		"lastDiagnosticSummary": status.LastDiagnosticSummary,
 	}
 }
 
@@ -1192,6 +1385,9 @@ func (service *Service) applyFeishuSupervisorStatus(snapshot *domain.FeishuSnaps
 	snapshot.ProcessPID, _ = status["pid"].(int)
 	snapshot.RestartCount, _ = status["restartCount"].(int)
 	snapshot.LastError, _ = status["lastError"].(string)
+	snapshot.LastDiagnosticAt, _ = status["lastDiagnosticAt"].(string)
+	snapshot.LastDiagnosticCode, _ = status["lastDiagnosticCode"].(string)
+	snapshot.LastDiagnosticSummary, _ = status["lastDiagnosticSummary"].(string)
 	snapshot.ProcessRunning = snapshot.ProcessState == managedfeishu.StateRunning || snapshot.ProcessState == managedfeishu.StateIdleUnconfigured || snapshot.ProcessState == managedfeishu.StateStarting
 }
 

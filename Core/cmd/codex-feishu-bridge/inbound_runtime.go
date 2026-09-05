@@ -8,53 +8,72 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"codexusagebar/core/internal/codex"
-	"codexusagebar/core/internal/desktop"
+	"codexusagebar/core/internal/corebridge"
 	"codexusagebar/core/internal/feishu"
 )
 
+var desktopIntegerRequestID = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)$`)
+
 type inboundRuntime struct {
-	dataRoot string
-	codex    *codex.Client
-	desktop  *desktop.ActivityClient
-	messages *feishu.OfficialMessageClient
-	links    feishu.TaskLinkStore
-	config   feishu.ClientConfig
-	executor feishu.CapabilityExecutor
+	dataRoot  string
+	core      *coreCapabilityClient
+	messages  *feishu.OfficialMessageClient
+	links     feishu.TaskLinkStore
+	config    feishu.ClientConfig
+	executor  feishu.CapabilityExecutor
+	watchMu   sync.Mutex
+	watchers  map[string]context.CancelFunc
+	watchCtx  context.Context
+	stopWatch context.CancelFunc
 }
 
-func newInboundRuntime(dataRoot string, messages *feishu.OfficialMessageClient) (*inboundRuntime, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-	executable, err := codex.LocateExecutable(home)
-	if err != nil {
-		return nil, err
-	}
+func newInboundRuntime(dataRoot string, messages *feishu.OfficialMessageClient, core *coreCapabilityClient) (*inboundRuntime, error) {
 	config, err := feishu.NewClientConfigStore(dataRoot).Load()
 	if err != nil {
 		return nil, err
 	}
-	desktopClient := desktop.New(desktop.DefaultEndpoint(home))
-	if err := desktopClient.Start(context.Background()); err != nil {
-		return nil, fmt.Errorf("connect Codex Desktop IPC: %w", err)
+	if core == nil {
+		return nil, errors.New("CodexAssistant Core private IPC is unavailable")
 	}
-	return &inboundRuntime{dataRoot: dataRoot, codex: &codex.Client{Executable: executable, Timeout: 20 * time.Second}, desktop: desktopClient, messages: messages, links: feishu.NewTaskLinkStore(dataRoot), config: config, executor: feishu.CapabilityExecutor{Binary: strings.TrimSpace(os.Getenv("LARK_CLI_BIN")), Profile: strings.TrimSpace(os.Getenv("LARK_CLI_PROFILE")), DataRoot: dataRoot, WorkingDirectory: dataRoot}}, nil
+	watchCtx, stopWatch := context.WithCancel(context.Background())
+	return &inboundRuntime{dataRoot: dataRoot, core: core, messages: messages, links: feishu.NewTaskLinkStore(dataRoot), config: config, executor: feishu.CapabilityExecutor{Binary: strings.TrimSpace(os.Getenv("LARK_CLI_BIN")), Profile: strings.TrimSpace(os.Getenv("LARK_CLI_PROFILE")), DataRoot: dataRoot, WorkingDirectory: dataRoot}, watchers: map[string]context.CancelFunc{}, watchCtx: watchCtx, stopWatch: stopWatch}, nil
 }
-func (runtime *inboundRuntime) Close() { runtime.desktop.Close(); _ = runtime.codex.Close() }
+func (runtime *inboundRuntime) Close() { runtime.stopWatch() }
 func (runtime *inboundRuntime) ResumeActive() error {
 	file, err := runtime.links.Load()
 	if err != nil {
 		return err
 	}
 	for _, link := range file.Links {
+		if link.LinkState == "active" && link.ExtraString("cardActionSchemaVersion") != "3" {
+			needsCardRefresh := link.ExtraString("inputSubmissionError") != "" || link.TurnState == "waiting_input"
+			updated, updateErr := runtime.links.UpdateByID(link.ID, func(value *feishu.TaskLink) {
+				value.SetExtraString("cardActionSchemaVersion", "3")
+				value.SetExtraString("inputSubmissionError", "")
+				if needsCardRefresh {
+					value.SetExtraValue("cardSyncPending", true)
+				}
+			})
+			if updateErr == nil && needsCardRefresh {
+				link = updated
+				_ = feishu.SyncTaskLinkCard(context.Background(), runtime.links, runtime.messages, link, "")
+			}
+		}
 		if link.LinkState != "active" || link.ActiveTurnID == "" || (link.TurnState != "running" && link.TurnState != "queued" && link.TurnState != "waiting_input") {
+			if link.LinkState == "active" && runtime.desktopOwned(link) {
+				runtime.observeDesktopTask(link.TaskKey)
+			}
+			continue
+		}
+		if runtime.desktopOwned(link) {
+			runtime.observeDesktopTask(link.TaskKey)
 			continue
 		}
 		cardMessageID := link.RootMessageID
@@ -81,11 +100,8 @@ func (runtime *inboundRuntime) HandleMessage(ctx context.Context, message feishu
 		_, err := runtime.messages.Reply(ctx, message.MessageID, "text", "消息中没有可读取的文本或附件资源。", replyIdempotencyKey(message.MessageID, "empty", 0))
 		return err
 	}
-	workspace, err := runtime.workspace()
-	if err != nil {
-		return err
-	}
 	var link feishu.TaskLink
+	var err error
 	found := false
 	foundByOwnMessage := false
 	for _, candidate := range []string{message.MessageID, message.RootID, message.ParentID} {
@@ -122,8 +138,12 @@ func (runtime *inboundRuntime) HandleMessage(ctx context.Context, message feishu
 		return nil
 	}
 	if !found {
+		workspace, err := runtime.workspace()
+		if err != nil {
+			return err
+		}
 		title := firstMessageTitle(prompt)
-		threadID, err := runtime.codex.StartBridgeThread(ctx, workspace, title)
+		threadID, err := runtime.core.startThread(ctx, workspace, title)
 		if err != nil {
 			return err
 		}
@@ -137,11 +157,13 @@ func (runtime *inboundRuntime) HandleMessage(ctx context.Context, message feishu
 			value.RootMessageID = message.MessageID
 			value.MessageIDs = append(value.MessageIDs, message.MessageID)
 			value.SetExtraString("runtimeOwner", "bridge")
+			value.SetExtraString("workingDirectory", workspace)
 		})
 		if err != nil {
 			return err
 		}
 	}
+	workspace := link.ExtraString("workingDirectory")
 	turnID, err := runtime.startTurn(ctx, link, workspace, prompt, nil)
 	if err != nil {
 		_ = feishu.CleanupInboundAssets(runtime.dataRoot, cleanupDir)
@@ -181,23 +203,14 @@ func (runtime *inboundRuntime) HandleMessage(ctx context.Context, message feishu
 	return nil
 }
 func (runtime *inboundRuntime) HandleCard(ctx context.Context, action feishu.InboundCardAction) error {
-	if action.TaskKey == "" {
-		return errors.New("card action has no task key")
+	if action.TaskKey == "" || action.LinkID == "" {
+		return errors.New("invalid_card_link")
 	}
-	link, found, err := runtime.links.FindByTaskKey(action.TaskKey)
+	link, found, err := runtime.links.FindByID(action.LinkID)
 	if err != nil {
 		return err
 	}
-	if !found && action.Action == "task_link_release" {
-		candidate, candidateFound, candidateErr := runtime.links.FindAnyByTaskKey(action.TaskKey)
-		if candidateErr != nil {
-			return candidateErr
-		}
-		if candidateFound && candidate.LinkState == "released" {
-			link, found = candidate, true
-		}
-	}
-	if !found {
+	if !found || link.TaskKey != action.TaskKey {
 		return errors.New("task link not found")
 	}
 	target := link.Target
@@ -212,7 +225,7 @@ func (runtime *inboundRuntime) HandleCard(ctx context.Context, action feishu.Inb
 	}
 	switch action.Action {
 	case "task_link_interrupt":
-		link, err := runtime.links.Update(action.TaskKey, func(value *feishu.TaskLink) {
+		link, err := runtime.links.UpdateByID(link.ID, func(value *feishu.TaskLink) {
 			value.TurnState = "interrupted"
 			value.TurnOwner = "none"
 			value.ActionRequired = "none"
@@ -231,7 +244,7 @@ func (runtime *inboundRuntime) HandleCard(ctx context.Context, action feishu.Inb
 		if link.LinkState == "released" {
 			return feishu.SyncTaskLinkCard(ctx, runtime.links, runtime.messages, link, action.MessageID)
 		}
-		link, err := runtime.links.Release(action.TaskKey)
+		link, err := runtime.links.ReleaseByID(link.ID)
 		if err != nil {
 			return err
 		}
@@ -240,15 +253,63 @@ func (runtime *inboundRuntime) HandleCard(ctx context.Context, action feishu.Inb
 		followup := strings.TrimSpace(fmt.Sprint(action.FormValue["followup"]))
 		if action.Action == "task_link_answer" {
 			questionID, answer := fmt.Sprint(action.Value["questionId"]), fmt.Sprint(action.Value["answer"])
-			if err := runtime.answerInput(ctx, link, questionID, answer); err != nil {
+			requestID := link.ExtraRaw("pendingQuestionRequestRef")
+			if len(requestID) == 0 {
+				requestID, _ = json.Marshal(link.ExtraString("pendingQuestionRequestID"))
+			}
+			if serverRequestID(requestID) == "" || action.QuestionRevision != link.ExtraString("pendingQuestionRevision") {
+				return errors.New("invalid_card_question_revision")
+			}
+			if !taskLinkHasPendingQuestion(link, questionID) {
+				return errors.New("invalid_card_question_state")
+			}
+			if link.ExtraString("pendingInputSubmissionRevision") == action.QuestionRevision {
+				if submittedAt, parseErr := time.Parse(time.RFC3339Nano, link.ExtraString("pendingInputSubmissionAt")); parseErr == nil && time.Since(submittedAt) < 30*time.Second {
+					return nil
+				}
+			}
+			link, err = runtime.links.UpdateByID(link.ID, func(value *feishu.TaskLink) {
+				value.SetExtraString("pendingInputSubmissionRevision", action.QuestionRevision)
+				value.SetExtraString("pendingInputSubmissionAt", time.Now().UTC().Format(time.RFC3339Nano))
+			})
+			if err != nil {
 				return err
 			}
-			link, err = runtime.links.Update(action.TaskKey, func(value *feishu.TaskLink) {
+			requestID, err = runtime.answerInput(ctx, link, requestID, questionID, action.QuestionRevision, answer)
+			if err != nil {
+				_, _ = runtime.links.UpdateByID(link.ID, func(value *feishu.TaskLink) {
+					value.SetExtraString("pendingInputSubmissionRevision", "")
+					value.SetExtraString("pendingInputSubmissionAt", "")
+					if strings.Contains(err.Error(), "desktop_user_input_outcome_unknown") {
+						value.Detail = "提交未生效，可重试。"
+						value.SetExtraString("pendingInputLastErrorRevision", action.QuestionRevision)
+						value.SetExtraValue("cardSyncPending", true)
+					}
+				})
+				if strings.Contains(err.Error(), "desktop_user_input_outcome_unknown") {
+					updated, _, _ := runtime.links.FindByTaskKey(link.TaskKey)
+					_ = runtime.patchTaskLinkCard(context.Background(), action.MessageID, updated)
+					return nil
+				}
+				return err
+			}
+			link, err = runtime.links.UpdateByID(link.ID, func(value *feishu.TaskLink) {
 				value.TurnState = "running"
 				value.ActionRequired = "none"
 				value.Phase = "执行"
 				value.Detail = "已收到你的选择。"
 				value.SetExtraValue("pendingQuestions", nil)
+				value.SetExtraString("pendingQuestionRequestID", "")
+				value.SetExtraRaw("pendingQuestionRequestRef", nil)
+				value.SetExtraString("pendingQuestionRevision", "")
+				value.SetExtraString("pendingInputAnswerRequestID", serverRequestID(requestID))
+				value.SetExtraRaw("pendingInputAnswerRequestRef", requestID)
+				value.SetExtraString("pendingInputAnswerTurnID", value.ActiveTurnID)
+				value.SetExtraString("pendingInputAnsweredAt", time.Now().UTC().Format(time.RFC3339Nano))
+				value.SetExtraString("pendingInputSubmissionRevision", "")
+				value.SetExtraString("pendingInputSubmissionAt", "")
+				value.SetExtraString("pendingInputLastErrorRevision", "")
+				value.SetExtraValue("cardSyncPending", true)
 			})
 			if err != nil {
 				return err
@@ -258,10 +319,7 @@ func (runtime *inboundRuntime) HandleCard(ctx context.Context, action feishu.Inb
 		if followup == "" {
 			return errors.New("empty task link followup")
 		}
-		workspace, err := runtime.workspace()
-		if err != nil {
-			return err
-		}
+		workspace := link.ExtraString("workingDirectory")
 		turnID := link.ActiveTurnID
 		selectedMode := link.ExtraString("activeTurnMode")
 		if selectedMode != "plan" {
@@ -288,7 +346,7 @@ func (runtime *inboundRuntime) HandleCard(ctx context.Context, action feishu.Inb
 		if err != nil {
 			return err
 		}
-		link, err = runtime.links.Update(action.TaskKey, func(value *feishu.TaskLink) {
+		link, err = runtime.links.UpdateByID(link.ID, func(value *feishu.TaskLink) {
 			value.TurnState = "running"
 			value.TurnOwner = "bridge"
 			value.ActionRequired = "none"
@@ -317,15 +375,12 @@ func (runtime *inboundRuntime) HandleCard(ctx context.Context, action feishu.Inb
 		if link.TurnState != "plan_ready" || pending.Content == "" || revision != fmt.Sprint(action.Value["planRevision"]) || revision != link.PendingPlanRevision {
 			return errors.New("plan card is stale")
 		}
-		workspace, err := runtime.workspace()
-		if err != nil {
-			return err
-		}
+		workspace := link.ExtraString("workingDirectory")
 		turnID, err := runtime.startTurn(ctx, link, workspace, "PLEASE IMPLEMENT THIS PLAN:\n"+pending.Content, nil)
 		if err != nil {
 			return err
 		}
-		link, err = runtime.links.Update(action.TaskKey, func(value *feishu.TaskLink) {
+		link, err = runtime.links.UpdateByID(link.ID, func(value *feishu.TaskLink) {
 			value.TurnState = "running"
 			value.TurnOwner = "bridge"
 			value.ActionRequired = "none"
@@ -347,15 +402,43 @@ func (runtime *inboundRuntime) HandleCard(ctx context.Context, action feishu.Inb
 		return errors.New("unsupported_card_action")
 	}
 }
-func (runtime *inboundRuntime) workspace() (string, error) {
-	context, err := feishu.NewHostContextStore(runtime.dataRoot).Load()
+
+func (runtime *inboundRuntime) applyInputOutcome(ctx context.Context, outcome corebridge.InputOutcome) error {
+	link, found, err := runtime.links.FindByTaskKey(outcome.TaskKey)
+	if err != nil || !found {
+		return err
+	}
+	if link.ThreadID != outcome.ThreadID || link.ActiveTurnID != outcome.TurnID || link.ExtraString("pendingQuestionRevision") != outcome.QuestionRevision {
+		return nil
+	}
+	updated, err := runtime.links.UpdateByID(link.ID, func(value *feishu.TaskLink) {
+		value.SetExtraString("pendingInputSubmissionRevision", "")
+		value.SetExtraString("pendingInputSubmissionAt", "")
+		if outcome.State == "succeeded" {
+			value.TurnState = "running"
+			value.ActionRequired = "none"
+			value.Phase = "执行"
+			value.Detail = "已收到你的选择。"
+			value.SetExtraValue("pendingQuestions", nil)
+			value.SetExtraString("pendingQuestionRequestID", "")
+			value.SetExtraRaw("pendingQuestionRequestRef", nil)
+			value.SetExtraString("pendingQuestionRevision", "")
+			value.SetExtraString("pendingInputLastErrorRevision", "")
+		} else {
+			value.Detail = "提交未生效，可重试。"
+			value.SetExtraString("pendingInputLastErrorRevision", outcome.QuestionRevision)
+		}
+		value.SetExtraValue("cardSyncPending", true)
+	})
 	if err != nil {
-		return "", err
+		return err
 	}
-	if context.KSF.State != feishu.KSFReady {
-		return "", errors.New("KSF workspace is not configured")
-	}
-	return context.KSF.Root, nil
+	return feishu.SyncTaskLinkCard(ctx, runtime.links, runtime.messages, updated, "")
+}
+func (runtime *inboundRuntime) workspace() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return runtime.core.workspace(ctx)
 }
 func (runtime *inboundRuntime) aliasForOpenID(openID string) string {
 	for alias, target := range runtime.config.MessageTargets {
@@ -379,17 +462,36 @@ func (runtime *inboundRuntime) waitForTurn(taskKey, threadID, turnID, replyTo, c
 		snapshot, err := runtime.readThread(ctx, link)
 		if err == nil {
 			if request, waiting := runtime.pendingInput(link, snapshot); waiting {
-				link, _ := runtime.links.Update(taskKey, func(value *feishu.TaskLink) {
-					value.TurnState = "waiting_input"
-					value.ActionRequired = "feishu"
-					value.ActiveTurnID = turnID
-					value.Phase = "等待输入"
-					value.Detail = "Codex 等待你的选择。"
-					value.SetExtraValue("pendingQuestions", request.Questions)
-				})
-				if cardMessageID != "" {
-					_ = runtime.patchTaskLinkCard(context.Background(), cardMessageID, link)
+				requestID := serverRequestID(request.ID)
+				requestTurnID := strings.TrimSpace(request.TurnID)
+				if requestTurnID == "" {
+					requestTurnID = turnID
 				}
+				owner := runtime.core.projectionOwner(link.ThreadID, link.ExtraString("runtimeOwner"))
+				revision := feishu.PendingQuestionRevisionScoped(link.TaskKey, requestTurnID, owner, request.ID, request.Questions)
+				needsUpdate := link.TurnState != "waiting_input" || link.ActionRequired != "feishu" || link.ActiveTurnID != turnID || string(link.ExtraRaw("pendingQuestionRequestRef")) != string(request.ID) || link.ExtraString("pendingQuestionRevision") != revision
+				if needsUpdate {
+					link, _ = runtime.links.Update(taskKey, func(value *feishu.TaskLink) {
+						value.TurnState = "waiting_input"
+						value.ActionRequired = "feishu"
+						value.ActiveTurnID = turnID
+						value.Phase = "等待输入"
+						value.Detail = "Codex 等待你的选择。"
+						value.SetExtraValue("pendingQuestions", request.Questions)
+						value.SetExtraString("pendingQuestionRequestID", requestID)
+						value.SetExtraRaw("pendingQuestionRequestRef", request.ID)
+						value.SetExtraString("pendingQuestionRevision", revision)
+					})
+					if cardMessageID != "" {
+						_ = runtime.patchTaskLinkCard(context.Background(), cardMessageID, link)
+					}
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
+				continue
 			}
 			pending := pendingPlanImplementation(snapshot)
 			if pending.Content != "" && pending.TurnID == turnID {
@@ -405,6 +507,9 @@ func (runtime *inboundRuntime) waitForTurn(taskKey, threadID, turnID, replyTo, c
 					value.Detail = pending.Content
 					value.SetExtraString("pendingCleanupDir", "")
 					value.SetExtraValue("pendingQuestions", nil)
+					value.SetExtraString("pendingQuestionRequestID", "")
+					value.SetExtraRaw("pendingQuestionRequestRef", nil)
+					value.SetExtraString("pendingQuestionRevision", "")
 				})
 				if cardMessageID != "" {
 					_ = runtime.patchTaskLinkCard(context.Background(), cardMessageID, link)
@@ -412,6 +517,21 @@ func (runtime *inboundRuntime) waitForTurn(taskKey, threadID, turnID, replyTo, c
 				return
 			}
 			state, final := bridgeTurnProjection(snapshot, turnID)
+			if state == "running" && link.TurnState == "waiting_input" {
+				link, _ = runtime.links.Update(taskKey, func(value *feishu.TaskLink) {
+					value.TurnState = "running"
+					value.ActionRequired = "none"
+					value.Phase = "执行"
+					value.Detail = "Codex 正在处理。"
+					value.SetExtraValue("pendingQuestions", nil)
+					value.SetExtraString("pendingQuestionRequestID", "")
+					value.SetExtraRaw("pendingQuestionRequestRef", nil)
+					value.SetExtraString("pendingQuestionRevision", "")
+				})
+				if cardMessageID != "" {
+					_ = runtime.patchTaskLinkCard(context.Background(), cardMessageID, link)
+				}
+			}
 			if state != "running" {
 				_, _ = runtime.links.Update(taskKey, func(value *feishu.TaskLink) {
 					value.TurnState = state
@@ -421,6 +541,10 @@ func (runtime *inboundRuntime) waitForTurn(taskKey, threadID, turnID, replyTo, c
 					value.Phase = map[string]string{"completed": "已完成", "failed": "失败", "interrupted": "已停止"}[state]
 					value.Detail = final
 					value.SetExtraString("pendingCleanupDir", "")
+					value.SetExtraValue("pendingQuestions", nil)
+					value.SetExtraString("pendingQuestionRequestID", "")
+					value.SetExtraRaw("pendingQuestionRequestRef", nil)
+					value.SetExtraString("pendingQuestionRevision", "")
 				})
 				if final == "" {
 					final = map[string]string{"completed": "任务已完成。", "failed": "任务执行失败，请在 Codex Desktop 查看。", "interrupted": "任务已停止。"}[state]
@@ -480,14 +604,18 @@ func (runtime *inboundRuntime) desktopOwned(link feishu.TaskLink) bool {
 	return link.ExtraString("runtimeOwner") != "bridge"
 }
 func (runtime *inboundRuntime) readThread(ctx context.Context, link feishu.TaskLink) (map[string]any, error) {
-	if runtime.desktopOwned(link) {
-		value, err := runtime.desktop.ReadConversationState(ctx, link.ThreadID)
-		if err != nil {
-			return nil, err
-		}
+	owner := link.ExtraString("runtimeOwner")
+	if owner == "" {
+		owner = "desktop"
+	}
+	value, err := runtime.core.readThread(ctx, owner, link.ThreadID, link.ActiveTurnID)
+	if err != nil {
+		return nil, err
+	}
+	if owner != "bridge" {
 		return normalizeDesktopState(value), nil
 	}
-	return runtime.codex.ReadBridgeThread(ctx, link.ThreadID)
+	return value, nil
 }
 
 func normalizeDesktopState(state map[string]any) map[string]any {
@@ -569,66 +697,133 @@ func desktopTurnTimestamp(raw any) int64 {
 	return 0
 }
 func (runtime *inboundRuntime) startTurn(ctx context.Context, link feishu.TaskLink, cwd, text string, mode map[string]any) (string, error) {
-	if runtime.desktopOwned(link) {
-		return runtime.desktop.StartBridgeTurn(ctx, link.ThreadID, cwd, text, mode)
+	owner := link.ExtraString("runtimeOwner")
+	if owner == "" {
+		owner = "desktop"
 	}
-	return runtime.codex.StartBridgeTurnWithMode(ctx, link.ThreadID, cwd, text, mode)
+	return runtime.core.startTurn(ctx, link.TaskKey, owner, link.ThreadID, cwd, text, mode)
 }
 func (runtime *inboundRuntime) steerTurn(ctx context.Context, link feishu.TaskLink, cwd, text string) (string, error) {
-	if runtime.desktopOwned(link) {
-		return runtime.desktop.SteerBridgeTurn(ctx, link.ThreadID, cwd, link.ActiveTurnID, text)
+	owner := link.ExtraString("runtimeOwner")
+	if owner == "" {
+		owner = "desktop"
 	}
-	return runtime.codex.SteerBridgeTurn(ctx, link.ThreadID, link.ActiveTurnID, text)
+	return runtime.core.steerTurn(ctx, link.TaskKey, owner, link.ThreadID, link.ActiveTurnID, cwd, text)
 }
 func (runtime *inboundRuntime) interruptTurn(ctx context.Context, link feishu.TaskLink) error {
-	if runtime.desktopOwned(link) {
-		return runtime.desktop.InterruptBridgeTurn(ctx, link.ThreadID, link.ActiveTurnID)
+	owner := link.ExtraString("runtimeOwner")
+	if owner == "" {
+		owner = "desktop"
 	}
-	return runtime.codex.InterruptBridgeTurn(ctx, link.ThreadID, link.ActiveTurnID)
+	return runtime.core.interruptTurn(ctx, link.TaskKey, owner, link.ThreadID, link.ActiveTurnID)
 }
-func (runtime *inboundRuntime) pendingInput(link feishu.TaskLink, snapshot map[string]any) (codex.ServerRequest, bool) {
+func (runtime *inboundRuntime) pendingInput(link feishu.TaskLink, snapshot map[string]any) (corebridge.PendingUserInput, bool) {
 	if !runtime.desktopOwned(link) {
-		return runtime.codex.PendingBridgeUserInput(link.ThreadID)
+		return runtime.core.pendingInput(link.ThreadID)
 	}
-	requestID, pendingTurnID, questions := desktopPendingInput(snapshot, link.ActiveTurnID)
-	if requestID == "" {
-		return codex.ServerRequest{}, false
+	requestID, pendingTurnID, questions := desktopPendingInputRaw(snapshot, link.ActiveTurnID)
+	if len(requestID) == 0 {
+		return corebridge.PendingUserInput{}, false
 	}
-	return codex.ServerRequest{ID: json.RawMessage(`null`), Method: "item/tool/requestUserInput", ThreadID: link.ThreadID, TurnID: pendingTurnID, Questions: questions}, true
+	return corebridge.PendingUserInput{ID: requestID, Method: "item/tool/requestUserInput", ThreadID: link.ThreadID, TurnID: pendingTurnID, Questions: questions}, true
 }
-func (runtime *inboundRuntime) answerInput(ctx context.Context, link feishu.TaskLink, questionID, answer string) error {
-	answers := map[string]any{questionID: map[string]any{"answers": []string{answer}}}
-	if !runtime.desktopOwned(link) {
-		return runtime.codex.AnswerBridgeUserInput(link.ThreadID, answers)
+func (runtime *inboundRuntime) answerInput(ctx context.Context, link feishu.TaskLink, expectedRequestID json.RawMessage, questionID, questionRevision, answer string) (json.RawMessage, error) {
+	owner := link.ExtraString("runtimeOwner")
+	if owner == "" {
+		owner = "desktop"
 	}
-	snapshot, err := runtime.desktop.ReadConversationState(ctx, link.ThreadID)
-	if err != nil {
-		return err
+	return runtime.core.answerInput(ctx, link.TaskKey, owner, link.ThreadID, link.ActiveTurnID, expectedRequestID, questionID, questionRevision, answer)
+}
+
+func serverRequestID(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
 	}
-	var expected []map[string]any
-	_ = link.ExtraValue("pendingQuestions", &expected)
-	requestID, _, _ := matchingDesktopPendingInput(snapshot, link.ActiveTurnID, questionIDs(expected))
-	if requestID == "" {
-		return errors.New("Codex Desktop no longer has the expected user-input request")
+	var value any
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	if decoder.Decode(&value) != nil {
+		return ""
 	}
-	return runtime.desktop.SubmitBridgeUserInput(ctx, link.ThreadID, requestID, map[string]any{"answers": answers})
+	switch item := value.(type) {
+	case string:
+		return strings.TrimSpace(item)
+	case json.Number:
+		if desktopIntegerRequestID.MatchString(item.String()) {
+			return item.String()
+		}
+		return ""
+	default:
+		return ""
+	}
+}
+
+func taskLinkHasPendingQuestion(link feishu.TaskLink, questionID string) bool {
+	var questions []map[string]any
+	if !link.ExtraValue("pendingQuestions", &questions) {
+		return false
+	}
+	for _, question := range questions {
+		if strings.TrimSpace(fmt.Sprint(question["id"])) == questionID {
+			return true
+		}
+	}
+	return false
+}
+
+func desktopRequestPending(value any, requestID string) bool {
+	candidates := []desktopInputCandidate{}
+	collectDesktopPendingInputs(value, &candidates)
+	for _, candidate := range candidates {
+		if candidate.id == requestID {
+			return true
+		}
+	}
+	return false
 }
 
 func desktopPendingInput(value any, expectedTurnID string) (string, string, []map[string]any) {
 	return matchingDesktopPendingInput(value, expectedTurnID, nil)
 }
 
-type desktopInputCandidate struct {
-	id, turnID string
-	questions  []map[string]any
-}
-
-func matchingDesktopPendingInput(value any, expectedTurnID string, expectedQuestionIDs []string) (string, string, []map[string]any) {
+func desktopPendingInputRaw(value any, expectedTurnID string) (json.RawMessage, string, []map[string]any) {
 	candidates := []desktopInputCandidate{}
 	collectDesktopPendingInputs(value, &candidates)
 	matches := []desktopInputCandidate{}
 	for _, candidate := range candidates {
-		if expectedTurnID != "" && candidate.turnID != expectedTurnID {
+		if expectedTurnID != "" && candidate.turnID != "" && candidate.turnID != expectedTurnID {
+			continue
+		}
+		matches = append(matches, candidate)
+	}
+	if len(matches) != 1 || len(matches[0].rawID) == 0 {
+		return nil, "", nil
+	}
+	return append(json.RawMessage(nil), matches[0].rawID...), matches[0].turnID, matches[0].questions
+}
+
+type desktopInputCandidate struct {
+	id, turnID string
+	rawID      json.RawMessage
+	questions  []map[string]any
+}
+
+func matchingDesktopPendingInput(value any, expectedTurnID string, expectedQuestionIDs []string) (string, string, []map[string]any) {
+	return matchingDesktopPendingInputByID(value, expectedTurnID, expectedQuestionIDs, "")
+}
+
+func matchingDesktopPendingInputByID(value any, expectedTurnID string, expectedQuestionIDs []string, expectedRequestID string) (string, string, []map[string]any) {
+	candidates := []desktopInputCandidate{}
+	collectDesktopPendingInputs(value, &candidates)
+	matches := []desktopInputCandidate{}
+	for _, candidate := range candidates {
+		if expectedRequestID != "" && candidate.id != expectedRequestID {
+			continue
+		}
+		// Desktop's requestUserInput payloads are not uniform: some versions
+		// omit turnId. The question set remains the binding identity, while a
+		// present turn id must still match the active linked turn.
+		if expectedTurnID != "" && candidate.turnID != "" && candidate.turnID != expectedTurnID {
 			continue
 		}
 		if len(expectedQuestionIDs) > 0 && !equalStringSets(questionIDs(candidate.questions), expectedQuestionIDs) {
@@ -662,9 +857,10 @@ func collectDesktopPendingInputs(value any, candidates *[]desktopInputCandidate)
 					}
 				}
 			}
-			id := strings.TrimSpace(fmt.Sprint(item["id"]))
-			if id != "" && id != "<nil>" {
-				*candidates = append(*candidates, desktopInputCandidate{id: id, turnID: turnID, questions: questions})
+			rawID := desktopRequestIDRaw(item["id"])
+			id := serverRequestID(rawID)
+			if id != "" {
+				*candidates = append(*candidates, desktopInputCandidate{id: id, rawID: rawID, turnID: turnID, questions: questions})
 			}
 		}
 		for _, child := range item {
@@ -675,6 +871,23 @@ func collectDesktopPendingInputs(value any, candidates *[]desktopInputCandidate)
 			collectDesktopPendingInputs(child, candidates)
 		}
 	}
+}
+
+func desktopRequestIDRaw(value any) json.RawMessage {
+	switch item := value.(type) {
+	case string:
+		raw, _ := json.Marshal(item)
+		return raw
+	case json.Number:
+		if desktopIntegerRequestID.MatchString(item.String()) {
+			return json.RawMessage(item.String())
+		}
+	case json.RawMessage:
+		if serverRequestID(item) != "" {
+			return append(json.RawMessage(nil), item...)
+		}
+	}
+	return nil
 }
 
 func questionIDs(questions []map[string]any) []string {
@@ -713,11 +926,309 @@ func (runtime *inboundRuntime) reconcileTaskLinkCards(ctx context.Context) {
 		return
 	}
 	for _, link := range file.Links {
-		if !feishu.TaskLinkCardSyncPending(link) {
+		if feishu.TaskLinkCardSyncPending(link) {
+			_ = feishu.SyncTaskLinkCard(ctx, runtime.links, runtime.messages, link, "")
+		}
+		if link.LinkState != "active" || (!link.ExpiresAt.IsZero() && !link.ExpiresAt.After(time.Now())) || !runtime.desktopOwned(link) {
 			continue
 		}
-		_ = feishu.SyncTaskLinkCard(ctx, runtime.links, runtime.messages, link, "")
+		// A bridge-owned turn already has a dedicated monitor. Letting the
+		// desktop reconciler mutate the same record would create two writers
+		// for one turn and can regress waiting-input or plan-ready state.
+		if link.TurnOwner == "bridge" && (link.TurnState == "running" || link.TurnState == "waiting_input") {
+			continue
+		}
+		runtime.observeDesktopTask(link.TaskKey)
 	}
+}
+
+func (runtime *inboundRuntime) observeDesktopTask(taskKey string) {
+	runtime.watchMu.Lock()
+	if _, exists := runtime.watchers[taskKey]; exists {
+		runtime.watchMu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(runtime.watchCtx)
+	runtime.watchers[taskKey] = cancel
+	runtime.watchMu.Unlock()
+	go runtime.runDesktopTaskObserver(ctx, taskKey)
+}
+
+func (runtime *inboundRuntime) runDesktopTaskObserver(ctx context.Context, taskKey string) {
+	defer func() {
+		runtime.watchMu.Lock()
+		delete(runtime.watchers, taskKey)
+		runtime.watchMu.Unlock()
+	}()
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	reportedFailure := false
+	for {
+		link, found, err := runtime.links.FindByTaskKey(taskKey)
+		if err != nil || !found || link.LinkState != "active" || (!link.ExpiresAt.IsZero() && !link.ExpiresAt.After(time.Now())) || !runtime.desktopOwned(link) {
+			return
+		}
+		readCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+		err = runtime.reconcileDesktopTaskLink(readCtx, link)
+		cancel()
+		if err != nil && !reportedFailure {
+			reportedFailure = true
+			_ = feishu.NewAuditLog(runtime.dataRoot).Record("task_link_status_read_failed", map[string]any{"taskKey": link.TaskKey, "error": errorText(err)})
+		} else if err == nil {
+			reportedFailure = false
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+type desktopTaskProjection struct {
+	TurnID, TurnState, TurnOwner, ActionRequired string
+	Phase, Detail                                string
+	PendingPlan                                  pendingPlan
+	PendingQuestions                             []map[string]any
+	PendingRequestID                             string
+	PendingRequestRef                            json.RawMessage
+	PendingQuestionRevision                      string
+}
+
+func (runtime *inboundRuntime) reconcileDesktopTaskLink(ctx context.Context, link feishu.TaskLink) error {
+	snapshot, err := runtime.readThread(ctx, link)
+	if err != nil {
+		return err
+	}
+	projection := projectDesktopTaskLink(snapshot)
+	if len(projection.PendingQuestions) > 0 {
+		owner := runtime.core.projectionOwner(link.ThreadID, link.ExtraString("runtimeOwner"))
+		projection.PendingQuestionRevision = feishu.PendingQuestionRevisionScoped(link.TaskKey, projection.TurnID, owner, projection.PendingRequestRef, projection.PendingQuestions)
+	}
+	if projection.TurnState == "waiting_input" && desktopAnswerSubmissionPending(link, projection) {
+		return nil
+	}
+	if projection.TurnID == "" || !desktopProjectionRequiresSync(link, projection) {
+		return nil
+	}
+	updated, err := runtime.links.Update(link.TaskKey, func(value *feishu.TaskLink) {
+		value.TurnState = projection.TurnState
+		value.TurnOwner = projection.TurnOwner
+		value.ActionRequired = projection.ActionRequired
+		value.Phase = projection.Phase
+		value.Detail = projection.Detail
+		value.NextTurnMode = "default"
+		if projection.TurnState == "running" || projection.TurnState == "waiting_input" || projection.TurnState == "desktop_action_required" {
+			value.ActiveTurnID = projection.TurnID
+		} else {
+			value.ActiveTurnID = ""
+		}
+		if projection.PendingPlan.Content != "" {
+			value.PendingPlanTurnID = projection.PendingPlan.TurnID
+			value.PendingPlanRevision = planRevision(projection.PendingPlan.TurnID, projection.PendingPlan.Content)
+		} else {
+			value.PendingPlanTurnID = ""
+			value.PendingPlanRevision = ""
+		}
+		if len(projection.PendingQuestions) > 0 {
+			value.SetExtraValue("pendingQuestions", projection.PendingQuestions)
+			value.SetExtraString("pendingQuestionRequestID", projection.PendingRequestID)
+			value.SetExtraRaw("pendingQuestionRequestRef", projection.PendingRequestRef)
+			value.SetExtraString("pendingQuestionRevision", projection.PendingQuestionRevision)
+			if value.ExtraString("pendingInputLastErrorRevision") == projection.PendingQuestionRevision {
+				value.Detail = "提交未生效，可重试。"
+			} else {
+				value.SetExtraString("pendingInputLastErrorRevision", "")
+			}
+		} else {
+			value.SetExtraValue("pendingQuestions", nil)
+			value.SetExtraString("pendingQuestionRequestID", "")
+			value.SetExtraRaw("pendingQuestionRequestRef", nil)
+			value.SetExtraString("pendingQuestionRevision", "")
+			value.SetExtraString("pendingInputLastErrorRevision", "")
+		}
+		if projection.TurnState != "waiting_input" || projection.PendingRequestID != value.ExtraString("pendingInputAnswerRequestID") {
+			value.SetExtraString("pendingInputAnswerRequestID", "")
+			value.SetExtraRaw("pendingInputAnswerRequestRef", nil)
+			value.SetExtraString("pendingInputAnswerTurnID", "")
+			value.SetExtraString("pendingInputAnsweredAt", "")
+		}
+		value.SetExtraValue("cardSyncPending", true)
+	})
+	if err != nil {
+		return err
+	}
+	if err := feishu.SyncTaskLinkCard(ctx, runtime.links, runtime.messages, updated, ""); err != nil {
+		return err
+	}
+	if projection.TurnState != "running" && projection.TurnState != "waiting_input" && projection.TurnState != "desktop_action_required" && projection.TurnState != "plan_ready" {
+		_, err = runtime.links.Update(link.TaskKey, func(value *feishu.TaskLink) {
+			value.SetExtraString("lastDeliveredTurnId", projection.TurnID)
+		})
+	}
+	return err
+}
+
+func projectDesktopTaskLink(snapshot map[string]any) desktopTaskProjection {
+	normalized := normalizeDesktopState(snapshot)
+	turns, _ := normalized["turns"].([]any)
+	if len(turns) == 0 {
+		return desktopTaskProjection{}
+	}
+	turn, _ := turns[len(turns)-1].(map[string]any)
+	if turn == nil {
+		return desktopTaskProjection{}
+	}
+	turnID := cleanString(turn["id"])
+	result := desktopTaskProjection{TurnID: turnID, TurnState: "idle", TurnOwner: "none", ActionRequired: "none", Phase: "已连接", Detail: "任务已连接。回复本消息可继续任务。"}
+	if pending := pendingPlanImplementation(normalized); pending.Content != "" {
+		result.TurnState, result.ActionRequired = "plan_ready", "feishu"
+		result.Phase, result.Detail, result.PendingPlan = "计划已生成", pending.Content, pending
+		return result
+	}
+	if requestRef, _, questions := desktopPendingInputRaw(normalized, turnID); len(questions) > 0 {
+		result.TurnState, result.TurnOwner, result.ActionRequired = "waiting_input", "desktop", "feishu"
+		result.Phase, result.Detail, result.PendingQuestions = "等待输入", "Codex 等待你的选择。", questions
+		result.PendingRequestRef = requestRef
+		result.PendingRequestID = serverRequestID(requestRef)
+		return result
+	}
+	status := strings.ToLower(statusType(turn["status"]))
+	thread := snapshot
+	if value, ok := snapshot["thread"].(map[string]any); ok {
+		thread = value
+	}
+	threadStatus := strings.ToLower(statusType(thread["status"]))
+	if isRunningStatus(status) || isRunningStatus(threadStatus) {
+		result.TurnState, result.TurnOwner = "running", "desktop"
+		result.Phase, result.Detail = "运行中", desktopTurnProgress(turn)
+		if desktopNeedsLocalAction(thread) {
+			result.TurnState, result.ActionRequired = "desktop_action_required", "desktop"
+			result.Phase, result.Detail = "需要桌面操作", "当前轮等待 Codex Desktop 操作。"
+		}
+		return result
+	}
+	switch status {
+	case "completed":
+		result.TurnState, result.Phase, result.Detail = "completed", "已完成", finalAgentText(turn)
+		if result.Detail == "" {
+			result.Detail = "任务已完成。"
+		}
+	case "failed":
+		result.TurnState, result.Phase, result.Detail = "failed", "失败", "任务执行失败，请在 Codex Desktop 查看。"
+	case "interrupted", "cancelled", "canceled":
+		result.TurnState, result.Phase, result.Detail = "interrupted", "已停止", "任务已停止。"
+	}
+	return result
+}
+
+func desktopAnswerSubmissionPending(link feishu.TaskLink, projection desktopTaskProjection) bool {
+	requestID := link.ExtraRaw("pendingInputAnswerRequestRef")
+	if len(requestID) == 0 {
+		legacy := link.ExtraString("pendingInputAnswerRequestID")
+		requestID, _ = json.Marshal(legacy)
+	}
+	projectionRef := projection.PendingRequestRef
+	if len(projectionRef) == 0 && projection.PendingRequestID != "" {
+		projectionRef, _ = json.Marshal(projection.PendingRequestID)
+	}
+	if len(requestID) == 0 || string(requestID) != string(projectionRef) {
+		return false
+	}
+	if turnID := link.ExtraString("pendingInputAnswerTurnID"); turnID != "" && projection.TurnID != "" && turnID != projection.TurnID {
+		return false
+	}
+	answeredAt, err := time.Parse(time.RFC3339Nano, link.ExtraString("pendingInputAnsweredAt"))
+	return err == nil && time.Since(answeredAt) < 30*time.Second
+}
+
+func desktopProjectionRequiresSync(link feishu.TaskLink, next desktopTaskProjection) bool {
+	if link.TurnState != next.TurnState || link.TurnOwner != next.TurnOwner || link.ActionRequired != next.ActionRequired || link.ActiveTurnID != activeProjectionTurnID(next) {
+		return true
+	}
+	if link.Phase != next.Phase || strings.TrimSpace(link.Detail) != strings.TrimSpace(next.Detail) {
+		return true
+	}
+	if link.PendingPlanTurnID != next.PendingPlan.TurnID || link.PendingPlanRevision != planRevisionIfPresent(next.PendingPlan) {
+		return true
+	}
+	if link.ExtraString("pendingQuestionRequestID") != next.PendingRequestID || link.ExtraString("pendingQuestionRevision") != next.PendingQuestionRevision {
+		return true
+	}
+	if isTerminalTaskState(next.TurnState) && next.TurnID != link.ExtraString("lastDeliveredTurnId") {
+		return true
+	}
+	return false
+}
+
+func activeProjectionTurnID(value desktopTaskProjection) string {
+	if value.TurnState == "running" || value.TurnState == "waiting_input" || value.TurnState == "desktop_action_required" {
+		return value.TurnID
+	}
+	return ""
+}
+
+func planRevisionIfPresent(value pendingPlan) string {
+	if value.Content == "" {
+		return ""
+	}
+	return planRevision(value.TurnID, value.Content)
+}
+
+func isTerminalTaskState(value string) bool {
+	return value == "completed" || value == "failed" || value == "interrupted" || value == "idle"
+}
+
+func isRunningStatus(value string) bool {
+	return value == "active" || value == "running" || value == "inprogress" || value == "in_progress"
+}
+
+func desktopNeedsLocalAction(thread map[string]any) bool {
+	status, _ := thread["status"].(map[string]any)
+	flags, _ := status["activeFlags"].(map[string]any)
+	if flags == nil {
+		flags, _ = status["flags"].(map[string]any)
+	}
+	if flags == nil {
+		flags = status
+	}
+	for _, key := range []string{"waitingOnApproval", "waiting_on_approval", "waitingOnUserInput", "waiting_on_user_input"} {
+		if value, _ := flags[key].(bool); value {
+			return true
+		}
+	}
+	return false
+}
+
+func desktopTurnProgress(turn map[string]any) string {
+	items, _ := turn["items"].([]any)
+	for index := len(items) - 1; index >= 0; index-- {
+		item, _ := items[index].(map[string]any)
+		if item == nil || fmt.Sprint(item["type"]) != "agentMessage" || strings.ToLower(fmt.Sprint(item["phase"])) != "commentary" {
+			continue
+		}
+		if value := boundedPublicText(fmt.Sprint(item["text"]), 900); value != "" {
+			return value
+		}
+	}
+	return "Codex 正在处理。"
+}
+
+func boundedPublicText(value string, maximum int) string {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "\r\n", "\n"))
+	runes := []rune(value)
+	if len(runes) <= maximum {
+		return value
+	}
+	return strings.TrimSpace(string(runes[:maximum-1])) + "…"
+}
+
+func cleanString(value any) string {
+	text := strings.TrimSpace(fmt.Sprint(value))
+	if text == "<nil>" {
+		return ""
+	}
+	return text
 }
 
 type pendingPlan struct{ TurnID, Content string }
@@ -864,46 +1375,4 @@ func appendUnique(values []string, value string) []string {
 		}
 	}
 	return append(values, value)
-}
-
-func interruptLinkedTurn(dataRoot, taskKey string) error {
-	file, err := feishu.NewTaskLinkStore(dataRoot).Load()
-	if err != nil {
-		return err
-	}
-	var selected *feishu.TaskLink
-	for index := len(file.Links) - 1; index >= 0; index-- {
-		if file.Links[index].TaskKey == taskKey && file.Links[index].LinkState == "active" {
-			copy := file.Links[index]
-			selected = &copy
-			break
-		}
-	}
-	if selected == nil {
-		return errors.New("task link not found")
-	}
-	if selected.ActiveTurnID == "" {
-		return nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-	if selected.ExtraString("runtimeOwner") != "bridge" {
-		client := desktop.New(desktop.DefaultEndpoint(home))
-		defer client.Close()
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancel()
-		if err := client.Start(ctx); err != nil {
-			return err
-		}
-		return client.InterruptBridgeTurn(ctx, selected.ThreadID, selected.ActiveTurnID)
-	}
-	executable, err := codex.LocateExecutable(home)
-	if err != nil {
-		return err
-	}
-	client := &codex.Client{Executable: executable, Timeout: 10 * time.Second}
-	defer client.Close()
-	return client.InterruptBridgeTurn(context.Background(), selected.ThreadID, selected.ActiveTurnID)
 }

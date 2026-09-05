@@ -127,7 +127,7 @@ func (inbox *EventInbox) Put(eventKey string, payload []byte) (EventRecord, bool
 		return EventRecord{}, false, errors.New("event_id_missing")
 	}
 	actor := firstNestedValue(raw, []string{"operator_id", "open_id", "user_id", "sender_id", "participant_id"})
-	resource := firstNestedValue(raw, []string{"chat_id", "message_id", "task_guid", "whiteboard_id", "whiteboard_token", "meeting_id", "note_id", "minute_token", "recording_id", "app_id"})
+	resource := firstNestedValue(raw, []string{"chat_id", "message_id", "task_id", "instance_code", "approval_code", "task_guid", "whiteboard_id", "whiteboard_token", "meeting_id", "note_id", "minute_token", "recording_id", "app_id"})
 	occurred := firstNestedValue(raw, []string{"create_time", "event_time", "timestamp", "update_time"})
 	if occurred == "" {
 		occurred = receivedAt
@@ -167,6 +167,9 @@ func (inbox *EventInbox) Put(eventKey string, payload []byte) (EventRecord, bool
 	state.LastError = ""
 	if err := writePrivateJSON(filepath.Join(inbox.root, "state.json"), state); err != nil {
 		return EventRecord{}, false, err
+	}
+	if state.Received%1000 == 0 {
+		signalMaintenance(filepath.Dir(inbox.root))
 	}
 	return record, true, nil
 }

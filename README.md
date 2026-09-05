@@ -25,7 +25,7 @@ CodexAssistant 是社区开源项目，不是 OpenAI 官方产品，也不代表
 - 汇总本机普通输入、缓存输入、输出和 30 天 Token 历史，并提供可选 API 价格估算。
 - 显示 Codex Desktop 顶层任务的运行、等待与完成状态。
 - 可选连接 KSF 项目目录；KSF 不可用时不影响额度、Token、任务状态或飞书。
-- CodexAssistant 自动管理 Shared Core 与飞书桥的完整生命周期。关闭面板或最小化到托盘不会停止服务；明确退出应用才会关闭进程树。
+- CodexAssistant 自动管理 CodexAssistant Core 与飞书服务的完整生命周期。关闭面板或最小化到托盘不会停止服务；明确退出应用才会关闭进程树。
 - 飞书 App Secret、OAuth token 和其他凭据只进入当前用户的 Keychain 或 DPAPI 安全存储，不返回界面、不进入日志或命令行。
 - 飞书真实用户 ID、消息正文和队列内容不进入 CodexAssistant 的渲染层。
 
@@ -34,7 +34,7 @@ CodexAssistant 是社区开源项目，不是 OpenAI 官方产品，也不代表
 - macOS 13 或更新版本：Apple Silicon 与 Intel
 - Windows 10/11：x64 与 arm64
 
-Go 飞书桥已可作为预览组件构建并随包携带。完成 macOS Intel、Windows x64 和 Windows arm64 的真实硬件验收前，发布构建仍保留 Node 兼容入口，不会进行不完整的生产切换。
+macOS 与 Windows 安装包都只携带 Go 飞书服务与固定版 `lark-cli`，不携带独立 Node 飞书运行时或服务源码。四个平台不会自动回退到 Node，也不会同时消费同一飞书应用的真实事件；尚未完成的实机验收会阻止发布，而不是切回旧实现。
 
 ## 开源与贡献
 

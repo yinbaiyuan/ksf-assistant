@@ -15,20 +15,27 @@ func QueueResults(dataRoot, kind, id string, limit int) ([]map[string]any, error
 	if !contains([]string{"outbox", "docbox", "actionbox"}, kind) {
 		return nil, errors.New("unsupported result kind")
 	}
-	values, err := readPublicJSONL(filepath.Join(dataRoot, "logs", kind+"-results.jsonl"), limit, func(value map[string]any) bool { return value["id"] == id })
-	return values, err
+	repository := newWorkRepository(dataRoot, kind)
+	if id == "" {
+		return repository.recentResults(limit)
+	}
+	var value map[string]any
+	found, err := repository.findResult(id, &value)
+	if err != nil || !found {
+		return []map[string]any{}, err
+	}
+	return []map[string]any{redactPublicMap(value)}, nil
 }
 
 func RecentRecords(dataRoot, kind string, limit int) ([]map[string]any, error) {
 	if kind == "tasks" {
 		kind = "actionbox"
 	}
-	path := ""
 	switch kind {
 	case "outbox", "docbox", "actionbox":
-		path = filepath.Join(dataRoot, "logs", kind+"-results.jsonl")
+		return newWorkRepository(dataRoot, kind).recentResults(limit)
 	case "messages":
-		path = filepath.Join(dataRoot, "logs", "messages.jsonl")
+		return readRecentMachineAudit(dataRoot, limit)
 	case "audit":
 		files, err := filepath.Glob(filepath.Join(dataRoot, "logs", "audit", "*.md"))
 		if err != nil {
@@ -49,7 +56,40 @@ func RecentRecords(dataRoot, kind string, limit int) ([]map[string]any, error) {
 	default:
 		return nil, errors.New("unsupported recent kind")
 	}
-	return readPublicJSONL(path, limit, nil)
+}
+
+func readRecentMachineAudit(dataRoot string, limit int) ([]map[string]any, error) {
+	if limit < 1 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	paths := []string{filepath.Join(dataRoot, "logs", "messages.jsonl")}
+	segments, err := filepath.Glob(filepath.Join(dataRoot, "logs", "audit-machine", "*.jsonl"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(segments)
+	paths = append(paths, segments...)
+	values := []map[string]any{}
+	for _, path := range paths {
+		items, readErr := readPublicJSONL(path, limit, nil)
+		if readErr != nil {
+			return nil, readErr
+		}
+		for left, right := 0, len(items)-1; left < right; left, right = left+1, right-1 {
+			items[left], items[right] = items[right], items[left]
+		}
+		values = append(values, items...)
+		if len(values) > limit {
+			values = values[len(values)-limit:]
+		}
+	}
+	for left, right := 0, len(values)-1; left < right; left, right = left+1, right-1 {
+		values[left], values[right] = values[right], values[left]
+	}
+	return values, nil
 }
 
 func readPublicJSONL(path string, limit int, accept func(map[string]any) bool) ([]map[string]any, error) {

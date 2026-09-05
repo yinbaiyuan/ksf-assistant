@@ -14,10 +14,12 @@ import (
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 )
 
-// FixedEventKeys is the frozen lark-cli 1.0.92 event surface. Approval and
-// arbitrary event keys are intentionally absent.
+// FixedEventKeys is the reviewed lark-cli 1.0.92 event surface plus the mail
+// receive event. Arbitrary event keys remain unavailable.
 var FixedEventKeys = []string{
 	"application.bot.menu_v6",
+	"approval.instance.status_changed_v4",
+	"approval.task.status_changed_v4",
 	"board.whiteboard.updated_v1",
 	"card.action.trigger",
 	"im.chat.disbanded_v1",
@@ -32,6 +34,7 @@ var FixedEventKeys = []string{
 	"im.message.reaction.deleted_v1",
 	"im.message.receive_v1",
 	"minutes.minute.generated_v1",
+	"mail.user_mailbox.event.message_received_v1",
 	"task.task.update_user_access_v2",
 	"vc.meeting.participant_meeting_ended_v1",
 	"vc.meeting.participant_meeting_joined_v1",
@@ -41,6 +44,10 @@ var FixedEventKeys = []string{
 	"vc.recording.recording_started_v1",
 	"vc.recording.recording_transcript_generated_v1",
 }
+
+const MailMessageReceivedEvent = "mail.user_mailbox.event.message_received_v1"
+const ApprovalInstanceStatusChangedEvent = "approval.instance.status_changed_v4"
+const ApprovalTaskStatusChangedEvent = "approval.task.status_changed_v4"
 
 type EventSink func(context.Context, string, []byte) error
 type ConnectionObserver func(string)
@@ -89,7 +96,7 @@ func NewOfficialInbound(appID, appSecret string, sink EventSink, observer Connec
 			return nil, err
 		}
 		return &callback.CardActionTriggerResponse{Toast: &callback.Toast{
-			Type: "info", Content: "请求已接收，结果会更新到卡片",
+			Type: "info", Content: "已接收，正在提交",
 		}}, nil
 	})
 	client := larkws.NewClient(

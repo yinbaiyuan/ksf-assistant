@@ -37,7 +37,7 @@ class CoreClient {
     this.process = child;
     createInterface({ input: child.stdout }).on('line', (line) => this.#handleLine(line));
     child.stderr.on('data', () => {});
-    child.once('exit', (_code, signal) => this.#failAll(new Error(`共享核心已停止${signal ? `（${signal}）` : ''}`)));
+    child.once('exit', (_code, signal) => this.#failAll(new Error(`核心服务已停止${signal ? `（${signal}）` : ''}`)));
     child.once('error', (error) => this.#failAll(error));
     await this.request('initialize', {
       clientInfo: { name: 'codex_usage_bar_windows', title: 'CodexAssistant for Windows', version: '0.10.0-preview.1' },
@@ -47,13 +47,13 @@ class CoreClient {
 
   async request(method, params = {}, { skipStart = false } = {}) {
     if (!skipStart) await this.start();
-    if (!this.process?.stdin?.writable) throw new Error('共享核心未运行');
+    if (!this.process?.stdin?.writable) throw new Error('核心服务未运行');
     const id = ++this.sequence;
     const payload = JSON.stringify({ jsonrpc: '2.0', id, method, params });
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`${method} 等待共享核心响应超时`));
+        reject(new Error(`${method} 等待核心服务响应超时`));
       }, this.timeoutMs);
       this.pending.set(id, { resolve, reject, timeout });
       this.process.stdin.write(`${payload}\n`, (error) => {
@@ -122,7 +122,7 @@ class CoreClient {
     if (!pending) return;
     clearTimeout(pending.timeout);
     this.pending.delete(message.id);
-    if (message.error) pending.reject(new Error(message.error.message || '共享核心调用失败'));
+    if (message.error) pending.reject(new Error(message.error.message || '核心服务调用失败'));
     else pending.resolve(message.result);
   }
 

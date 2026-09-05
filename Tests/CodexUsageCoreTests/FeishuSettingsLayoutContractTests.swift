@@ -5,7 +5,7 @@ final class FeishuSettingsLayoutContractTests: XCTestCase {
     func testPermissionOverviewAcceptsNullMissingForUpgradeCompatibility() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(contentsOf: root.appendingPathComponent("Sources/CodexUsageBar/SharedCoreProcessClient.swift"))
+        let source = try String(contentsOf: root.appendingPathComponent("Sources/CodexUsageBar/CoreServiceProcessClient.swift"))
         XCTAssertTrue(source.contains("decodeIfPresent([String].self, forKey: .missing) ?? []"))
     }
 

@@ -35,7 +35,7 @@ func TestServerPublishesVersionedInitializeContract(t *testing.T) {
 	if response.Result.Protocol != "codex-usage-core-v2" || response.Result.Version == "" {
 		t.Fatalf("unexpected contract: %#v", response.Result)
 	}
-	if !response.Result.Capabilities["tokenHistory"] || !response.Result.Capabilities["tokenHistoryComparison"] || !response.Result.Capabilities["tokenCostEstimate"] || !response.Result.Capabilities["feishuTaskLinks"] {
+	if !response.Result.Capabilities["tokenHistory"] || !response.Result.Capabilities["tokenHistoryComparison"] || !response.Result.Capabilities["tokenCostEstimate"] || !response.Result.Capabilities["feishuTaskLinks"] || !response.Result.Capabilities["feishuCapabilityGovernance"] {
 		t.Fatalf("missing public capabilities: %#v", response.Result.Capabilities)
 	}
 }
@@ -91,6 +91,31 @@ func TestServerRejectsUnknownMethods(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "unknown method") {
 		t.Fatalf("unexpected output: %s", output.String())
+	}
+}
+
+func TestServerPublishesFeishuGovernanceMethodsWithoutRawPassthrough(t *testing.T) {
+	methods := []string{
+		"feishu/operation/prepare", "feishu/operation/confirm", "feishu/operation/cancel",
+		"feishu/operation/status", "feishu/policy/read", "feishu/policy/update",
+	}
+	for index, method := range methods {
+		input := strings.NewReader(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":%q,"params":{}}`+"\n", index+1, method))
+		var output bytes.Buffer
+		if err := New(service.New(), input, &output).Serve(context.Background()); err != nil {
+			t.Fatalf("%s: %v", method, err)
+		}
+		if strings.Contains(output.String(), "unknown method") {
+			t.Fatalf("governance method was not published: %s", method)
+		}
+	}
+	input := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"feishu/openapi/raw","params":{}}` + "\n")
+	var output bytes.Buffer
+	if err := New(service.New(), input, &output).Serve(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "unknown method") {
+		t.Fatalf("raw passthrough was admitted: %s", output.String())
 	}
 }
 

@@ -2,11 +2,14 @@ package feishu
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"codexusagebar/core/internal/privateipc"
 )
 
 func TestManagedSupervisorStartsAndStopsChildWithPublicState(t *testing.T) {
@@ -54,6 +57,25 @@ func TestManagedSupervisorRestartsThreeTimesThenDegrades(t *testing.T) {
 	t.Fatalf("supervisor did not degrade: %#v", supervisor.Status())
 }
 
+func TestManagedSupervisorOwnsBidirectionalPrivateRPC(t *testing.T) {
+	supervisor := newTestSupervisor(t, "rpc")
+	if err := supervisor.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer supervisor.Stop(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var response struct {
+		Value string `json:"value"`
+	}
+	if err := supervisor.Call(ctx, "bridge/test/echo", map[string]string{"value": "private"}, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Value != "private" {
+		t.Fatalf("unexpected private RPC response: %#v", response)
+	}
+}
+
 func TestFeishuSupervisorHelperProcess(t *testing.T) {
 	if os.Getenv("CODEX_USAGE_BAR_TEST_BRIDGE") != "1" {
 		return
@@ -61,6 +83,18 @@ func TestFeishuSupervisorHelperProcess(t *testing.T) {
 	mode := os.Getenv("CODEX_USAGE_BAR_TEST_BRIDGE_MODE")
 	if mode == "crash" {
 		os.Exit(7)
+	}
+	if mode == "rpc" {
+		peer := privateipc.NewPeer(os.Stdin, os.Stdout, privateipc.HandlerFunc(func(_ context.Context, method string, params json.RawMessage) (any, error) {
+			if method != "bridge/test/echo" {
+				return nil, privateipc.ErrMethodNotFound
+			}
+			var value map[string]string
+			_ = json.Unmarshal(params, &value)
+			return value, nil
+		}))
+		_ = peer.Serve(context.Background())
+		os.Exit(0)
 	}
 	_, _ = io.Copy(io.Discard, os.Stdin)
 	os.Exit(0)
@@ -74,6 +108,7 @@ func newTestSupervisor(t *testing.T, mode string) *Supervisor {
 	}
 	return NewSupervisor(SupervisorOptions{
 		Executable: executable,
+		DataRoot:   t.TempDir(),
 		Arguments:  []string{"-test.run=TestFeishuSupervisorHelperProcess"},
 		Environment: []string{
 			"CODEX_USAGE_BAR_TEST_BRIDGE=1",

@@ -23,7 +23,7 @@ for (const arch of ['amd64', 'arm64']) {
   const outputArch = arch === 'amd64' ? 'windows-x64' : 'windows-arm64';
   const outputDir = path.join(repoRoot, 'dist', 'core', outputArch);
   mkdirSync(outputDir, { recursive: true });
-  const result = spawnSync(go, [
+	const result = spawnSync(go, [
     'build', '-trimpath', '-ldflags=-s -w',
     '-o', path.join(outputDir, 'codex-usage-core.exe'),
     './cmd/codex-usage-core',
@@ -40,5 +40,21 @@ for (const arch of ['amd64', 'arm64']) {
     }
     process.exit(1);
   }
-  if (result.status !== 0) process.exit(result.status ?? 1);
+	if (result.status !== 0) process.exit(result.status ?? 1);
+	const bridgeOutputDir = path.join(repoRoot, 'dist', 'runtime', 'feishu-bridge', outputArch);
+	mkdirSync(bridgeOutputDir, { recursive: true });
+	const bridgeResult = spawnSync(go, [
+		'build', '-trimpath', '-ldflags=-s -w',
+		'-o', path.join(bridgeOutputDir, 'codex-feishu-bridge.exe'),
+		'./cmd/codex-feishu-bridge',
+	], {
+		cwd: coreRoot,
+		stdio: 'inherit',
+		env: { ...process.env, GOOS: 'windows', GOARCH: arch },
+	});
+	if (bridgeResult.error) {
+		console.error(`Failed to build Go Feishu service: ${bridgeResult.error.message}`);
+		process.exit(1);
+	}
+	if (bridgeResult.status !== 0) process.exit(bridgeResult.status ?? 1);
 }

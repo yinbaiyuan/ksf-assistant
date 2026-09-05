@@ -9,7 +9,7 @@ The on-demand `token/history/read` method remains the compatibility 30-day
 local-history reader. `token/history/compare` aligns those local buckets with
 the server-published account history by date, preserving absent server dates as
 unavailable. Hosts render the comparison but do not scan Codex session logs or
-join account data themselves while the shared core is healthy.
+join account data themselves while the CodexAssistant Core is healthy.
 
 The pricing package owns seven versioned API presets, custom-plan validation,
 and fixed-precision micro-USD estimates. `pricing/catalog/read` exposes the
