@@ -38,9 +38,9 @@ func (runtime *Runtime) Health() RuntimeHealth {
 	}
 	runtime.healthMu.Unlock()
 	runtime.inbox.mu.Lock()
-	unknown := 0
+	unknown := len(runtime.inbox.unknownReceipts)
 	for _, event := range runtime.inbox.file.Events {
-		if event.State == "outcome_unknown" {
+		if eventNeedsReview(event) && !runtime.inbox.unknownReceipts[event.Event.ID] {
 			unknown++
 		}
 	}
@@ -86,7 +86,13 @@ func (runtime *Runtime) runMaintenanceCycle(ctx context.Context) {
 	runtime.setHealth("event inbox retention persistence failed", err)
 	if err == nil {
 		runtime.inbox.mu.Lock()
-		full := len(runtime.inbox.file.Events) >= eventInboxMaxRecords
+		active := 0
+		for _, record := range runtime.inbox.file.Events {
+			if !terminalInboxEvent(record) {
+				active++
+			}
+		}
+		full := active >= eventInboxMaxRecords
 		runtime.inbox.mu.Unlock()
 		if !full {
 			runtime.setHealth("event inbox capacity exceeded", nil)

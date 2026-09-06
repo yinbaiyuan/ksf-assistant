@@ -8,7 +8,6 @@ import (
 	"hash/fnv"
 	"ksfassistant/core/internal/feishutypes"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -329,41 +328,9 @@ func normalizeInboundCard(raw map[string]any) (InboundCardAction, error) {
 	if openID == "" {
 		openID = stringValue(event["operator_id"])
 	}
-	result := InboundCardAction{EventID: eventID(raw), OperatorOpenID: openID, ChatID: firstString(event["chat_id"], event["open_chat_id"], contextValue["open_chat_id"]), MessageID: firstString(event["message_id"], event["open_message_id"], contextValue["open_message_id"]), Action: stringValue(value["action"]), TaskKey: stringValue(value["taskKey"]), LinkID: stringValue(value["linkId"]), QuestionRevision: stringValue(value["questionRevision"]), Token: stringValue(event["token"]), Value: value, FormValue: form, Raw: event}
-	if result.OperatorOpenID == "" || result.Action == "" || stringValue(value["namespace"]) != "feishu_bridge" || numberValue(value["version"]) != 1 {
+	result := InboundCardAction{EventID: eventID(raw), OperatorOpenID: openID, ChatID: firstString(event["chat_id"], event["open_chat_id"], contextValue["open_chat_id"]), MessageID: firstString(event["message_id"], event["open_message_id"], contextValue["open_message_id"]), Token: stringValue(event["token"]), Value: value, FormValue: form, Raw: event}
+	if result.OperatorOpenID == "" || result.MessageID == "" {
 		return InboundCardAction{}, errors.New("invalid_card_action")
-	}
-	if strings.HasPrefix(result.Action, "task_link_") && !regexp.MustCompile(`^[a-f0-9]{20}$`).MatchString(result.TaskKey) {
-		return InboundCardAction{}, errors.New("invalid_card_task_key")
-	}
-	if strings.HasPrefix(result.Action, "task_link_") && !regexp.MustCompile(`^LINK-[A-F0-9]{16}$`).MatchString(result.LinkID) {
-		return InboundCardAction{}, errors.New("invalid_card_link")
-	}
-	allowed := map[string]bool{"task_link_interrupt": true, "task_link_release": true, "task_link_followup": true, "task_link_answer": true, "task_link_implement_plan": true}
-	if !allowed[result.Action] {
-		return InboundCardAction{}, errors.New("unsupported_card_action")
-	}
-	if result.Action == "task_link_followup" {
-		followup := strings.TrimSpace(strings.ReplaceAll(stringValue(form["followup"]), "\x00", ""))
-		if followup == "" || len([]rune(followup)) > 1000 {
-			return InboundCardAction{}, errors.New("invalid_card_followup")
-		}
-		result.FormValue["followup"] = followup
-		mode := stringValue(form["turnMode"])
-		if mode != "" && mode != "default" && mode != "plan" {
-			return InboundCardAction{}, errors.New("invalid_card_turn_mode")
-		}
-	}
-	if result.Action == "task_link_implement_plan" && !regexp.MustCompile(`^[a-f0-9]{20}$`).MatchString(stringValue(value["planRevision"])) {
-		return InboundCardAction{}, errors.New("invalid_plan_revision")
-	}
-	if result.Action == "task_link_answer" {
-		if !regexp.MustCompile(`^[a-f0-9]{20}$`).MatchString(result.QuestionRevision) {
-			return InboundCardAction{}, errors.New("invalid_card_question_revision")
-		}
-		if !regexp.MustCompile(`^[A-Za-z0-9_-]{1,80}$`).MatchString(stringValue(value["questionId"])) || strings.TrimSpace(stringValue(value["answer"])) == "" || len([]rune(stringValue(value["answer"]))) > 160 {
-			return InboundCardAction{}, errors.New("invalid_card_answer")
-		}
 	}
 	return result, nil
 }

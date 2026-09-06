@@ -67,3 +67,15 @@ func TestCoreNeverOwnsFeishuConfigurationFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestFeishuNormalizerDoesNotInterpretBusinessCards(t *testing.T) {
+	data, err := os.ReadFile("../feishu/inbound_processor.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, businessToken := range []string{"task_link_", "feishu_bridge", "questionRevision", "planRevision", "linkId", "taskKey"} {
+		if strings.Contains(string(data), businessToken) {
+			t.Errorf("Feishu normalizer interprets business field %s", businessToken)
+		}
+	}
+}

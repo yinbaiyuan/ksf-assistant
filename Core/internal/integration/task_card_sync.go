@@ -62,7 +62,12 @@ func SyncTaskLinkCard(ctx context.Context, store TaskLinkStore, patcher TaskLink
 		}
 		if link.ID != "" {
 			_, err = store.UpdateByID(link.ID, func(value *TaskLink) {
-				value.SetExtraValue("cardSyncPending", nil)
+				currentCard, encodeErr := TaskLinkCardJSON(*value)
+				if encodeErr == nil && currentCard == card && TaskLinkCardMessageID(*value) == messageID {
+					value.SetExtraValue("cardSyncPending", nil)
+				} else {
+					value.SetExtraValue("cardSyncPending", true)
+				}
 			})
 		}
 		return err

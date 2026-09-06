@@ -50,7 +50,7 @@ func NewRuntime(dataRoot string, messages FeishuPort, core CorePort) (*Runtime, 
 		stopWatch()
 		return nil, err
 	}
-	return &Runtime{dataRoot: dataRoot, core: core, messages: messages, links: NewTaskLinkStore(dataRoot), inbox: inbox, watchers: map[string]context.CancelFunc{}, watchCtx: watchCtx, stopWatch: stopWatch}, nil
+	return &Runtime{dataRoot: dataRoot, core: eventCorePort{core}, messages: eventFeishuPort{messages}, links: NewTaskLinkStore(dataRoot), inbox: inbox, watchers: map[string]context.CancelFunc{}, watchCtx: watchCtx, stopWatch: stopWatch}, nil
 }
 
 func (runtime *Runtime) Close() {
@@ -122,6 +122,26 @@ func (runtime *Runtime) HandleMessage(ctx context.Context, message InboundMessag
 		return ErrRuntimeClosed
 	}
 	prompt := strings.TrimSpace(message.Text)
+	var link TaskLink
+	var err error
+	found := false
+	foundByOwnMessage := false
+	for _, candidate := range []string{message.MessageID, message.RootID, message.ParentID} {
+		if candidate == "" {
+			continue
+		}
+		link, found, err = runtime.links.FindAnyByMessage(candidate)
+		if err != nil {
+			return err
+		}
+		if found {
+			if effectiveTaskLinkState(link, time.Now()) != "active" {
+				return ErrInactiveTaskLink
+			}
+			foundByOwnMessage = candidate == message.MessageID
+			break
+		}
+	}
 	cleanupDir := ""
 	if message.MessageType != "text" {
 		if message.ChatType != "p2p" && message.ChatType != "direct" && message.ChatType != "" {
@@ -138,22 +158,6 @@ func (runtime *Runtime) HandleMessage(ctx context.Context, message InboundMessag
 	if strings.TrimSpace(prompt) == "" {
 		_, err := runtime.messages.Reply(ctx, message.MessageID, "text", "消息中没有可读取的文本或附件资源。", replyIdempotencyKey(message.MessageID, "empty", 0))
 		return err
-	}
-	var link TaskLink
-	var err error
-	found := false
-	foundByOwnMessage := false
-	for _, candidate := range []string{message.MessageID, message.RootID, message.ParentID} {
-		if candidate != "" {
-			link, found, err = runtime.links.FindByMessage(candidate)
-			if err != nil {
-				return err
-			}
-			if found {
-				foundByOwnMessage = candidate == message.MessageID
-				break
-			}
-		}
 	}
 	if foundByOwnMessage && link.ActiveTurnID != "" {
 		if link.RootMessageID == message.MessageID {
@@ -203,6 +207,9 @@ func (runtime *Runtime) HandleMessage(ctx context.Context, message InboundMessag
 		}
 	}
 	workspace := link.ExtraString("workingDirectory")
+	if err := beginEventEffect(ctx); err != nil {
+		return err
+	}
 	turnID, err := runtime.startTurn(ctx, link, workspace, prompt, nil)
 	if err != nil {
 		_ = runtime.messages.CleanupInbound(ctx, cleanupDir)
@@ -242,6 +249,15 @@ func (runtime *Runtime) HandleMessage(ctx context.Context, message InboundMessag
 	return nil
 }
 func (runtime *Runtime) HandleCard(ctx context.Context, action InboundCardAction) error {
+	var handled bool
+	var decodeErr error
+	action, handled, decodeErr = decodeTaskCard(action)
+	if decodeErr != nil {
+		return decodeErr
+	}
+	if !handled {
+		return nil
+	}
 	unlock := runtime.lockActions("task:"+action.TaskKey, conversationKey(action.ChatID, action.OperatorOpenID))
 	defer unlock()
 	if runtime.watchCtx.Err() != nil {
@@ -269,6 +285,12 @@ func (runtime *Runtime) HandleCard(ctx context.Context, action InboundCardAction
 	}
 	if action.MessageID == "" || (action.MessageID != link.RootMessageID && !containsString(link.MessageIDs, action.MessageID)) {
 		return errors.New("card message does not match task link")
+	}
+	if err := validateTaskCard(action); err != nil {
+		return err
+	}
+	if err := beginEventEffect(ctx); err != nil {
+		return err
 	}
 	switch action.Action {
 	case "task_link_interrupt":

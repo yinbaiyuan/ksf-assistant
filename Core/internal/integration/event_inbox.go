@@ -29,6 +29,8 @@ type inboxEvent struct {
 	Partition  int                  `json:"partition"`
 	State      string               `json:"state"`
 	Attempts   int                  `json:"attempts"`
+	Phase      string               `json:"phase,omitempty"`
+	RetryAt    time.Time            `json:"retryAt,omitempty"`
 	AcceptedAt time.Time            `json:"acceptedAt"`
 	FinishedAt time.Time            `json:"finishedAt,omitempty"`
 	LastError  string               `json:"lastError,omitempty"`
@@ -40,21 +42,30 @@ type eventInboxFile struct {
 }
 
 type eventInbox struct {
-	mu      sync.Mutex
-	path    string
-	file    eventInboxFile
-	wake    [eventWorkerCount]chan struct{}
-	started bool
+	mu              sync.Mutex
+	path            string
+	file            eventInboxFile
+	wake            [eventWorkerCount]chan struct{}
+	started         bool
+	receiptRoot     string
+	unknownReceipts map[string]bool
 }
 
 func newEventInbox(dataRoot string) (*eventInbox, error) {
-	inbox := &eventInbox{path: filepath.Join(dataRoot, "integration-events-v1.json"), file: eventInboxFile{SchemaVersion: 1, Events: []inboxEvent{}}}
+	inbox := &eventInbox{path: filepath.Join(dataRoot, "integration-events-v1.json"), receiptRoot: filepath.Join(dataRoot, "integration-event-receipts-v1"), unknownReceipts: map[string]bool{}, file: eventInboxFile{SchemaVersion: 1, Events: []inboxEvent{}}}
 	missing, err := privatestore.ReadJSON(inbox.path, &inbox.file)
 	if err != nil {
 		return nil, err
 	}
 	if inbox.file.SchemaVersion != 1 {
 		return nil, errors.New("unsupported integration inbox schema")
+	}
+	migrating := false
+	if !missing {
+		migrating, err = inbox.prepareReceiptMigration()
+		if err != nil {
+			return nil, err
+		}
 	}
 	for index := range inbox.wake {
 		inbox.wake[index] = make(chan struct{}, 1)
@@ -66,11 +77,24 @@ func newEventInbox(dataRoot string) (*eventInbox, error) {
 			return nil, errors.New("invalid integration inbox record")
 		}
 		seen[event.Event.ID] = true
+		receipt, archived, readErr := inbox.receipt(event.Event.ID)
+		if readErr != nil {
+			return nil, readErr
+		}
+		if archived {
+			if receipt.Digest != event.Digest {
+				return nil, errors.New("integration receipt conflict")
+			}
+			*event = receipt
+		}
 		switch event.State {
 		case "running":
+			if event.Phase == "preparing" {
+				event.State = "pending"
+				break
+			}
 			event.State, event.LastError = "outcome_unknown", "interrupted_before_durable_outcome"
 			event.FinishedAt = time.Now().UTC()
-			event.Event.Payload = nil
 		case "pending", "completed", "failed", "outcome_unknown":
 		default:
 			return nil, errors.New("invalid integration inbox state")
@@ -82,8 +106,16 @@ func newEventInbox(dataRoot string) (*eventInbox, error) {
 			}
 		}
 	}
+	if err := inbox.scanReceipts(time.Now().UTC()); err != nil {
+		return nil, err
+	}
 	if !missing {
 		if err := inbox.save(inbox.file); err != nil {
+			return nil, err
+		}
+	}
+	if migrating {
+		if err := privatestore.WriteJSON(inbox.receiptRoot+"-migration.json", eventReceiptMigration{Version: 1}); err != nil {
 			return nil, err
 		}
 	}
@@ -91,6 +123,11 @@ func newEventInbox(dataRoot string) (*eventInbox, error) {
 }
 
 func (inbox *eventInbox) save(file eventInboxFile) error {
+	var err error
+	file, err = inbox.compact(file)
+	if err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(file, "", "  ")
 	if err != nil {
 		return err
@@ -98,7 +135,11 @@ func (inbox *eventInbox) save(file eventInboxFile) error {
 	if len(data) > eventInboxMaxBytes {
 		return errors.New("integration inbox capacity exceeded")
 	}
-	return privatestore.WithFileLock(inbox.path+".lock", func() error { return privatestore.WriteJSON(inbox.path, file) })
+	err = privatestore.WithFileLock(inbox.path+".lock", func() error { return privatestore.WriteJSON(inbox.path, file) })
+	if err == nil {
+		inbox.file = file
+	}
+	return err
 }
 
 func decodeEvent(event feishuprotocol.Event) (any, string, string, error) {
@@ -126,7 +167,7 @@ func decodeEvent(event feishuprotocol.Event) (any, string, string, error) {
 		if err := json.Unmarshal(event.Payload, &card); err != nil {
 			return nil, "", "", err
 		}
-		if card.TaskKey == "" || card.LinkID == "" || card.OperatorOpenID == "" || card.MessageID == "" || card.Action == "" {
+		if card.OperatorOpenID == "" || card.MessageID == "" {
 			return nil, "", "", errors.New("invalid inbound card")
 		}
 		if card.EventID != "" && card.EventID != event.ID {
@@ -142,6 +183,13 @@ func decodeEvent(event feishuprotocol.Event) (any, string, string, error) {
 	decoder.UseNumber()
 	if err := decoder.Decode(&raw); err != nil {
 		return nil, "", "", err
+	}
+	if event.Kind == "card" {
+		if object, ok := raw.(map[string]any); ok {
+			if err := canonicalTaskCardEnvelope(object); err != nil {
+				return nil, "", "", err
+			}
+		}
 	}
 	canonical, err := json.Marshal(raw)
 	if err != nil {
@@ -183,6 +231,17 @@ func (runtime *Runtime) AcceptEvent(ctx context.Context, event feishuprotocol.Ev
 		runtime.startEventWorkers()
 		return feishuprotocol.Accepted{Accepted: true}, nil
 	}
+	prior, archived, archiveErr := inbox.receipt(event.ID)
+	if archiveErr != nil || archived {
+		inbox.mu.Unlock()
+		if archiveErr != nil {
+			return feishuprotocol.Accepted{}, archiveErr
+		}
+		if prior.Digest != digest {
+			return feishuprotocol.Accepted{}, errors.New("integration event ID conflict")
+		}
+		return feishuprotocol.Accepted{Accepted: true}, nil
+	}
 	now := time.Now().UTC()
 	file := eventInboxFile{SchemaVersion: 1, Events: make([]inboxEvent, 0, len(inbox.file.Events)+1)}
 	for _, record := range inbox.file.Events {
@@ -191,7 +250,13 @@ func (runtime *Runtime) AcceptEvent(ctx context.Context, event feishuprotocol.Ev
 		}
 		file.Events = append(file.Events, record)
 	}
-	if len(file.Events) >= eventInboxMaxRecords {
+	active := 0
+	for _, record := range file.Events {
+		if !terminalInboxEvent(record) {
+			active++
+		}
+	}
+	if active >= eventInboxMaxRecords {
 		inbox.mu.Unlock()
 		runtime.setHealth("event inbox capacity exceeded", errors.New("capacity"))
 		return feishuprotocol.Accepted{}, errors.New("integration inbox capacity exceeded")
@@ -204,7 +269,6 @@ func (runtime *Runtime) AcceptEvent(ctx context.Context, event feishuprotocol.Ev
 	err = inbox.save(file)
 	runtime.setHealth("event acceptance persistence failed", err)
 	if err == nil {
-		inbox.file = file
 		runtime.setHealth("event inbox capacity exceeded", nil)
 	}
 	inbox.mu.Unlock()
@@ -240,15 +304,18 @@ func (inbox *eventInbox) claim(partition int) (inboxEvent, bool, error) {
 		if record.Partition != partition || record.State != "pending" {
 			continue
 		}
+		if time.Now().Before(record.RetryAt) {
+			return inboxEvent{}, false, nil
+		}
 		file := inbox.file
 		file.Events = append([]inboxEvent(nil), file.Events...)
 		record.State = "running"
+		record.Phase = "preparing"
 		record.Attempts++
 		file.Events[index] = record
 		if err := inbox.save(file); err != nil {
 			return inboxEvent{}, false, err
 		}
-		inbox.file = file
 		return record, true, nil
 	}
 	return inboxEvent{}, false, nil
@@ -267,20 +334,29 @@ func (inbox *eventInbox) finish(record inboxEvent, dispatchErr error, cancelled 
 			current.State, current.LastError = "completed", ""
 			current.FinishedAt = time.Now().UTC()
 			current.Event.Payload = nil
-		} else if errors.Is(dispatchErr, ErrInactiveTaskLink) {
+		} else if errors.Is(dispatchErr, ErrInactiveTaskLink) || errors.Is(dispatchErr, ErrInvalidTaskCard) {
 			current.State, current.LastError = "failed", "inactive_task_link"
+			if errors.Is(dispatchErr, ErrInvalidTaskCard) {
+				current.LastError = "invalid_task_card"
+			}
 			current.FinishedAt = time.Now().UTC()
 			current.Event.Payload = nil
+		} else if current.Phase == "preparing" {
+			if current.Attempts < 5 {
+				current.State, current.LastError = "pending", "pre_execution_retry"
+				current.RetryAt = time.Now().Add(time.Duration(1<<(current.Attempts-1)) * 250 * time.Millisecond)
+			} else {
+				current.State, current.LastError = "failed", "pre_execution_retries_exhausted"
+				current.FinishedAt = time.Now().UTC()
+			}
 		} else {
 			current.State, current.LastError = "outcome_unknown", "execution_not_proven_safe_to_replay"
 			current.FinishedAt = time.Now().UTC()
-			current.Event.Payload = nil
 		}
 		file.Events[index] = current
 		if err := inbox.save(file); err != nil {
 			return err
 		}
-		inbox.file = file
 		return nil
 	}
 	return errors.New("integration inbox record missing")
@@ -296,6 +372,7 @@ func (runtime *Runtime) runEventWorker(ctx context.Context, partition int) {
 			payload, _, _, err := decodeEvent(record.Event)
 			if err == nil {
 				dispatchCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+				dispatchCtx = context.WithValue(dispatchCtx, eventExecutionKey{}, func() error { return runtime.inbox.begin(record.Event.ID) })
 				switch value := payload.(type) {
 				case InboundMessage:
 					err = runtime.HandleMessage(dispatchCtx, value)
@@ -350,11 +427,31 @@ func (inbox *eventInbox) prune(now time.Time) error {
 		}
 	}
 	if len(file.Events) == len(inbox.file.Events) {
-		return nil
+		return inbox.scanReceipts(now)
 	}
 	if err := inbox.save(file); err != nil {
 		return err
 	}
-	inbox.file = file
-	return nil
+	return inbox.scanReceipts(now)
+}
+
+func (inbox *eventInbox) begin(id string) error {
+	inbox.mu.Lock()
+	defer inbox.mu.Unlock()
+	for index, record := range inbox.file.Events {
+		if record.Event.ID != id {
+			continue
+		}
+		if record.State != "running" {
+			return errors.New("integration event is not running")
+		}
+		if record.Phase == "executing" {
+			return nil
+		}
+		file := inbox.file
+		file.Events = append([]inboxEvent(nil), file.Events...)
+		file.Events[index].Phase = "executing"
+		return inbox.save(file)
+	}
+	return errors.New("integration event record missing")
 }

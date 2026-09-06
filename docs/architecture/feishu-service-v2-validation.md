@@ -1,5 +1,29 @@
 # 飞书统一服务 v2：工程验收记录
 
+## 2026-09-06 可靠性复审修订
+
+范围：基于源码基线 `495b1d4` 修复六项复现问题，并将卡片业务解释从飞书接入层收敛到 Core。没有安装、重启生产服务、提交或迁移生产数据。
+
+| 修复 | 行为证据 |
+| --- | --- |
+| 只读准备失败不再永久结果未知；副作用前持久记录执行阶段 | `integration/reliability_test.go` 的 Workspace 失败后成功测试；`event_receipts_test.go` 的 preparing/executing/旧 running 恢复与五次重试耗尽测试 |
+| 2048 条终态不再堵住活动收件箱 | `integration/event_receipts_test.go` 覆盖归档后接受新事件、旧 ID 去重、冲突拒绝、备份、写入失败和跨文件中断 |
+| 旧卡片同步响应不清除新内容的待同步标记 | `integration/reliability_test.go` 的 `TestCardSyncPreservesNewerPendingContent` |
+| 内部消息确认后实际执行，不再要求重提原消息 | `feishu/service_message_resume_test.go` 覆盖原 Operation/结果 ID、无传输时保留 challenge、重复确认、最新撤权/dry-run 及确认后中断；`service_transport_test.go` 保留超时不重放验证 |
+| 回复保留期内失效链接不误建任务 | `integration/reliability_test.go` 覆盖 released/expired，关联检查提前到附件暂存和 Codex 调用之前 |
+| 旧卡片恢复不再只尝试一次 | `cmd/ksf-assistant-feishu-bridge/card_restoration_test.go` 覆盖临时恢复、永久拒绝、有限次数和取消；`feishu/service_transport_restore_test.go` 覆盖 HTTP 429/503/403 分类 |
+| 卡片业务校验留在 Core | `integration/task_card_action_test.go` 覆盖不透明动作、非法输入、未注册业务及旧 ACK 摘要兼容；`service/architecture_boundary_test.go` 防止飞书接入层再次解释任务/Plan/问题字段 |
+
+上述测试路径均相对于 `Core/internal/`，`cmd/` 路径相对于 `Core/`。测试使用临时目录和假 SDK，不接触真实账号或消息。
+
+验证：Go 全量、八个相关包 Race、`go vet ./...`、现行 `scripts/run-tests.sh` 通过。Swift XCTest 43 项、Windows Node 63 项、冻结飞书 Node 284 项均通过；身份迁移、原生管道、退出专项测试和 macOS universal2 构建/adhoc 验签通过。原始日志：`/tmp/ksfassistant-reliability-race.log`、`/tmp/ksfassistant-reliability-vet.log`、`/tmp/ksfassistant-reliability-acceptance.log`。这些临时日志不是长期归档制品。
+
+`scripts/build-core.sh` 四目标编译通过：macOS arm64/x64、Windows x64/arm64 的 Core 与飞书服务二进制；日志为 `/tmp/ksfassistant-reliability-cross.log`。应用产物为 `dist/KSFAssistant.app`，未复制到 Applications 或启动；旧名 dist 缓存未删除、未装入新包。Windows 实机 IPC、真实飞书卡片/消息与业务回写链路仍需实机验收，不以编译和假传输测试代替。
+
+中途一次运行中，既有 `TestCardDeliveryFailureRemainsPendingAndCanRecover` 出现恢复等待超时；随后单测重复五次、全量与 Race 均通过。没有通过放宽断言或增加等待时长掩盖该现象，也不据此宣称已消除所有调度抖动。旧 Swift 兜底未执行、未恢复支持。
+
+下面保留 2026-09-05 的历史验收与兼容背景；真实环境验收边界仍然有效。
+
 日期：2026-09-05。范围：本轮 Core 业务集成、飞书统一服务和 CLI 客户端改造，不含生产切换。
 
 ## 结论

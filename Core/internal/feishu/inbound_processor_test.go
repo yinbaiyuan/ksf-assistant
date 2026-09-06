@@ -69,45 +69,46 @@ func TestInboundProcessorRejectsUnknownDirectUser(t *testing.T) {
 	t.Fatal("denied event was not terminally discarded")
 }
 
-func TestNormalizeInboundCardValidatesFrozenNamespaceAndForm(t *testing.T) {
+func TestNormalizeInboundCardPreservesOpaqueBusinessPayload(t *testing.T) {
 	raw := map[string]any{"event": map[string]any{"event_id": "evt_card", "operator": map[string]any{"operator_id": map[string]any{"open_id": "ou_owner"}}, "context": map[string]any{"open_chat_id": "oc_chat", "open_message_id": "om_card"}, "token": "token", "action": map[string]any{"value": map[string]any{"namespace": "feishu_bridge", "version": float64(1), "action": "task_link_followup", "taskKey": "0123456789abcdef0123", "linkId": "LINK-0123456789ABCDEF"}, "form_value": map[string]any{"followup": "  继续  ", "turnMode": "default"}}}}
 	action, err := normalizeInboundCard(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if action.EventID != "evt_card" || action.ChatID != "oc_chat" || action.MessageID != "om_card" || action.FormValue["followup"] != "继续" {
+	if action.EventID != "evt_card" || action.ChatID != "oc_chat" || action.MessageID != "om_card" || action.FormValue["followup"] != "  继续  " || action.TaskKey != "" {
 		t.Fatalf("unexpected normalized action: %#v", action)
 	}
 	raw["event"].(map[string]any)["action"].(map[string]any)["value"].(map[string]any)["namespace"] = "foreign"
-	if _, err := normalizeInboundCard(raw); err == nil {
-		t.Fatal("foreign card namespace was accepted")
+	if _, err := normalizeInboundCard(raw); err != nil {
+		t.Fatal("transport interpreted a business namespace")
 	}
 	raw["event"].(map[string]any)["action"].(map[string]any)["value"].(map[string]any)["namespace"] = "feishu_bridge"
 	delete(raw["event"].(map[string]any)["action"].(map[string]any)["value"].(map[string]any), "linkId")
-	if _, err := normalizeInboundCard(raw); err == nil {
-		t.Fatal("card action without a connection identity was accepted")
+	if _, err := normalizeInboundCard(raw); err != nil {
+		t.Fatal("transport interpreted a business link")
 	}
 }
 
-func TestNormalizeInboundAnswerRequiresAndPreservesQuestionRevision(t *testing.T) {
+func TestNormalizeInboundCardPreservesValueWithoutInterpretingQuestions(t *testing.T) {
 	value := map[string]any{
 		"namespace": "feishu_bridge", "version": float64(1), "action": "task_link_answer",
 		"taskKey": "0123456789abcdef0123", "linkId": "LINK-0123456789ABCDEF",
 		"questionId": "choice", "questionRevision": "0123456789abcdef0123", "answer": "A",
 	}
 	raw := map[string]any{"event": map[string]any{
-		"operator": map[string]any{"operator_id": map[string]any{"open_id": "ou_owner"}},
-		"action":   map[string]any{"value": value},
+		"open_message_id": "om_fixture",
+		"operator":        map[string]any{"operator_id": map[string]any{"open_id": "ou_owner"}},
+		"action":          map[string]any{"value": value},
 	}}
 	action, err := normalizeInboundCard(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if action.QuestionRevision != "0123456789abcdef0123" {
+	if action.Value["questionRevision"] != "0123456789abcdef0123" || action.QuestionRevision != "" {
 		t.Fatalf("question revision was not preserved: %#v", action)
 	}
 	delete(value, "questionRevision")
-	if _, err := normalizeInboundCard(raw); err == nil {
-		t.Fatal("answer without a question revision was accepted")
+	if _, err := normalizeInboundCard(raw); err != nil {
+		t.Fatal("transport interpreted question validation")
 	}
 }

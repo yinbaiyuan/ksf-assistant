@@ -251,7 +251,7 @@ func TestEventWorkerPoolIsBoundedAndSameConversationFIFO(t *testing.T) {
 func TestInboxCapacityRejectsWithoutDispatch(t *testing.T) {
 	runtime := testRuntime(t, &fakeCorePort{}, &fakeFeishuPort{})
 	for index := 0; index < eventInboxMaxRecords; index++ {
-		runtime.inbox.file.Events = append(runtime.inbox.file.Events, inboxEvent{Event: feishuprotocol.Event{ID: fmt.Sprint(index)}, State: "completed", FinishedAt: time.Now()})
+		runtime.inbox.file.Events = append(runtime.inbox.file.Events, inboxEvent{Event: feishuprotocol.Event{ID: fmt.Sprint(index)}, State: "pending"})
 	}
 	if result, err := runtime.AcceptEvent(context.Background(), messageEvent("overflow", "chat")); err == nil || result.Accepted {
 		t.Fatal("capacity overflow acknowledged")

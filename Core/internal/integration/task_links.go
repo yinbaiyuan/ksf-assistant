@@ -494,6 +494,14 @@ func (store TaskLinkStore) updateUnlocked(taskKey string, patch func(*TaskLink))
 }
 
 func (store TaskLinkStore) FindByMessage(messageID string) (TaskLink, bool, error) {
+	return store.findByMessage(messageID, false)
+}
+
+func (store TaskLinkStore) FindAnyByMessage(messageID string) (TaskLink, bool, error) {
+	return store.findByMessage(messageID, true)
+}
+
+func (store TaskLinkStore) findByMessage(messageID string, includeInactive bool) (TaskLink, bool, error) {
 	file, err := store.Load()
 	if err != nil {
 		return TaskLink{}, false, err
@@ -501,7 +509,7 @@ func (store TaskLinkStore) FindByMessage(messageID string) (TaskLink, bool, erro
 	now := time.Now().UTC()
 	for index := len(file.Links) - 1; index >= 0; index-- {
 		link := file.Links[index]
-		if effectiveTaskLinkState(link, now) != "active" {
+		if !includeInactive && effectiveTaskLinkState(link, now) != "active" {
 			continue
 		}
 		if link.RootMessageID == messageID || containsString(link.MessageIDs, messageID) {

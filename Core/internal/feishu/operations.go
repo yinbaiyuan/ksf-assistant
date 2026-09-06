@@ -691,6 +691,13 @@ func (service *OperationService) RecoverInterrupted(limit int) error {
 		}
 		id := strings.TrimSuffix(entry.Name(), ".json")
 		record, loadErr := service.load(id)
+		if loadErr == nil && record.Status == OperationQueued && record.InputProfile == serviceMessageInputProfile {
+			if _, err := service.RejectBeforeExecution(id, "service_message_dispatch_interrupted"); err != nil {
+				return err
+			}
+			processed++
+			continue
+		}
 		if loadErr != nil || (record.Status != OperationRunning && record.Status != OperationVerifying) {
 			continue
 		}

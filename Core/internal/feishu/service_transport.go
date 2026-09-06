@@ -182,32 +182,7 @@ func (transport *ServiceTransport) Message(ctx context.Context, reply bool, requ
 		input["message-id"] = request.MessageID
 	}
 	messageID, err := transport.executeMessage(ctx, capabilityID, input, func(callCtx context.Context) (string, error) {
-		if err := transport.gate(target); err != nil {
-			return "", err
-		}
-		if reply {
-			current, err := transport.readBinding(request.MessageID)
-			if err != nil {
-				return "", err
-			}
-			if current.Target != target {
-				return "", ErrOperationRequestMismatch
-			}
-		}
-		callCtx, cancel := context.WithTimeout(callCtx, 30*time.Second)
-		defer cancel()
-		var messageID string
-		var err error
-		if reply {
-			messageID, err = transport.client.Reply(callCtx, request.MessageID, request.Format, request.Content, request.IdempotencyKey)
-		} else {
-			messageID, err = transport.client.Send(callCtx, target, request.Format, request.Content, request.IdempotencyKey)
-		}
-		if err != nil {
-			return messageID, err
-		}
-		boundary, _ := callCtx.Value(executionBoundaryKey{}).(executionBoundary)
-		return messageID, transport.persistSentBinding(messageID, target, request.Format, boundary.operationID)
+		return transport.applyMessage(callCtx, capabilityID, input)
 	})
 	return feishuprotocol.MessageResult{MessageID: messageID}, err
 }
@@ -239,24 +214,7 @@ func (transport *ServiceTransport) Patch(ctx context.Context, request feishuprot
 	key := "patch:" + secretHash(request.MessageID+":"+fmt.Sprint(binding.Revision)+":"+fingerprint)
 	input := map[string]any{"target-type": binding.Target.Type, "target-id": binding.Target.ID, "message-id": request.MessageID, "format": "card", "content": request.Content, "idempotency-key": key}
 	_, err = transport.executeMessage(ctx, "im.message.edit", input, func(callCtx context.Context) (string, error) {
-		if err := transport.gate(binding.Target); err != nil {
-			return "", err
-		}
-		current, err := transport.readBinding(request.MessageID)
-		if err != nil {
-			return "", err
-		}
-		if current.Target != binding.Target || current.Revision != binding.Revision || !current.Writable {
-			return "", ErrOperationRequestMismatch
-		}
-		callCtx, cancel := context.WithTimeout(callCtx, 30*time.Second)
-		defer cancel()
-		if err := transport.client.PatchCard(callCtx, request.MessageID, request.Content); err != nil {
-			return "", err
-		}
-		boundary, _ := callCtx.Value(executionBoundaryKey{}).(executionBoundary)
-		current.OperationID, current.LastPatchFingerprint, current.Revision = boundary.operationID, fingerprint, current.Revision+1
-		return request.MessageID, writePrivateJSON(transport.bindingPath(request.MessageID), current)
+		return transport.applyMessage(callCtx, "im.message.edit", input)
 	})
 	return err
 }

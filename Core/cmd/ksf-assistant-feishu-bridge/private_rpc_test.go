@@ -315,7 +315,7 @@ func TestTransportConfirmationRetainsChallengeWithoutPrivateInput(t *testing.T) 
 	if err := privateipc.DecodeStrict(decoded.Data, &data, true); err != nil {
 		t.Fatal(err)
 	}
-	if data.Challenge != "isolated-confirmation-fixture" || data.Submitted || data.Status != "authorization_required" || data.NextAction != "confirm_then_retry_same_request" {
+	if data.Challenge != "isolated-confirmation-fixture" || data.Submitted || data.Status != "authorization_required" || data.NextAction != "confirm" {
 		t.Fatalf("confirmation contract lost: %+v", data)
 	}
 }

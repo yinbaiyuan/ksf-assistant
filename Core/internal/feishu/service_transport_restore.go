@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -14,6 +15,18 @@ import (
 
 type ServiceMessageOwnershipVerifier interface {
 	VerifyBotMessage(context.Context, MessageTarget, string) error
+}
+
+func CardRestorationRetryable(err error) bool {
+	if err == nil || errors.Is(err, ErrOperationRequestMismatch) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	for _, code := range []string{"restoration_verifier_required", "restoration_message_missing", "restoration_not_bot_card", "restoration_message_get_failed", "invalid_restoration", "not authorized", "unsafe", "insecure"} {
+		if strings.Contains(err.Error(), code) {
+			return false
+		}
+	}
+	return true
 }
 
 type cardRestoration struct {
@@ -116,6 +129,9 @@ func (client *OfficialMessageClient) VerifyBotMessage(ctx context.Context, targe
 	}
 	if response == nil {
 		return errors.New("restoration_message_missing")
+	}
+	if response.ApiResp != nil && (response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= http.StatusInternalServerError) {
+		return fmt.Errorf("restoration_service_temporarily_unavailable: status=%d", response.StatusCode)
 	}
 	if !response.Success() {
 		return fmt.Errorf("restoration_message_get_failed: code=%d", response.Code)

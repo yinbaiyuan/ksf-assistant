@@ -16,6 +16,7 @@ import (
 
 type restorationSDKFixture struct {
 	response map[string]any
+	status   int
 	calls    atomic.Int32
 	onGet    func()
 }
@@ -41,7 +42,22 @@ func (fixture *restorationSDKFixture) Do(request *http.Request) (*http.Response,
 	if err != nil {
 		return nil, err
 	}
-	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(string(data)))}, nil
+	status := http.StatusOK
+	if request.Method == http.MethodGet && fixture.status != 0 {
+		status = fixture.status
+	}
+	return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(string(data)))}, nil
+}
+
+func TestCardRestorationClassifiesHTTPFailures(t *testing.T) {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusServiceUnavailable, http.StatusForbidden} {
+		fixture := &restorationSDKFixture{status: status, response: map[string]any{"code": 999, "msg": "fixture failure"}}
+		client := newRestorationSDK(t, fixture, "cli_fixture_restore")
+		err := client.VerifyBotMessage(context.Background(), MessageTarget{Type: "open_id", ID: "ou_fixture"}, "om_legacy")
+		if err == nil || CardRestorationRetryable(err) != (status != http.StatusForbidden) {
+			t.Fatalf("status=%d err=%v", status, err)
+		}
+	}
 }
 
 func restorationSDKMessage() map[string]any {

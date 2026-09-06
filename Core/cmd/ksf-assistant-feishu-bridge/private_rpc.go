@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -21,17 +22,19 @@ import (
 )
 
 type bridgeRPCServer struct {
-	dataRoot     string
-	mu           sync.RWMutex
-	settings     feishu.Settings
-	messages     *feishu.OfficialMessageClient
-	transport    *feishu.ServiceTransport
-	runtimeError string
-	scheduler    *feishu.WorkScheduler
-	capability   *feishu.CapabilityService
-	revision     atomic.Uint64
-	initialized  bool
-	bindingState string
+	dataRoot          string
+	mu                sync.RWMutex
+	settings          feishu.Settings
+	messages          *feishu.OfficialMessageClient
+	transport         *feishu.ServiceTransport
+	runtimeError      string
+	scheduler         *feishu.WorkScheduler
+	capability        *feishu.CapabilityService
+	revision          atomic.Uint64
+	initialized       bool
+	bindingState      string
+	bindingDetail     string
+	restorationDelays []time.Duration
 }
 
 func newBridgeRPCServer(dataRoot string, settings feishu.Settings, capability *feishu.CapabilityService) *bridgeRPCServer {
@@ -50,6 +53,7 @@ func (server *bridgeRPCServer) setRuntime(messages *feishu.OfficialMessageClient
 	} else {
 		server.transport = feishu.NewServiceTransport(server.dataRoot, messages)
 	}
+	server.capability.SetMessageTransport(server.transport)
 }
 
 func (server *bridgeRPCServer) degrade(err error) {
@@ -61,18 +65,54 @@ func (server *bridgeRPCServer) degrade(err error) {
 }
 
 func (server *bridgeRPCServer) restoreCardBindings(ctx context.Context, transport *feishu.ServiceTransport, bindings []feishuprotocol.CardBinding) {
-	state := "ready"
-	for _, binding := range bindings {
-		if transport == nil || ctx.Err() != nil {
-			state = "degraded"
-			break
+	delays := server.restorationDelays
+	if len(delays) == 0 {
+		delays = []time.Duration{0, time.Second, 2 * time.Second, 5 * time.Second, 15 * time.Second}
+	}
+	pending := append([]feishuprotocol.CardBinding(nil), bindings...)
+	permanent := 0
+	for _, delay := range delays {
+		if delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
 		}
-		if err := transport.RestoreCardBinding(ctx, feishu.MessageTarget{Type: binding.TargetType, ID: binding.TargetID}, binding.MessageID); err != nil {
-			state = "degraded"
+		remaining := []feishuprotocol.CardBinding{}
+		for _, binding := range pending {
+			if ctx.Err() != nil {
+				return
+			}
+			if transport == nil {
+				permanent++
+				continue
+			}
+			err := transport.RestoreCardBinding(ctx, feishu.MessageTarget{Type: binding.TargetType, ID: binding.TargetID}, binding.MessageID)
+			if err != nil {
+				if feishu.CardRestorationRetryable(err) {
+					remaining = append(remaining, binding)
+				} else {
+					permanent++
+				}
+			}
+		}
+		pending = remaining
+		server.mu.Lock()
+		server.bindingState, server.bindingDetail = "ready", ""
+		if len(pending)+permanent > 0 {
+			server.bindingState = "degraded"
+			server.bindingDetail = fmt.Sprintf("%d cards awaiting restoration; %d require ownership or permission review", len(pending), permanent)
+		}
+		server.mu.Unlock()
+		if len(pending) == 0 {
+			return
 		}
 	}
 	server.mu.Lock()
-	server.bindingState = state
+	server.bindingDetail = fmt.Sprintf("restoration retries exhausted for %d cards; %d require review; reconnect to retry", len(pending), permanent)
 	server.mu.Unlock()
 }
 
@@ -419,7 +459,7 @@ func (server *bridgeRPCServer) attachQR(result map[string]any) (map[string]any, 
 func (server *bridgeRPCServer) snapshot(ctx context.Context) feishuprotocol.Snapshot {
 	server.mu.RLock()
 	settings, messages, runtimeError := server.settings, server.messages, server.runtimeError
-	bindingState := server.bindingState
+	bindingState, bindingDetail := server.bindingState, server.bindingDetail
 	scheduler := server.scheduler
 	server.mu.RUnlock()
 	if scheduler != nil {
@@ -433,7 +473,7 @@ func (server *bridgeRPCServer) snapshot(ctx context.Context) feishuprotocol.Snap
 		"larkCLI": {State: "disabled"}, "outbox": {State: switchState(settings.Outbound.Enabled)}, "docbox": {State: switchState(settings.Docbox.Enabled)}, "actionbox": {State: switchState(settings.Actionbox.Enabled)},
 	}
 	if bindingState != "" {
-		capabilities["cardBindings"] = feishuprotocol.CapabilityHealth{State: bindingState}
+		capabilities["cardBindings"] = feishuprotocol.CapabilityHealth{State: bindingState, Detail: bindingDetail}
 	}
 	if messages != nil {
 		capabilities["feishuOutbound"] = feishuprotocol.CapabilityHealth{State: "ready"}
@@ -558,7 +598,7 @@ func transportRPCError(err error) error {
 	if !errors.As(err, &authorization) {
 		return err
 	}
-	data, encodeErr := json.Marshal(map[string]any{"status": "authorization_required", "operation": authorization.Prepared.Operation, "challenge": authorization.Prepared.Challenge, "submitted": false, "nextAction": "confirm_then_retry_same_request"})
+	data, encodeErr := json.Marshal(map[string]any{"status": "authorization_required", "operation": authorization.Prepared.Operation, "challenge": authorization.Prepared.Challenge, "submitted": false, "nextAction": "confirm"})
 	if encodeErr != nil {
 		return encodeErr
 	}

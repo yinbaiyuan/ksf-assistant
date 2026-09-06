@@ -70,8 +70,9 @@ func confirmTransportSend(t *testing.T, transport *ServiceTransport, request fei
 		t.Fatalf("authorization=%#v err=%v", authorization, err)
 	}
 	service := NewCapabilityService(transport.root, &recordingCapabilityServiceExecutor{}, nil)
+	service.SetMessageTransport(transport)
 	prepared, err := service.Confirm(context.Background(), authorization.Prepared.Operation.ID, authorization.Prepared.Challenge)
-	if err != nil || prepared.Submitted {
+	if err != nil || !prepared.Submitted || prepared.Operation.Status != OperationSucceeded {
 		t.Fatalf("confirmation=%#v err=%v", prepared, err)
 	}
 	return prepared.Operation.ID
@@ -148,7 +149,17 @@ func TestServiceTransportTimeoutCannotReplayAfterRestart(t *testing.T) {
 	client := &transportClientFixture{err: context.DeadlineExceeded}
 	root, transport := newTransportFixture(t, client)
 	request := feishuprotocol.MessageRequest{TargetType: "open_id", TargetID: "ou_fixture", Format: "text", Content: "fixture", IdempotencyKey: "timeout-send"}
-	operationID := confirmTransportSend(t, transport, request)
+	_, prepareErr := transport.Message(context.Background(), false, request)
+	var authorization *TransportAuthorizationError
+	if !errors.As(prepareErr, &authorization) {
+		t.Fatal(prepareErr)
+	}
+	operationID := authorization.Prepared.Operation.ID
+	service := NewCapabilityService(root, &recordingCapabilityServiceExecutor{}, nil)
+	service.SetMessageTransport(transport)
+	if _, err := service.Confirm(context.Background(), operationID, authorization.Prepared.Challenge); err == nil {
+		t.Fatal("confirmation hid execution timeout")
+	}
 	if _, err := transport.Message(context.Background(), false, request); err == nil {
 		t.Fatal("timeout succeeded")
 	}

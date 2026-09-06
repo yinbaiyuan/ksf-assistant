@@ -78,6 +78,7 @@ type CapabilityService struct {
 	operations *OperationService
 	actionbox  *Actionbox
 	executor   CapabilityServiceExecutor
+	transport  *ServiceTransport
 }
 
 func NewCapabilityService(dataRoot string, executor CapabilityServiceExecutor, now func() time.Time) *CapabilityService {
@@ -135,8 +136,11 @@ func (service *CapabilityService) Confirm(ctx context.Context, id, challenge str
 	if !ok || !CapabilityPublished(definition) {
 		return PreparedOperation{}, errors.New("capability_not_published")
 	}
+	if record.InputProfile == serviceMessageInputProfile && service.transport == nil {
+		return PreparedOperation{}, errors.New("service_message_transport_unavailable")
+	}
 	var preflight map[string]any
-	if definition.Preflight != nil {
+	if definition.Preflight != nil && record.InputProfile != serviceMessageInputProfile {
 		preflight, err = service.executor.ReadPreflight(ctx, record.CapabilityID, record.Input)
 		if err != nil {
 			return PreparedOperation{}, err
@@ -151,9 +155,15 @@ func (service *CapabilityService) Confirm(ctx context.Context, id, challenge str
 	}
 	_ = service.auditGovernance("operation_confirmed", view)
 	if record.InputProfile == serviceMessageInputProfile {
-		return PreparedOperation{Operation: view}, nil
+		result, executeErr := service.transport.ResumeOperation(ctx, id)
+		current, statusErr := service.operations.Status(id)
+		return PreparedOperation{Operation: current, Submitted: true, Result: map[string]any{"messageID": result}}, errors.Join(executeErr, statusErr)
 	}
 	return service.dispatch(ctx, PreparedOperation{Operation: view})
+}
+
+func (service *CapabilityService) SetMessageTransport(transport *ServiceTransport) {
+	service.transport = transport
 }
 
 func (service *CapabilityService) Cancel(id string) (OperationView, error) {

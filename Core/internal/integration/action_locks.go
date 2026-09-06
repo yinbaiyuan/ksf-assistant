@@ -57,7 +57,7 @@ func (runtime *Runtime) messageActionKeys(message InboundMessage) []string {
 		if messageID == "" {
 			continue
 		}
-		link, found, err := runtime.links.FindByMessage(messageID)
+		link, found, err := runtime.links.FindAnyByMessage(messageID)
 		if err == nil && found {
 			return append(keys, "task:"+link.TaskKey)
 		}
