@@ -1,0 +1,152 @@
+{
+  "version": 1,
+  "sourceVersion": "1.0.93",
+  "rules": [
+    {
+      "paths": ["base +record-list", "base +record-get", "base +record-search"],
+      "artifactCompanions": [{"flag": "output", "trimSuffix": ".ndjson", "suffix": ".manifest.json"}],
+      "limitations": ["Explicit NDJSON output requires its exact sibling manifest: strip .ndjson, append .manifest.json. Both complete files must exist before publication. Source: shortcuts/base/record_export.go:resolveRecordExportPaths."]
+    },
+    {
+      "paths": ["approval approvals search", "attendance user_tasks query", "mail multi_entity search", "mail user_mailbox.messages batch_get", "mail user_mailboxes search"],
+      "risk": "read",
+      "limitations": ["Explicit query-only risk correction: fixed official schema describes search/query/batch retrieval, and existing published capability risk is read. HTTP method alone is not used as evidence."]
+    },
+    {
+      "paths": ["drive +push", "drive +pull", "drive +sync", "drive +status", "apps +plugin-install", "apps +plugin-uninstall"],
+      "status": "restricted",
+      "limitations": ["Local directory traversal/synchronization or plugin installation is not a bounded frozen invocation."]
+    },
+    {
+      "paths": ["calendar events delete"],
+      "risk": "destructive",
+      "limitations": ["Deletes the selected calendar event; source schema write label is strengthened to existing destructive calendar deletion policy."]
+    },
+    {
+      "paths": ["base +record-upload-attachment", "docs +resource-update", "markdown +overwrite", "markdown +diff"],
+      "flagRoles": {"file": "file", "from-clipboard": "restricted"}
+    },
+    {
+      "paths": ["docs +media-insert"],
+      "flagRoles": {"from-clipboard": "restricted"}
+    },
+    {
+      "paths": ["sheets +cells-set-image", "sheets +float-image-create", "sheets +float-image-update"],
+      "flagRoles": {"image": "file"}
+    },
+    {
+      "paths": ["slides +create"],
+      "flagRoles": {"slide": "resource-text"},
+      "limitations": ["At most ten explicitly frozen resource-free slide XML strings; implicit image uploads are refused."]
+    },
+    {
+      "prefixes": ["mail "],
+      "flagRoles": {"patch-file": "restricted", "template-content-file": "restricted", "set-template-content-file": "restricted", "template-content": "resource-text", "set-template-content": "resource-text"},
+      "limitations": ["Patch files and template files may introduce unfrozen nested attachments and are not accepted until that dependency contract is reviewed."]
+    },
+    {
+      "paths": ["im messages urgent_app", "apps +create", "apps +update", "apps +release-create"],
+      "status": "restricted",
+      "limitations": ["Existing product CapabilityPublished=false boundary: im.urgent.app, apps.app.create, apps.app.update, apps.release.create. Cannot be enabled by a policy override."]
+    },
+    {
+      "paths": ["im +messages-resources-download"],
+      "risk": "read",
+      "artifacts": true,
+      "limitations": ["Reviewed official write label describes local file download only, not a remote write. Source: shortcuts/im/im_messages_resources_download.go."]
+    },
+    {
+      "paths": ["application +slash-command-delete", "apps +cache-clear", "apps +db-sync-delete", "apps +file-delete", "apps +role-delete", "base +app-page-delete", "base +role-delete", "calendar +delete", "drive +member-remove", "im chat.members delete", "okr +comment-delete", "vc +meeting-end", "wiki members delete"],
+      "risk": "destructive",
+      "limitations": ["Explicit removal/termination effects confirmed in corresponding registered shortcut Execute; destructive policy retained rather than treating all official high-risk writes as deletes."]
+    },
+    {
+      "prefixes": ["apps +openapi-key"],
+      "status": "restricted",
+      "limitations": ["Credential/key material operations are not exposed through execution manifests."]
+    },
+    {
+      "prefixes": ["event ", "apps +init", "apps +chat", "apps +db-execute", "apps +db-sync-create", "apps +db-sync-update", "apps +db-sync-enable", "apps +automation-create", "apps +automation-update", "apps +automation-enable", "base +workflow-create", "base +workflow-update", "base +workflow-enable"],
+      "status": "restricted",
+      "limitations": ["Independent event streams, local subprocesses, SQL or deferred dynamic execution are outside the bounded executor. Source: shortcuts/apps, shortcuts/event, shortcuts/base/base_workflow*.go."]
+    },
+    {
+      "paths": ["mail +watch", "docs +script", "apps +html-publish"],
+      "status": "restricted",
+      "limitations": ["Requires separately reviewed dynamic dependencies or compound operation planning; not executable through this descriptor."]
+    },
+    {
+      "prefixes": ["apps +git-credential", "apps +env", "apps +db-data-import", "apps +db-env-migrate", "apps +db-recovery-apply"],
+      "status": "restricted",
+      "limitations": ["Credential/environment transport or independent remote operations are outside this executor."]
+    },
+    {
+      "paths": ["im +messages-send", "im +messages-reply"],
+      "flagRoles": {"image": "media-file", "file": "media-file", "video": "media-file", "video-cover": "media-file", "audio": "media-file", "content": "json", "markdown": "resource-text"},
+      "limitations": ["Local media is frozen; existing file/image keys are allowed. Remote URLs and implicit Markdown resources are refused. Source: shortcuts/im/helpers.go and im_messages_send.go."]
+    },
+    {
+      "paths": ["im +messages-edit"],
+      "flagRoles": {"content": "json", "markdown": "resource-text"},
+      "limitations": ["Remote Markdown resource upload is refused; this official command only accepts bot identity."]
+    },
+    {
+      "paths": ["docs +create", "docs +update"],
+      "flagRoles": {"content": "document-text", "reference-map": "restricted", "format": "output-format", "json": "output-format"},
+      "limitations": ["Only resource-free Markdown writes are currently frozen. XML/reference maps and implicit local/remote media are not supported. overwrite and str_replace use the overwrite policy. Bot auto-grant is a separate policy effect. Source: shortcuts/doc/docs_create_v2.go, docs_update_v2.go, local_doc_resources.go."]
+    },
+    {
+      "paths": ["docs +fetch"],
+      "flagRoles": {"format": "output-format", "json": "output-format"}
+    },
+    {
+      "paths": ["calendar +create", "calendar +update"],
+      "flagRoles": {"description": "resource-text"},
+      "limitations": ["Local rich-image dependencies are not automatically resolved. Source: shortcuts/calendar/description_rich_images.go."]
+    },
+    {
+      "paths": ["slides +add-slide", "slides +update-slide"],
+      "flagRoles": {"content": "resource-text", "xml": "resource-text", "slide": "resource-text"},
+      "limitations": ["Implicit XML image dependencies are not automatically resolved. Source: shortcuts/slides/slides_add_slide.go and slides_update_slide.go."]
+    },
+    {
+      "paths": ["drive +export", "sheets +workbook-export"],
+      "risk": "write",
+      "artifacts": true,
+      "limitations": ["Official read includes creation of a remote export job; not modification of source document. Source: shortcuts/drive/drive_export_common.go:423."]
+    },
+    {
+      "paths": ["drive +download", "drive +export-download", "docs +media-download", "docs +media-preview", "docs +resource-download", "slides +media-download", "minutes +download", "minutes +detail", "vc +notes", "note +transcript", "im +messages-resources-download", "apps +file-download", "apps +db-data-export", "base +record-list", "base +record-get", "base +record-search", "whiteboard +export", "whiteboard +query", "markdown +fetch"],
+      "artifacts": true,
+      "limitations": ["Successful outputs are atomically published per file to the frozen original-cwd relative targets; existing destinations are never overwritten. Close removes staging. Partial publication returns an error and canonical partial artifact list without destructive rollback."]
+    },
+    {
+      "paths": ["im +chat-messages-list", "im +threads-messages-list", "im +messages-mget"],
+      "artifacts": true,
+      "limitations": ["Optional --download-resources output is staged, then published only after process success to the frozen explicit/default destination; staging is removed by Close. Zero optional artifacts is valid. Source: shortcuts/im/im_download_resources.go."]
+    },
+    {
+      "paths": ["drive +upload", "drive +import", "markdown +create", "markdown +update", "minutes +upload", "task +upload-attachment", "okr +upload-image", "docs +media-upload", "docs +media-insert", "apps +file-upload", "slides +media-upload", "sheets +workbook-import"],
+      "flagRoles": {"file": "file", "file-path": "file", "input": "file", "input-path": "file", "path": "file", "image": "media-file"},
+      "limitations": ["Only explicitly frozen regular-file inputs up to 2 MiB; no directory, URL or implicit recursive upload."]
+    },
+    {
+      "prefixes": ["mail "],
+      "flagRoles": {"attach": "file", "body-file": "file", "eml-file": "file", "inline": "restricted", "template-id": "restricted"},
+      "limitations": ["Attachment/body files are frozen. Inline file_path objects and remote-template composition are restricted pending complete dependency freezing."]
+    },
+    {
+      "paths": ["sheets +csv-put"],
+      "flagRoles": {"file": "file"}
+    },
+    {
+      "paths": ["base +record-share-link-create"],
+      "risk": "high-impact-write",
+      "limitations": ["Reviewed shortcuts/base/record_ops.go validateRecordShareBatch/executeRecordShareBatch: fixed base/table and at most 100 explicit record IDs; creates share links via records/share_links/batch without dynamic traversal. Conservatively requires sharing confirmation through base.shortcut.record.share.link.create, rather than the upstream read label."]
+    },
+    {
+      "paths": ["sheets +batch-update"],
+      "limitations": ["1..100 explicit cell/row/column/range/sheet operations from the reviewed batch_op_dispatch.go subset; each child is validated through its standalone descriptor and contributes all policy effects. No nested batches, per-child workbook/auth overrides, file/stdin indirection, plural fan-out, chart/pivot/object operations or continue-on-error. Source engine sheets_batch.go lists the exact subset. Upstream failure may preserve partial changes; never auto-retry or claim transactional rollback."]
+    }
+  ]
+}

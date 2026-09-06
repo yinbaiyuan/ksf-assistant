@@ -407,6 +407,49 @@ public enum ProjectTaskWaitingReason: Int, Equatable, Comparable, Sendable {
     }
 }
 
+public struct ProjectTaskRuntime: Decodable, Equatable, Sendable {
+    public struct Progress: Decodable, Equatable, Sendable {
+        public let summary: String?
+        public let percent: Int?
+    }
+
+    public let scope: String
+    public let reportedStatus: String
+    public let reportedAt: Date?
+    public let reportFreshness: String
+    public let routeFreshness: String
+    public let observedStatus: String
+    public let observedAt: Date?
+    public let progress: Progress?
+
+    public var reportLabel: String {
+        switch reportFreshness {
+        case "recent": return "Agent 已上报"
+        case "stale": return "Agent 上报已过期"
+        default: return "Agent 上报时效未知"
+        }
+    }
+
+    public var routeLabel: String {
+        switch routeFreshness {
+        case "current": return "KSF 来源已验证 · 当前有效"
+        case "stale": return "KSF 来源已过期 · 不作为当前路由"
+        case "unavailable": return "KSF 来源暂无法验证"
+        default: return "尚无 KSF 已验证来源"
+        }
+    }
+
+    public var reportedStatusLabel: String {
+        switch reportedStatus {
+        case "running": return "进行中"
+        case "waiting": return "等待中"
+        case "blocked": return "受阻"
+        case "completed": return "已完成"
+        default: return "未知"
+        }
+    }
+}
+
 /// A live, display-only project task. This model intentionally has no Codable
 /// conformance so raw task identity and titles cannot enter app caches by accident.
 public struct ProjectTaskItem: Equatable, Sendable, Identifiable {
@@ -417,6 +460,7 @@ public struct ProjectTaskItem: Equatable, Sendable, Identifiable {
     public let classification: TaskActivityClassifier.Classification
     public let waitingReason: ProjectTaskWaitingReason?
     public let route: KSFRouteSummary?
+    public let taskRuntime: ProjectTaskRuntime?
     public let createdAt: Date
     public let projectID: String
 
@@ -427,6 +471,7 @@ public struct ProjectTaskItem: Equatable, Sendable, Identifiable {
         classification: TaskActivityClassifier.Classification,
         waitingReason: ProjectTaskWaitingReason? = nil,
         route: KSFRouteSummary? = nil,
+        taskRuntime: ProjectTaskRuntime? = nil,
         createdAt: Date,
         projectID: String
     ) {
@@ -437,6 +482,7 @@ public struct ProjectTaskItem: Equatable, Sendable, Identifiable {
         self.classification = classification
         self.waitingReason = waitingReason
         self.route = route
+        self.taskRuntime = taskRuntime
         self.createdAt = createdAt
         self.projectID = projectID
     }

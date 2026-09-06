@@ -57,4 +57,21 @@ for (const arch of ['amd64', 'arm64']) {
 		process.exit(1);
 	}
 	if (bridgeResult.status !== 0) process.exit(bridgeResult.status ?? 1);
+  for (const component of ['toolchain', 'task']) {
+    const componentDir = path.join(repoRoot, 'dist', 'runtime', component, outputArch);
+    mkdirSync(componentDir, { recursive: true });
+    const componentResult = spawnSync(go, [
+      'build', '-trimpath', '-ldflags=-s -w',
+      '-o', path.join(componentDir, `ksf-assistant-${component}.exe`),
+      `./cmd/ksf-assistant-${component}`,
+    ], {
+      cwd: coreRoot,
+      stdio: 'inherit',
+      env: { ...process.env, CGO_ENABLED: '0', GOOS: 'windows', GOARCH: arch },
+    });
+    if (componentResult.error || componentResult.status !== 0) {
+      console.error(`Failed to build ${component} runtime.`);
+      process.exit(componentResult.status || 1);
+    }
+  }
 }

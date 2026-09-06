@@ -8,12 +8,18 @@ binary_path="$app_path/Contents/MacOS/KSFAssistant"
 icon_path="$repo_root/Resources/CodexStatusIcon.svg"
 architectures="${ARCHS:-arm64 x86_64}"
 signing_mode="${SIGNING_MODE:-adhoc}"
+release_version="$(node -p "require(process.argv[1]).version" "$repo_root/Windows/package.json")"
+bundle_release_version="$(/usr/libexec/PlistBuddy -c 'Print :KSFAssistantReleaseVersion' "$repo_root/Resources/Info.plist")"
+bundle_short_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$repo_root/Resources/Info.plist")"
+if [[ "$bundle_release_version" != "$release_version" || "$bundle_short_version" != "${release_version%%-*}" ]]; then
+    echo "Application release versions disagree; refusing package build." >&2
+    exit 1
+fi
 
 CORE_TARGETS="darwin-arm64 darwin-x64" "$repo_root/scripts/build-core.sh"
-(cd "$repo_root/Core" && go run ./cmd/ksf-assistant-build-assets \
-    --repo-root "$repo_root" \
-    --stage-lark darwin-arm64,darwin-x64 \
-    --sbom)
+node "$repo_root/scripts/prepare-feishu-runtime.mjs" --platform darwin --arch arm64 --arch x64
+bash "$repo_root/scripts/check-managed-feishu-contract.sh"
+node "$repo_root/scripts/generate-sbom.mjs"
 
 if [[ "$app_path" != "$repo_root/dist/KSFAssistant.app" ]]; then
     echo "Refusing to remove an unexpected app path: $app_path" >&2
@@ -59,6 +65,17 @@ cp "$repo_root/dist/runtime/feishu-bridge/darwin-arm64/ksf-assistant-feishu-brid
 cp "$repo_root/dist/runtime/feishu-bridge/darwin-x64/ksf-assistant-feishu-bridge" "$app_path/Contents/Resources/runtime/feishu-bridge/darwin-x64/ksf-assistant-feishu-bridge"
 cp "$repo_root/dist/runtime/lark-cli/darwin-arm64/lark-cli" "$app_path/Contents/Resources/runtime/lark-cli/darwin-arm64/lark-cli"
 cp "$repo_root/dist/runtime/lark-cli/darwin-x64/lark-cli" "$app_path/Contents/Resources/runtime/lark-cli/darwin-x64/lark-cli"
+cp "$repo_root/dist/runtime/lark-cli-runtime.json" "$app_path/Contents/Resources/runtime/lark-cli-runtime.json"
+cp -R "$repo_root/dist/runtime/lark-skills" "$app_path/Contents/Resources/runtime/lark-skills"
+for component in toolchain task; do
+    for target in darwin-arm64 darwin-x64; do
+        mkdir -p "$app_path/Contents/Resources/runtime/$component/$target"
+        cp "$repo_root/dist/runtime/$component/$target/ksf-assistant-$component" "$app_path/Contents/Resources/runtime/$component/$target/ksf-assistant-$component"
+    done
+    /usr/bin/lipo -create "$repo_root/dist/runtime/$component/darwin-arm64/ksf-assistant-$component" \
+        "$repo_root/dist/runtime/$component/darwin-x64/ksf-assistant-$component" \
+        -output "$app_path/Contents/MacOS/ksf-assistant-$component"
+done
 cp "$repo_root/LICENSE" "$app_path/Contents/Resources/compliance/LICENSE.txt"
 cp "$repo_root/THIRD_PARTY_NOTICES.md" "$app_path/Contents/Resources/compliance/THIRD_PARTY_NOTICES.md"
 cp "$repo_root/dist/sbom/KSFAssistant.spdx.json" "$app_path/Contents/Resources/compliance/KSFAssistant.spdx.json"
@@ -80,7 +97,6 @@ case "$signing_mode" in
         /usr/bin/codesign --force --sign - --timestamp=none "$app_path/Contents/Resources/runtime/feishu-bridge/darwin-x64/ksf-assistant-feishu-bridge"
         /usr/bin/codesign --force --sign - --timestamp=none "$app_path/Contents/Resources/runtime/lark-cli/darwin-arm64/lark-cli"
         /usr/bin/codesign --force --sign - --timestamp=none "$app_path/Contents/Resources/runtime/lark-cli/darwin-x64/lark-cli"
-        /usr/bin/codesign --force --sign - --timestamp=none "$app_path"
         ;;
     identity)
         signing_identity="${SIGNING_IDENTITY:-}"
@@ -91,10 +107,33 @@ case "$signing_mode" in
         /usr/bin/codesign --force --sign "$signing_identity" --timestamp=none "$app_path/Contents/Resources/runtime/feishu-bridge/darwin-x64/ksf-assistant-feishu-bridge"
         /usr/bin/codesign --force --sign "$signing_identity" --timestamp=none "$app_path/Contents/Resources/runtime/lark-cli/darwin-arm64/lark-cli"
         /usr/bin/codesign --force --sign "$signing_identity" --timestamp=none "$app_path/Contents/Resources/runtime/lark-cli/darwin-x64/lark-cli"
-        /usr/bin/codesign --force --sign "$signing_identity" --timestamp=none "$app_path"
         ;;
     *) echo "SIGNING_MODE must be 'adhoc' or 'identity'." >&2; exit 1 ;;
 esac
+
+identity="${signing_identity:--}"
+for component in toolchain task; do
+    for target in darwin-arm64 darwin-x64; do
+        /usr/bin/codesign --force --sign "$identity" --timestamp=none "$app_path/Contents/Resources/runtime/$component/$target/ksf-assistant-$component"
+    done
+    /usr/bin/codesign --force --sign "$identity" --timestamp=none "$app_path/Contents/MacOS/ksf-assistant-$component"
+done
+node --input-type=module - "$app_path/Contents/Resources" <<'NODE'
+import { readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import path from 'node:path';
+const root = process.argv[2];
+const file = path.join(root, 'runtime/lark-cli-runtime.json');
+const manifest = JSON.parse(readFileSync(file));
+for (const target of ['darwin-arm64', 'darwin-x64']) {
+    const item = manifest.artifacts[target];
+    item.upstreamExecutableSha256 = item.executableSha256;
+    item.executableSha256 = createHash('sha256').update(readFileSync(path.join(root, 'runtime/lark-cli', target, item.executable))).digest('hex');
+    item.taskExecutableSha256 = createHash('sha256').update(readFileSync(path.join(root, 'runtime/task', target, 'ksf-assistant-task'))).digest('hex');
+}
+writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`);
+NODE
+/usr/bin/codesign --force --sign "$identity" --timestamp=none "$app_path"
 
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_path"
 /usr/bin/lipo -info "$binary_path"

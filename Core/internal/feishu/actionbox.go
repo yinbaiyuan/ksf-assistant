@@ -322,6 +322,8 @@ func (box *Actionbox) executeRequest(ctx context.Context, executor actionExecuto
 	value, runErr := executor.ExecuteWithOptions(ctx, request.CapabilityID, request.Input, CapabilityExecutionOptions{RemoteTimeout: time.Duration(request.RemoteTimeoutMS) * time.Millisecond, RemotePollInterval: time.Duration(request.PollIntervalMS) * time.Millisecond, OperationID: request.OperationID})
 	result.Result = value
 	if runErr != nil {
+		value = cliFailureResult(value, runErr)
+		result.Result = value
 		result.Error = safeCommandError(runErr.Error())
 		if isUncertainExecutionError(runErr) {
 			result.Status = string(OperationOutcomeUnknown)
@@ -375,6 +377,13 @@ func operationPersistenceFailure(result ActionResult, err error) ActionResult {
 }
 
 func isUncertainExecutionError(err error) bool {
+	var cliError *CLIExecutionError
+	if errors.As(err, &cliError) {
+		return cliError.Started
+	}
+	if isUserApprovalError(err) {
+		return false
+	}
 	var networkError net.Error
 	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &networkError) || CapabilityOutcomeUncertain(err)
 }

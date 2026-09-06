@@ -3,6 +3,7 @@ package feishu
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,7 +21,10 @@ import (
 	"time"
 )
 
-type CapabilityExecutor struct{ Binary, Profile, DataRoot, WorkingDirectory string }
+type CapabilityExecutor struct {
+	Binary, Profile, DataRoot, WorkingDirectory string
+	UserApproval                                *UserApprovalGate
+}
 
 const (
 	maximumCapabilityOutputBytes = 4 * 1024 * 1024
@@ -69,6 +73,13 @@ func (err *CapabilityExecutionError) Error() string { return err.Phase + ": " + 
 func (err *CapabilityExecutionError) Unwrap() error { return err.Err }
 
 func CapabilityOutcomeUncertain(err error) bool {
+	var cliError *CLIExecutionError
+	if errors.As(err, &cliError) {
+		return cliError.Started
+	}
+	if isUserApprovalError(err) {
+		return false
+	}
 	var executionError *CapabilityExecutionError
 	if !errors.As(err, &executionError) {
 		return false
@@ -77,6 +88,17 @@ func CapabilityOutcomeUncertain(err error) bool {
 }
 
 func CapabilityOperationErrorCode(err error) string {
+	var cliError *CLIExecutionError
+	if errors.As(err, &cliError) {
+		return cliError.Code
+	}
+	var approvalError *UserApprovalError
+	if errors.As(err, &approvalError) {
+		return approvalError.Code
+	}
+	if code := safeUserCommandErrorCode(err); code != "" {
+		return code
+	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return "execution_timeout"
 	}
@@ -192,7 +214,10 @@ func (runner CapabilityExecutor) ExecuteWithOptions(ctx context.Context, id stri
 	}
 	response, err := runner.runDefinition(ctx, definition, input, options.Timeout)
 	if err != nil {
-		return nil, &CapabilityExecutionError{Phase: "write", Err: err}
+		if isUserApprovalError(err) {
+			return nil, &CapabilityExecutionError{Phase: "approval", Err: err}
+		}
+		return cliFailureResult(response, err), &CapabilityExecutionError{Phase: "write", Err: err}
 	}
 	remote, err := runner.pollRemote(ctx, definition, input, response, options)
 	if err != nil {
@@ -276,12 +301,19 @@ func (runner CapabilityExecutor) DownloadMessageResource(ctx context.Context, me
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("unsafe_message_resource_parent")
 	}
-	definition := CapabilityDefinition{Command: []string{"im", "+messages-resources-download"}, Identity: "bot"}
-	_, err = runner.run(ctx, definition, []string{"im", "+messages-resources-download", "--message-id", messageID, "--file-key", fileKey, "--type", resourceType, "--output", filepath.ToSlash(relative)}, nil, nil, timeout)
+	ctx = context.WithValue(ctx, businessArtifactConsumerKey{}, businessArtifactConsumer(func(directory string, _ map[string]any) error {
+		return copyBusinessArtifact(filepath.Join(directory, relative), output)
+	}))
+	_, err = runner.runFixedBotBusiness(ctx, fixedBotResourceDownload, []string{"im", "+messages-resources-download", "--message-id", messageID, "--file-key", fileKey, "--type", resourceType, "--output", filepath.ToSlash(relative)}, nil, timeout)
 	return err
 }
 
 func validateCapabilityInput(definition CapabilityDefinition, input map[string]any) error {
+	var err error
+	definition, err = CanonicalCapabilityContract(definition)
+	if err != nil {
+		return err
+	}
 	for name := range input {
 		if _, ok := definition.Flags[name]; !ok {
 			return fmt.Errorf("unsupported_input_field:%s", name)
@@ -341,13 +373,10 @@ func validateCapabilityInput(definition CapabilityDefinition, input map[string]a
 	if count > 1 {
 		return errors.New("mutually_exclusive_inputs")
 	}
-	if forbiddenPayload(input) {
-		return errors.New("forbidden_payload_operation")
-	}
 	if err := validateSpecialCapabilityInput(definition, input); err != nil {
 		return err
 	}
-	return nil
+	return validateCanonicalCapabilityArguments(definition, input)
 }
 
 func validateCapabilityField(name string, value any, schema CapabilityField) error {
@@ -377,6 +406,11 @@ func validateCapabilityField(name string, value any, schema CapabilityField) err
 		if !ok || math.Trunc(n) != n || n < float64(schema.Min) || (schema.Max > 0 && n > float64(schema.Max)) {
 			return fmt.Errorf("invalid_integer:%s", name)
 		}
+	case "number":
+		value, ok := number(value)
+		if !ok || math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("invalid_number:%s", name)
+		}
 	case "boolean":
 		if _, ok := value.(bool); !ok {
 			return fmt.Errorf("invalid_boolean:%s", name)
@@ -386,8 +420,11 @@ func validateCapabilityField(name string, value any, schema CapabilityField) err
 		if !ok || !contains(schema.Values, text) {
 			return fmt.Errorf("invalid_enum:%s", name)
 		}
-	case "csv":
+	case "csv", "string-array":
 		items := csvValues(value)
+		if schema.Type == "string-array" {
+			items = stringArrayValues(value)
+		}
 		if items == nil || (schema.Required && len(items) == 0) || (schema.MaxItems > 0 && len(items) > schema.MaxItems) {
 			return fmt.Errorf("invalid_list_size:%s", name)
 		}
@@ -403,12 +440,7 @@ func validateCapabilityField(name string, value any, schema CapabilityField) err
 			}
 		}
 	case "json":
-		switch value.(type) {
-		case map[string]any, []any, []string:
-		default:
-			return fmt.Errorf("invalid_json_value:%s", name)
-		}
-		data, err := json.Marshal(value)
+		data, err := capabilityJSONText(value)
 		if err != nil {
 			return fmt.Errorf("invalid_json_value:%s", name)
 		}
@@ -427,6 +459,11 @@ func validateCapabilityField(name string, value any, schema CapabilityField) err
 }
 
 func capabilityInvocation(definition CapabilityDefinition, input map[string]any) ([]string, []byte, map[string][]byte, error) {
+	var err error
+	definition, err = CanonicalCapabilityContract(definition)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	if definition.Transform == "doc-whiteboard" {
 		xml, err := docWhiteboardXML(input)
 		if err != nil {
@@ -440,9 +477,19 @@ func capabilityInvocation(definition CapabilityDefinition, input map[string]any)
 	files := map[string][]byte{}
 	var stdin []byte
 	if definition.Transport == "raw" {
-		path := definition.APIPath
+		path, query, _ := strings.Cut(definition.APIPath, "?")
 		body := map[string]any{}
 		params := map[string]any{}
+		fixedParams, err := url.ParseQuery(query)
+		if err != nil {
+			return nil, nil, nil, errors.New("invalid_capability_query")
+		}
+		for name, values := range fixedParams {
+			if len(values) != 1 {
+				return nil, nil, nil, errors.New("invalid_capability_query")
+			}
+			params[name] = values[0]
+		}
 		for _, name := range orderedCapabilityFlags(definition) {
 			schema := definition.Flags[name]
 			value, ok := input[name]
@@ -456,7 +503,11 @@ func capabilityInvocation(definition CapabilityDefinition, input map[string]any)
 			if target, ok := schema.Body.(string); ok && target != "" {
 				body[target] = value
 			} else {
-				params[strings.ReplaceAll(name, "-", "_")] = value
+				parameter := strings.ReplaceAll(name, "-", "_")
+				if _, fixed := fixedParams[parameter]; fixed {
+					return nil, nil, nil, errors.New("invalid_fixed_capability_query_override")
+				}
+				params[parameter] = value
 			}
 		}
 		args = []string{"api", definition.Command[1], path}
@@ -476,29 +527,47 @@ func capabilityInvocation(definition CapabilityDefinition, input map[string]any)
 	for _, name := range orderedCapabilityFlags(definition) {
 		schema := definition.Flags[name]
 		value, ok := input[name]
-		if !ok || value == false {
+		if !ok {
+			continue
+		}
+		if schema.Type == "boolean" {
+			args = append(args, "--"+name+"="+strconv.FormatBool(value == true))
+			continue
+		}
+		if schema.Type == "string-array" {
+			for _, item := range stringArrayValues(value) {
+				args = append(args, "--"+name, item)
+			}
 			continue
 		}
 		args = append(args, "--"+name)
-		if schema.Type == "boolean" {
-			continue
-		}
 		var text string
 		if schema.Type == "csv" {
-			text = strings.Join(csvValues(value), ",")
+			var buffer strings.Builder
+			writer := csv.NewWriter(&buffer)
+			if err := writer.Write(csvValues(value)); err != nil {
+				return nil, nil, nil, err
+			}
+			writer.Flush()
+			text = strings.TrimSuffix(buffer.String(), "\n")
+		} else if schema.Type == "integer" {
+			if numeric, ok := value.(float64); ok {
+				text = strconv.FormatFloat(numeric, 'f', -1, 64)
+			} else {
+				text = fmt.Sprint(value)
+			}
 		} else if schema.Type == "json" {
-			data, _ := json.Marshal(value)
-			text = string(data)
+			text, err = capabilityJSONText(value)
+			if err != nil {
+				return nil, nil, nil, err
+			}
 		} else {
 			text = fmt.Sprint(value)
 		}
-		if schema.Private && schema.Stdin {
-			if stdin != nil {
-				return nil, nil, nil, errors.New("only_one_private_stdin_field_is_supported")
-			}
+		if schema.Stdin && stdin == nil {
 			stdin = []byte(text)
 			args = append(args, "-")
-		} else if schema.Private || schema.Type == "json" {
+		} else if schema.Private {
 			sequence++
 			placeholder := "__PRIVATE_CAPABILITY_" + strconv.Itoa(sequence) + "__"
 			files[placeholder] = []byte(text)
@@ -506,9 +575,6 @@ func capabilityInvocation(definition CapabilityDefinition, input map[string]any)
 		} else {
 			args = append(args, text)
 		}
-	}
-	if (definition.Risk == "high-impact-write" || definition.Risk == "destructive") && definition.CLIConfirm {
-		args = append(args, "--yes")
 	}
 	return args, stdin, files, nil
 }
@@ -580,16 +646,22 @@ func (runner CapabilityExecutor) runTranscriptDefinition(ctx context.Context, de
 	if err != nil {
 		return nil, err
 	}
+	relativeRoot, err := filepath.Rel(cwd, artifactRoot)
+	if err != nil {
+		return nil, err
+	}
+	ctx = context.WithValue(ctx, businessArtifactConsumerKey{}, businessArtifactConsumer(func(directory string, result map[string]any) error {
+		transcript, meta, err := readPrivateTranscriptArtifact(filepath.Join(directory, relativeRoot), 50_000)
+		if err != nil {
+			return err
+		}
+		result["transcript"], result["transcriptMeta"] = transcript, meta
+		return nil
+	}))
 	response, err := runner.run(ctx, definition, args, stdin, files, timeout)
 	if err != nil {
 		return nil, err
 	}
-	transcript, meta, err := readPrivateTranscriptArtifact(artifactRoot, 50_000)
-	if err != nil {
-		return nil, err
-	}
-	response["transcript"] = transcript
-	response["transcriptMeta"] = meta
 	return response, nil
 }
 
@@ -653,6 +725,11 @@ func readPrivateTranscriptArtifact(root string, maximumCharacters int) (string, 
 }
 
 func (runner CapabilityExecutor) prepareCapabilityPaths(definition CapabilityDefinition, input map[string]any) (map[string]any, error) {
+	var err error
+	definition, err = CanonicalCapabilityContract(definition)
+	if err != nil {
+		return nil, err
+	}
 	cwd := runner.WorkingDirectory
 	if cwd == "" {
 		cwd = runner.DataRoot
@@ -671,16 +748,7 @@ func (runner CapabilityExecutor) prepareCapabilityPaths(definition CapabilityDef
 		if err != nil || relative == "." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) || filepath.IsAbs(relative) {
 			return nil, fmt.Errorf("unsafe_path:%s", name)
 		}
-		if schema.Output {
-			parent := filepath.Dir(absolute)
-			if err := os.MkdirAll(parent, 0o700); err != nil {
-				return nil, err
-			}
-			info, err := os.Lstat(parent)
-			if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-				return nil, fmt.Errorf("unsafe_output_parent:%s", name)
-			}
-		} else {
+		if !schema.Output {
 			info, err := os.Lstat(absolute)
 			if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 				return nil, fmt.Errorf("unsafe_input_file:%s", name)
@@ -1093,9 +1161,6 @@ func (runner CapabilityExecutor) run(parent context.Context, definition Capabili
 		}
 	}
 	full := []string{}
-	if runner.Profile != "" {
-		full = append(full, "--profile", runner.Profile)
-	}
 	commandLength := len(definition.Command)
 	if definition.Transport == "raw" {
 		commandLength = 3
@@ -1108,31 +1173,59 @@ func (runner CapabilityExecutor) run(parent context.Context, definition Capabili
 		full = append(full, "--as", definition.Identity)
 	}
 	full = append(full, args[commandLength:]...)
-	full = append(full, "--format", "json")
+	return runner.runBusinessCommand(parent, definition, full, stdin, cwd, timeout)
+}
+
+func (runner CapabilityExecutor) runBusinessProcess(parent context.Context, args []string, stdin []byte, cwd string, timeout time.Duration) (map[string]any, error) {
+	full := append([]string{}, args...)
+	profile := runner.Profile
+	if profile == "" {
+		profile = "default"
+	}
+	full = append([]string{"--profile", profile}, full...)
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	command := exec.CommandContext(ctx, runner.Binary, full...)
+	command.WaitDelay = 2 * time.Second
+	command.Env = authEnvironment()
 	command.Dir = cwd
 	command.Stdin = bytes.NewReader(stdin)
 	stdout := boundedCommandBuffer{limit: maximumCapabilityOutputBytes}
 	stderr := boundedCommandBuffer{limit: maximumCapabilityErrorBytes}
 	command.Stdout = &stdout
 	command.Stderr = &stderr
-	if err := command.Run(); err != nil {
+	if err := command.Start(); err != nil {
+		failure := commandExecutionError("lark_cli_not_started", -1, false, err)
+		return cliFailureResult(nil, failure), failure
+	}
+	if err := command.Wait(); err != nil {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("lark-cli execution timeout: %w", ctx.Err())
+			failure := commandExecutionError("lark_cli_timeout", -1, true, ctx.Err(), stderr.Bytes(), stdout.Bytes())
+			return cliFailureResult(nil, failure), failure
 		}
-		return nil, fmt.Errorf("lark-cli failed: %s", safeCommandError(stderr.String(), stdout.String()))
+		var exitError *exec.ExitError
+		exitCode := -1
+		if errors.As(err, &exitError) {
+			exitCode = exitError.ExitCode()
+		}
+		failure := commandExecutionError(fmt.Sprintf("lark_cli_exit_%d", exitCode), exitCode, true, nil, stderr.Bytes(), stdout.Bytes())
+		return cliFailureResult(nil, failure), failure
 	}
 	if stdout.overflow {
-		return nil, errors.New("lark-cli output exceeds safe limit")
+		failure := commandExecutionError("lark_cli_output_limit", 0, true, nil)
+		return cliFailureResult(nil, failure), failure
 	}
 	var result map[string]any
 	if stdout.Len() == 0 {
 		return map[string]any{}, nil
 	}
 	if json.Unmarshal(stdout.Bytes(), &result) != nil {
-		return nil, errors.New("lark-cli returned non-json")
+		failure := commandExecutionError("lark_cli_non_json", 0, true, nil)
+		return cliFailureResult(nil, failure), failure
+	}
+	if result["ok"] == false {
+		failure := commandExecutionError("lark_cli_operation_failed", 0, true, nil, stdout.Bytes())
+		return cliFailureResult(nil, failure), failure
 	}
 	return boundCapabilityResult(result), nil
 }
@@ -1244,6 +1337,9 @@ func safeCommandError(values ...string) string {
 }
 func number(value any) (float64, bool) {
 	switch n := value.(type) {
+	case json.Number:
+		parsed, err := n.Float64()
+		return parsed, err == nil
 	case float64:
 		return n, true
 	case int:
@@ -1256,20 +1352,25 @@ func number(value any) (float64, bool) {
 func csvValues(value any) []string {
 	switch v := value.(type) {
 	case string:
-		items := strings.Split(v, ",")
-		result := []string{}
-		for _, item := range items {
-			if item = strings.TrimSpace(item); item != "" {
-				result = append(result, item)
-			}
+		reader := csv.NewReader(strings.NewReader(v))
+		items, err := reader.Read()
+		if err != nil {
+			return nil
 		}
-		return result
+		if _, err := reader.Read(); err != io.EOF {
+			return nil
+		}
+		return items
 	case []string:
 		return v
 	case []any:
 		result := make([]string, len(v))
-		for i, item := range v {
-			result[i] = fmt.Sprint(item)
+		for index, item := range v {
+			text, ok := item.(string)
+			if !ok {
+				return nil
+			}
+			result[index] = text
 		}
 		return result
 	}
@@ -1278,37 +1379,6 @@ func csvValues(value any) []string {
 func contains(values []string, wanted string) bool {
 	for _, value := range values {
 		if value == wanted {
-			return true
-		}
-	}
-	return false
-}
-func forbiddenPayload(value any) bool {
-	if items, ok := value.([]any); ok {
-		for _, item := range items {
-			if forbiddenPayload(item) {
-				return true
-			}
-		}
-		return false
-	}
-	object, ok := value.(map[string]any)
-	if !ok {
-		return false
-	}
-	for key, child := range object {
-		normalized := strings.ReplaceAll(strings.ToLower(key), "_", "-")
-		if contains([]string{
-			"delete", "remove", "clear", "permission", "role", "member", "move-to-drive", "wiki-move",
-			"workflow", "automation", "openapi-key", "database", "cache", "plugin",
-			"urgent-phone", "urgent-sms", "meeting-join", "meeting-end", "meeting-leave", "minutes-download",
-		}, normalized) || strings.HasPrefix(normalized, "delete-") || strings.HasSuffix(normalized, "-delete") {
-			return true
-		}
-		if normalized == "operation" && contains([]string{"delete", "remove", "clear"}, strings.ToLower(fmt.Sprint(child))) {
-			return true
-		}
-		if forbiddenPayload(child) {
 			return true
 		}
 	}

@@ -293,7 +293,7 @@ esac
 	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	raw := CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root}
+	raw := CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root, UserApproval: allowFixtureBusinessCommands()}
 	service := NewCapabilityService(root, UnifiedCapabilityExecutor{LongTail: raw, DataRoot: root}, nil)
 	prepared, err := service.Prepare(context.Background(), "docs.service.document.append", map[string]any{
 		"target-kind": "docx_token", "target-value": "doc_test", "content": "new", "format": "markdown", "source": "test",

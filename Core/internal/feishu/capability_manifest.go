@@ -307,7 +307,7 @@ func approvalEventSubscriptionDefinitions() []CapabilityDefinition {
 }
 
 func validateCapabilityManifest(manifest CapabilityManifest) error {
-	if manifest.SchemaVersion != 2 || manifest.BridgeVersion != "2.0.0" || manifest.LarkCLIVersion != "1.0.92" {
+	if manifest.SchemaVersion != 2 || manifest.BridgeVersion != "2.0.0" || (manifest.LarkCLIVersion != "1.0.92" && manifest.LarkCLIVersion != PinnedLarkCLIVersion) {
 		return errors.New("unsupported Feishu capability manifest")
 	}
 	if len(manifest.Capabilities) != CapabilityRegistryV2Count {

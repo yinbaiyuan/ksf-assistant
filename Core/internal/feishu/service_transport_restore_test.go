@@ -4,55 +4,47 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	lark "github.com/larksuite/oapi-sdk-go/v3"
 )
 
-type restorationSDKFixture struct {
+type restorationCLIFixture struct {
 	response map[string]any
 	status   int
 	calls    atomic.Int32
 	onGet    func()
 }
 
-func (fixture *restorationSDKFixture) Do(request *http.Request) (*http.Response, error) {
-	if err := request.Context().Err(); err != nil {
+func (fixture *restorationCLIFixture) CallMessage(ctx context.Context, request MessageCLIRequest) (map[string]any, error) {
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	var payload map[string]any
-	switch {
-	case strings.HasPrefix(request.URL.Path, "/open-apis/auth/"):
-		payload = map[string]any{"code": 0, "tenant_access_token": "fixture-only-token", "expire": 7200}
-	case request.Method == http.MethodGet && request.URL.Path == "/open-apis/im/v1/messages/om_legacy":
-		fixture.calls.Add(1)
-		if fixture.onGet != nil {
-			fixture.onGet()
-		}
-		payload = fixture.response
-	default:
-		return nil, errors.New("unexpected_sdk_request")
+	if request.Resource != "messages" || request.Method != "get" || request.Params["message_id"] != "om_legacy" {
+		return nil, errors.New("unexpected_cli_request")
 	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
+	fixture.calls.Add(1)
+	if fixture.onGet != nil {
+		fixture.onGet()
 	}
-	status := http.StatusOK
-	if request.Method == http.MethodGet && fixture.status != 0 {
-		status = fixture.status
+	if fixture.status >= 400 {
+		return nil, &CLICommandError{ExitCode: 3, HTTPStatus: fixture.status}
 	}
-	return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(string(data)))}, nil
+	data, _ := json.Marshal(fixture.response)
+	var response map[string]any
+	_ = json.Unmarshal(data, &response)
+	if response["code"] != float64(0) {
+		return nil, &CLICommandError{ExitCode: 3}
+	}
+	result, _ := response["data"].(map[string]any)
+	return result, nil
 }
 
 func TestCardRestorationClassifiesHTTPFailures(t *testing.T) {
 	for _, status := range []int{http.StatusTooManyRequests, http.StatusServiceUnavailable, http.StatusForbidden} {
-		fixture := &restorationSDKFixture{status: status, response: map[string]any{"code": 999, "msg": "fixture failure"}}
-		client := newRestorationSDK(t, fixture, "cli_fixture_restore")
+		fixture := &restorationCLIFixture{status: status, response: map[string]any{"code": 999, "msg": "fixture failure"}}
+		client := newRestorationCLI(t, fixture, "cli_fixture_restore")
 		err := client.VerifyBotMessage(context.Background(), MessageTarget{Type: "open_id", ID: "ou_fixture"}, "om_legacy")
 		if err == nil || CardRestorationRetryable(err) != (status != http.StatusForbidden) {
 			t.Fatalf("status=%d err=%v", status, err)
@@ -60,21 +52,21 @@ func TestCardRestorationClassifiesHTTPFailures(t *testing.T) {
 	}
 }
 
-func restorationSDKMessage() map[string]any {
+func restorationCLIMessage() map[string]any {
 	return map[string]any{"message_id": "om_legacy", "msg_type": "interactive", "chat_id": "oc_fixture", "deleted": false,
 		"sender": map[string]any{"id": "cli_fixture_restore", "id_type": "app_id", "sender_type": "app"}}
 }
 
-func newRestorationSDK(t *testing.T, fixture *restorationSDKFixture, appID string) *OfficialMessageClient {
+func newRestorationCLI(t *testing.T, fixture *restorationCLIFixture, appID string) *OfficialMessageClient {
 	t.Helper()
-	client, err := NewOfficialMessageClient(appID, "fixture-secret-not-credentials", lark.WithHttpClient(fixture))
+	client, err := NewOfficialMessageClient(appID, fixture)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return client
 }
 
-func TestOfficialMessageRestoreVerifiesSDKBotCard(t *testing.T) {
+func TestOfficialMessageRestoreVerifiesCLIBotCard(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		mutate func(map[string]any)
@@ -90,12 +82,12 @@ func TestOfficialMessageRestoreVerifiesSDKBotCard(t *testing.T) {
 		{name: "wrong-message", mutate: func(message map[string]any) { message["message_id"] = "om_other" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			message := restorationSDKMessage()
+			message := restorationCLIMessage()
 			if test.mutate != nil {
 				test.mutate(message)
 			}
-			fixture := &restorationSDKFixture{response: map[string]any{"code": 0, "data": map[string]any{"items": []any{message}}}}
-			client := newRestorationSDK(t, fixture, "cli_fixture_restore")
+			fixture := &restorationCLIFixture{response: map[string]any{"code": 0, "data": map[string]any{"items": []any{message}}}}
+			client := newRestorationCLI(t, fixture, "cli_fixture_restore")
 			_, transport := newTransportFixture(t, client)
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
@@ -115,8 +107,8 @@ func TestOfficialMessageRestoreVerifiesSDKBotCard(t *testing.T) {
 }
 
 func TestOfficialMessageRestoreMarkerAndAppRotation(t *testing.T) {
-	fixture := &restorationSDKFixture{response: map[string]any{"code": 0, "data": map[string]any{"items": []any{restorationSDKMessage()}}}}
-	client := newRestorationSDK(t, fixture, "cli_fixture_restore")
+	fixture := &restorationCLIFixture{response: map[string]any{"code": 0, "data": map[string]any{"items": []any{restorationCLIMessage()}}}}
+	client := newRestorationCLI(t, fixture, "cli_fixture_restore")
 	root, transport := newTransportFixture(t, client)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -128,9 +120,9 @@ func TestOfficialMessageRestoreMarkerAndAppRotation(t *testing.T) {
 		transport = NewServiceTransport(root, client)
 	}
 	if fixture.calls.Load() != 1 {
-		t.Fatal("completed marker did not prevent repeated SDK reads")
+		t.Fatal("completed marker did not prevent repeated CLI reads")
 	}
-	rotated := NewServiceTransport(root, newRestorationSDK(t, fixture, "cli_rotated"))
+	rotated := NewServiceTransport(root, newRestorationCLI(t, fixture, "cli_rotated"))
 	if err := rotated.RestoreCardBinding(ctx, target, "om_legacy"); err == nil || fixture.calls.Load() != 2 {
 		t.Fatalf("app rotation reused stale ownership: %v", err)
 	}
@@ -152,9 +144,9 @@ func TestServiceTransportRestoreRejectsNilVerifierEvenWithMarker(t *testing.T) {
 	}
 }
 
-func TestServiceTransportRestoreRechecksTargetAfterSDK(t *testing.T) {
-	fixture := &restorationSDKFixture{response: map[string]any{"code": 0, "data": map[string]any{"items": []any{restorationSDKMessage()}}}}
-	root, transport := newTransportFixture(t, newRestorationSDK(t, fixture, "cli_fixture_restore"))
+func TestServiceTransportRestoreRechecksTargetAfterCLI(t *testing.T) {
+	fixture := &restorationCLIFixture{response: map[string]any{"code": 0, "data": map[string]any{"items": []any{restorationCLIMessage()}}}}
+	root, transport := newTransportFixture(t, newRestorationCLI(t, fixture, "cli_fixture_restore"))
 	fixture.onGet = func() {
 		if err := NewClientConfigStore(root).Save(DefaultClientConfig()); err != nil {
 			t.Fatal(err)

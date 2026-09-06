@@ -20,8 +20,10 @@ struct UsagePopoverView: View {
     @State private var pricingFormError: String?
     @State private var feishuAppID = ""
     @State private var feishuAppSecret = ""
-    @State private var showExistingFeishuApp = false
+    @State private var showExistingFeishuApp = true
     @State private var pendingFeishuWriteFeature: FeishuSettingsOverview.Feature?
+    @State private var confirmToolchainInstall = false
+    @State private var confirmFeishuLogout = false
 
     var body: some View {
         Group {
@@ -298,7 +300,7 @@ struct UsagePopoverView: View {
                             )
                         }
                         .frame(height: 20, alignment: .center)
-                        if let route = task.route {
+                        if let route = task.route, task.taskRuntime == nil || task.taskRuntime?.routeFreshness == "current" {
                             taskRouteSummaryLine(route)
                             taskAbilitySummaryLine(route)
                         } else {
@@ -308,6 +310,9 @@ struct UsagePopoverView: View {
                                 .lineLimit(1)
                                 .padding(.leading, 16)
                         }
+                        Text(task.taskRuntime?.reportLabel ?? "暂无可用的 Agent 上报")
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .lineLimit(1).padding(.leading, 16)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
@@ -523,6 +528,7 @@ struct UsagePopoverView: View {
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                    taskRuntimeDetails(context.task)
                 }
                 .padding(10)
                 .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
@@ -535,7 +541,9 @@ struct UsagePopoverView: View {
                             .foregroundStyle(.primary)
                     }
                     .font(.caption.weight(.semibold))
-                    if let route = context.task.route {
+                    Text(context.task.taskRuntime?.routeLabel ?? (context.task.route == nil ? "尚无 KSF 已验证来源" : "KSF 投影 · 时效未知"))
+                        .font(.caption2).foregroundStyle(.secondary)
+                    if let route = context.task.route, context.task.taskRuntime == nil || context.task.taskRuntime?.routeFreshness == "current" {
                         taskRouteDetails(route)
                     } else {
                         Text("该任务尚未绑定 KSF 路由。")
@@ -563,6 +571,33 @@ struct UsagePopoverView: View {
                 }
             } else {
                 emptyState("任务详情暂不可用", detail: "任务可能已被归档、移除，或当前项目数据尚未完成同步。")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func taskRuntimeDetails(_ task: ProjectTaskItem) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(task.taskRuntime?.reportLabel ?? "暂无可用的 Agent 上报").font(.caption2).foregroundStyle(.secondary)
+            if task.taskRuntime == nil {
+                Text("尚未上报或暂无法读取；实际状态以 Desktop 观测为准。")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+            if let runtime = task.taskRuntime {
+                Text("Agent 自述：\(runtime.reportedStatusLabel)（不替代实际任务状态）")
+                    .font(.caption2).foregroundStyle(.secondary)
+                if let reportedAt = runtime.reportedAt {
+                    Text("上报于 \(reportedAt.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
+                if let progress = runtime.progress {
+                    if let summary = progress.summary, !summary.isEmpty {
+                        Text("Agent 进度自述：\(summary)").font(.caption2).foregroundStyle(.secondary).lineLimit(3)
+                    }
+                    if let percent = progress.percent, (0...100).contains(percent) {
+                        Text("Agent 自报进度 \(percent)%").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
             }
         }
     }
@@ -1659,11 +1694,45 @@ struct UsagePopoverView: View {
 
             feishuSetupContent
 
+            toolchainSettings
+
             if let feedback = viewModel.feishuFeedback {
                 compactStatus(feedback, color: .orange, symbol: "exclamationmark.triangle.fill")
             }
         }
-        .task { await viewModel.refreshFeishuSettingsOverview() }
+        .task {
+            await viewModel.refreshFeishuSettingsOverview()
+            await viewModel.refreshFeishuAuthStatus()
+            await viewModel.refreshToolchainStatus()
+        }
+    }
+
+    private var toolchainSettings: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("官方工具链与 Skills").font(.caption.weight(.semibold))
+            Text(viewModel.toolchainStatus?.summary ?? "尚未检查官方工具链。")
+                .font(.caption2).foregroundStyle(.secondary)
+            HStack {
+                Button("重新检查") { Task { await viewModel.refreshToolchainStatus() } }
+                if viewModel.toolchainStatus?.isHealthy != true {
+                    Button("安装官方工具链") { confirmToolchainInstall = true }
+                }
+                if viewModel.toolchainActionInProgress { ProgressView().controlSize(.small) }
+            }
+            .controlSize(.small)
+            .disabled(viewModel.toolchainActionInProgress)
+            if let feedback = viewModel.toolchainFeedback {
+                Text(feedback).font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+        .confirmationDialog("安装官方工具链？", isPresented: $confirmToolchainInstall, titleVisibility: .visible) {
+            Button("确认安装") { viewModel.installToolchain() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("安装此版本附带的官方 CLI、启动器与 Skills；不覆盖自行修改的文件，也不会自动授权或发送消息。")
+        }
     }
 
     @ViewBuilder
@@ -1672,10 +1741,8 @@ struct UsagePopoverView: View {
         case "not_started":
             VStack(alignment: .leading, spacing: 8) {
                 Text("选择接入方式").font(.caption.weight(.semibold))
-                Text("整个过程都在 KSFAssistant 内发起；需要管理员确认时会直接打开飞书官方页面。")
+                Text("此版本暂不支持自动创建专用飞书应用，请在飞书后台创建后接入已有应用。")
                     .font(.caption2).foregroundStyle(.secondary)
-                Button("创建专用飞书应用") { viewModel.beginFeishuSetup(mode: "new") }
-                    .buttonStyle(.borderedProminent)
                 Button("接入已有应用") { showExistingFeishuApp.toggle() }
                     .controlSize(.small)
                 if showExistingFeishuApp {
@@ -1766,6 +1833,7 @@ struct UsagePopoverView: View {
 
             Divider()
             Text("权限").font(.caption.weight(.semibold))
+            feishuAuthorizationControls
             let permissions = viewModel.feishuSettingsOverview?.permissions
             feishuStatusRow("应用权限", state: permissionStateText(permissions?.application), healthy: permissions?.application == "verified")
             feishuStatusRow("当前用户授权", state: permissionStateText(permissions?.user), healthy: permissions?.user == "verified")
@@ -1774,7 +1842,7 @@ struct UsagePopoverView: View {
                     .font(.caption2).foregroundStyle(.orange)
                 Button("重新检查") { Task { await viewModel.refreshFeishuSettingsOverview() } }
                     .controlSize(.small)
-            } else {
+            } else if permissions?.application == "verified" && permissions?.user == "verified" {
                 Text("基础单聊、卡片回调和 Codex 任务控制已授权。")
                     .font(.caption2).foregroundStyle(.secondary)
             }
@@ -1834,6 +1902,52 @@ struct UsagePopoverView: View {
             }
             Button("保持演练", role: .cancel) { pendingFeishuWriteFeature = nil }
         } message: { Text("这会允许“\(pendingFeishuWriteFeature?.title ?? "该功能")”处理真实写入操作。") }
+    }
+
+    private var feishuAuthorizationControls: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            let auth = viewModel.feishuAuthStatus
+            feishuStatusRow("CLI 用户授权", state: auth?.statusText ?? "尚未验证", healthy: auth?.isAuthorized == true)
+            Text("身份：\(auth?.identity == "user" ? "用户" : "未验证") · 配置：default\(auth?.profileValid == true && auth?.profile == "default" ? "（已验证）" : "（待验证）")")
+                .font(.caption2).foregroundStyle(.secondary)
+            Text("用户授权不代表所有功能权限齐备；补充授权仅申请当前功能所需范围。")
+                .font(.caption2).foregroundStyle(.secondary)
+            if let auth, auth.grantedScopeCount > 0 {
+                Text("已授予 \(auth.grantedScopeCount) 项用户权限").font(.caption2).foregroundStyle(.secondary)
+            }
+            if let missing = auth?.missingCapabilities, !missing.isEmpty {
+                Text("待处理：\(missing.joined(separator: "、"))").font(.caption2).foregroundStyle(.orange)
+            }
+            if auth?.isPending == true {
+                if let dataURL = auth?.qrDataURL, let image = feishuQRCode(dataURL) {
+                    Image(nsImage: image).interpolation(.none).resizable().frame(width: 160, height: 160)
+                        .accessibilityLabel("飞书用户授权二维码")
+                }
+                if let code = auth?.userCode { Text("验证码 \(code)").font(.caption2) }
+                HStack {
+                    if auth?.verificationUrl != nil {
+                        Button("在飞书中授权") { viewModel.openFeishuAuthURL() }
+                    }
+                    Button("我已授权，检查") { viewModel.finishFeishuAuth() }
+                }
+                .controlSize(.small)
+                .disabled(viewModel.feishuActionInProgress)
+            }
+            HStack {
+                Button("验证授权") { Task { await viewModel.refreshFeishuAuthStatus() } }
+                if auth?.isPending != true {
+                    Button(auth?.isAuthorized == true ? "补充授权" : "重新授权") { viewModel.startFeishuAuth() }
+                }
+                Button("退出授权", role: .destructive) { confirmFeishuLogout = true }
+            }
+            .controlSize(.small)
+            .disabled(viewModel.feishuActionInProgress)
+            if viewModel.feishuActionInProgress { ProgressView().controlSize(.small) }
+        }
+        .confirmationDialog("退出当前飞书用户授权？", isPresented: $confirmFeishuLogout, titleVisibility: .visible) {
+            Button("退出授权", role: .destructive) { viewModel.logoutFeishuAuth() }
+            Button("取消", role: .cancel) {}
+        } message: { Text("终止等待中的授权，并退出 default 配置的用户身份；依赖此授权的工具将无法继续使用。保留应用配置。") }
     }
 
     private func feishuFeatureControl(_ feature: FeishuSettingsOverview.Feature) -> some View {

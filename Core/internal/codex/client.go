@@ -152,7 +152,7 @@ func (client *Client) Start(ctx context.Context) error {
 	go io.Copy(io.Discard, stderr)
 	go client.readLoop(stdout, command)
 	client.stateMu.Unlock()
-	_, initErr := client.callStarted(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "ksf_assistant_core", "title": "KSFAssistant Core", "version": "0.10.0-preview.1"}})
+	_, initErr := client.callStarted(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "ksf_assistant_core", "title": "KSFAssistant Core", "version": "0.11.0-preview.3"}})
 	if initErr == nil {
 		initErr = client.notify("initialized", map[string]any{})
 	}

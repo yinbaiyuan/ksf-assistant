@@ -33,10 +33,26 @@ struct CoreServiceCreatedTask: Decodable {
 }
 
 struct CoreServiceFeishuAuth: Decodable {
+    let schemaVersion: Int
     let status: String
-    let flow: String
+    let identity: String
+    let profile: String
+    let identityValid: Bool
+    let profileValid: Bool
+    let grantedScopeCount: Int
+    let missingCapabilities: [String]?
+    let verificationUrl: String?
     let userCode: String?
-    let qrDataURL: String
+    let qrDataURL: String?
+
+    var isAuthorized: Bool { schemaVersion == 1 && status == "authorized" && identity == "user" && profile == "default" && identityValid && profileValid }
+    var isPending: Bool { schemaVersion == 1 && status == "pending" }
+    var statusText: String {
+        guard schemaVersion == 1 else { return "状态不兼容" }
+        if isAuthorized { return "已授权" }
+        if isPending { return "等待飞书确认" }
+        return status == "failed" ? "需要重新授权" : "未验证用户授权"
+    }
 }
 
 struct FeishuSetupState: Codable, Equatable {
@@ -143,12 +159,13 @@ enum CoreServicePipeIO {
 
 actor CoreServiceProcessClient {
     private var process: Process?
-    private var input: FileHandle?
-    private var output: FileHandle?
-    private var readBuffer = Data()
-    private var sequence = 0
+    private var connection: JSONRPCPipeConnection?
+    private var initialization: Task<Void, Error>?
+    private var stopping = false
 
-    func start(ksfRoot: String) throws {
+    func start(ksfRoot: String) async throws {
+        if let initialization { return try await initialization.value }
+        guard !stopping else { throw CoreServiceError.processStopped }
         guard process == nil else { return }
         guard let executable = Self.locateExecutable() else {
             throw CoreServiceError.executableMissing
@@ -176,25 +193,31 @@ actor CoreServiceProcessClient {
         }
         try process.run()
         self.process = process
-        input = inputPipe.fileHandleForWriting
-        output = outputPipe.fileHandleForReading
-        do {
-            _ = try requestData(method: "initialize", params: [
+        let connection = JSONRPCPipeConnection(input: inputPipe.fileHandleForWriting, output: outputPipe.fileHandleForReading)
+        self.connection = connection
+        process.terminationHandler = { _ in connection.close() }
+        let initialization = Task<Void, Error> {
+            _ = try await requestData(method: "initialize", params: [
                 "clientInfo": [
                     "name": "ksf_assistant_macos",
                     "title": "KSFAssistant for macOS",
-                    "version": "0.10.0-preview.1",
+                    "version": "0.11.0-preview.1",
                 ],
                 "integrations": ["ksfRoot": ksfRoot],
             ])
+        }
+        self.initialization = initialization
+        defer { self.initialization = nil }
+        do {
+            try await initialization.value
         } catch {
             stopProcess()
             throw error
         }
     }
 
-    func updateIntegrationContext(ksfRoot: String) throws {
-        _ = try requestData(method: "integration/context/update", params: [
+    func updateIntegrationContext(ksfRoot: String) async throws {
+        _ = try await requestData(method: "integration/context/update", params: [
             "ksfRoot": ksfRoot,
         ])
     }
@@ -203,8 +226,8 @@ actor CoreServiceProcessClient {
         ksfRoot: String,
         pinnedProjectIDs: Set<String>,
         pricingSelection: PricingSelection
-    ) throws -> CoreServiceDashboard {
-        let data = try requestData(method: "dashboard/read", params: [
+    ) async throws -> CoreServiceDashboard {
+        let data = try await requestData(method: "dashboard/read", params: [
             "ksfRoot": ksfRoot,
             "pinnedProjectIds": Array(pinnedProjectIDs).sorted(),
             "pricingSelection": Self.pricingSelectionObject(pricingSelection),
@@ -213,38 +236,38 @@ actor CoreServiceProcessClient {
         return dto.value
     }
 
-    func tokenHistory(dayCount: Int = 30) throws -> [DailyUsageBucket] {
-        try decode(method: "token/history/read", params: ["dayCount": dayCount])
+    func tokenHistory(dayCount: Int = 30) async throws -> [DailyUsageBucket] {
+        try await decode(method: "token/history/read", params: ["dayCount": dayCount])
     }
 
     func tokenHistoryComparison(
         dayCount: Int = 30,
         pricingSelection: PricingSelection,
         repriceOnly: Bool = false
-    ) throws -> TokenHistoryComparison {
-        try decode(method: "token/history/compare", params: [
+    ) async throws -> TokenHistoryComparison {
+        try await decode(method: "token/history/compare", params: [
             "dayCount": dayCount,
             "pricingSelection": Self.pricingSelectionObject(pricingSelection),
             "repriceOnly": repriceOnly,
         ])
     }
 
-    func pricingCatalog(customPlans: [PricingPlan]) throws -> PricingCatalog {
-        try decode(method: "pricing/catalog/read", params: [
+    func pricingCatalog(customPlans: [PricingPlan]) async throws -> PricingCatalog {
+        try await decode(method: "pricing/catalog/read", params: [
             "customPlans": customPlans.map(Self.pricingPlanObject),
         ])
     }
 
-    func createTask(projectID: String, ksfRoot: String, purpose: String) throws -> CoreServiceCreatedTask {
-        try decode(method: "task/create", params: [
+    func createTask(projectID: String, ksfRoot: String, purpose: String) async throws -> CoreServiceCreatedTask {
+        try await decode(method: "task/create", params: [
             "projectId": projectID,
             "ksfRoot": ksfRoot,
             "purpose": purpose,
         ])
     }
 
-    func submitTask(threadID: String, cwd: String, prompt: String) throws {
-        _ = try requestData(method: "task/submit", params: [
+    func submitTask(threadID: String, cwd: String, prompt: String) async throws {
+        _ = try await requestData(method: "task/submit", params: [
             "threadId": threadID,
             "hostId": "local",
             "cwd": cwd,
@@ -257,8 +280,8 @@ actor CoreServiceProcessClient {
         title: String,
         projectName: String,
         targetAlias: String
-    ) throws -> FeishuTaskLinkSnapshot {
-        try decode(method: "feishu/taskLink/create", params: [
+    ) async throws -> FeishuTaskLinkSnapshot {
+        try await decode(method: "feishu/taskLink/create", params: [
             "threadId": threadID,
             "title": title,
             "projectName": projectName,
@@ -266,85 +289,60 @@ actor CoreServiceProcessClient {
         ])
     }
 
-    func releaseTaskLink(threadID: String) throws -> FeishuTaskLinkSnapshot {
-        try decode(method: "feishu/taskLink/release", params: [
+    func releaseTaskLink(threadID: String) async throws -> FeishuTaskLinkSnapshot {
+        try await decode(method: "feishu/taskLink/release", params: [
             "threadId": threadID,
         ])
     }
 
-    func interruptTaskLink(threadID: String) throws -> FeishuTaskLinkSnapshot {
-        try decode(method: "feishu/taskLink/interrupt", params: [
+    func interruptTaskLink(threadID: String) async throws -> FeishuTaskLinkSnapshot {
+        try await decode(method: "feishu/taskLink/interrupt", params: [
             "threadId": threadID,
         ])
     }
 
-    func sendFeishuTest(targetAlias: String) throws {
-        _ = try requestData(method: "feishu/test", params: [
+    func sendFeishuTest(targetAlias: String) async throws {
+        _ = try await requestData(method: "feishu/test", params: [
             "targetAlias": targetAlias,
         ])
     }
 
-    func stop() {
-        let activeProcess = process
-        let watchdog = DispatchWorkItem {
-            if activeProcess?.isRunning == true {
-                activeProcess?.terminate()
-            }
-        }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 8, execute: watchdog)
-        defer { watchdog.cancel() }
-        if process != nil {
-            _ = try? requestData(method: "shutdown", params: [:])
+    func stop() async {
+        guard !stopping else { return }
+        stopping = true
+        initialization?.cancel()
+        if let connection {
+            _ = try? await connection.request(method: "shutdown", params: [:], timeout: 8)
         }
         stopProcess()
     }
 
-    private func decode<T: Decodable>(method: String, params: [String: Any]) throws -> T {
-        try Self.decoder().decode(T.self, from: requestData(method: method, params: params))
+    func pollUserApproval(interactive: Bool) async throws -> UserApprovalPoll {
+        let data = try await requestData(method: "userApproval/poll", params: ["interactive": interactive], timeout: 2)
+        return try UserApprovalPoll.decode(data)
     }
 
-    private func requestData(method: String, params: [String: Any]) throws -> Data {
-        guard let process, process.isRunning, let input, let output else {
+    func decideUserApproval(id: String, approve: Bool) async throws -> Bool {
+        let data = try await requestData(method: "userApproval/decide", params: ["id": id, "approve": approve], timeout: 2)
+        return try UserApprovalDecision.decode(data).accepted
+    }
+
+    private func decode<T: Decodable>(method: String, params: [String: Any]) async throws -> T {
+        let data = try await requestData(method: method, params: params)
+        return try Self.decoder().decode(T.self, from: data)
+    }
+
+    private func requestData(method: String, params: [String: Any], timeout: TimeInterval? = nil) async throws -> Data {
+        guard let process, process.isRunning, let connection, !stopping else {
             throw CoreServiceError.processStopped
         }
-        sequence += 1
-        let id = sequence
-        let payload = try JSONSerialization.data(withJSONObject: [
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params,
-        ])
-        input.write(payload + Data([0x0a]))
-
-        while true {
-            if let newline = readBuffer.firstIndex(of: 0x0a) {
-                let line = readBuffer[..<newline]
-                readBuffer.removeSubrange(...newline)
-                guard let object = try JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
-                      (object["id"] as? NSNumber)?.intValue == id else {
-                    continue
-                }
-                if let error = object["error"] as? [String: Any] {
-                    throw CoreServiceError.remote(error["message"] as? String ?? "核心服务调用失败。")
-                }
-                guard let result = object["result"] else {
-                    throw CoreServiceError.invalidResponse
-                }
-                return try JSONSerialization.data(withJSONObject: result)
-            }
-            let data = try CoreServicePipeIO.readChunk(from: output)
-            guard !data.isEmpty else {
-                throw CoreServiceError.processStopped
-            }
-            readBuffer.append(data)
-        }
+        let duration = timeout ?? (["feishu/setup/activate", "feishu/setup/verify", "feishu/setup/continue"].contains(method) ? 125 : 45)
+        return try await connection.request(method: method, params: params, timeout: duration)
     }
 
     private func stopProcess() {
-        input = nil
-        output = nil
-        readBuffer.removeAll(keepingCapacity: false)
+        connection?.close()
+        connection = nil
         if let process, process.isRunning {
             process.terminate()
         }
@@ -378,69 +376,85 @@ actor CoreServiceProcessClient {
         return candidates.first { fileManager.isExecutableFile(atPath: $0.path) }
     }
 
-    func setFeishuProfile(_ profile: String) throws {
-        _ = try requestData(method: "feishu/profile/set", params: ["profile": profile])
+    func setFeishuProfile(_ profile: String) async throws {
+        _ = try await requestData(method: "feishu/profile/set", params: ["profile": profile])
     }
 
-    func controlFeishuService(_ action: String) throws {
-        _ = try requestData(method: "feishu/service/control", params: ["action": action])
+    func controlFeishuService(_ action: String) async throws {
+        _ = try await requestData(method: "feishu/service/control", params: ["action": action])
     }
 
-    func configureFeishu(appID: String, appSecret: String) throws {
-        _ = try requestData(method: "feishu/auth/configure", params: [
+    func configureFeishu(appID: String, appSecret: String) async throws {
+        _ = try await requestData(method: "feishu/auth/configure", params: [
             "appId": appID,
             "appSecret": appSecret,
         ])
     }
 
-    func startFeishuAuth() throws -> CoreServiceFeishuAuth {
-        try decode(method: "feishu/auth/start", params: [:])
+    func startFeishuAuth() async throws -> CoreServiceFeishuAuth {
+        try await decode(method: "feishu/auth/start", params: ["scope": "required"])
     }
 
-    func finishFeishuAuth() throws {
-        _ = try requestData(method: "feishu/auth/finish", params: [:])
+    func finishFeishuAuth() async throws -> CoreServiceFeishuAuth {
+        try await decode(method: "feishu/auth/finish", params: [:])
     }
 
-    func feishuPermissions() throws -> CoreServiceFeishuPermissions {
-        try decode(method: "feishu/permissions/read", params: [:])
+    func feishuAuthStatus() async throws -> CoreServiceFeishuAuth {
+        try await decode(method: "feishu/auth/status", params: [:])
     }
 
-    func feishuSettingsOverview() throws -> FeishuSettingsOverview {
-        try decode(method: "feishu/settings/overview/read", params: [:])
+    func logoutFeishuAuth() async throws -> CoreServiceFeishuAuth {
+        try await decode(method: "feishu/auth/logout", params: [:])
     }
 
-    func updateFeishuFeature(_ feature: String, mode: String, confirmRealWrite: Bool = false) throws -> FeishuSettingsOverview {
-        try decode(method: "feishu/features/update", params: ["feature": feature, "mode": mode, "confirmRealWrite": confirmRealWrite])
+    func feishuPermissions() async throws -> CoreServiceFeishuPermissions {
+        try await decode(method: "feishu/permissions/read", params: [:])
     }
 
-    func feishuSetup() throws -> FeishuSetupState {
-        try decode(method: "feishu/setup/read", params: [:])
+    func toolchainStatus() async throws -> ToolchainStatus {
+        try await decode(method: "toolchain/status", params: [:])
     }
 
-    func beginFeishuSetup(mode: String, appID: String = "", appSecret: String = "") throws -> CoreServiceFeishuSetupResult {
-        try decode(method: "feishu/setup/begin", params: [
+    func installToolchain() async throws -> ToolchainStatus {
+        try await decode(method: "toolchain/install", params: ["confirm": true])
+    }
+
+    func feishuSettingsOverview() async throws -> FeishuSettingsOverview {
+        try await decode(method: "feishu/settings/overview/read", params: [:])
+    }
+
+    func updateFeishuFeature(_ feature: String, mode: String, confirmRealWrite: Bool = false) async throws -> FeishuSettingsOverview {
+        try await decode(method: "feishu/features/update", params: ["feature": feature, "mode": mode, "confirmRealWrite": confirmRealWrite])
+    }
+
+    func feishuSetup() async throws -> FeishuSetupState {
+        try await decode(method: "feishu/setup/read", params: [:])
+    }
+
+    func beginFeishuSetup(mode: String, appID: String = "", appSecret: String = "") async throws -> CoreServiceFeishuSetupResult {
+        try await decode(method: "feishu/setup/begin", params: [
             "mode": mode, "appId": appID, "appSecret": appSecret,
         ])
     }
 
-    func continueFeishuSetup() throws -> CoreServiceFeishuSetupResult {
-        try decode(method: "feishu/setup/continue", params: [:])
+    func continueFeishuSetup() async throws -> CoreServiceFeishuSetupResult {
+        try await decode(method: "feishu/setup/continue", params: [:])
     }
 
-    func verifyFeishuSetup() throws -> CoreServiceFeishuSetupResult {
-        try decode(method: "feishu/setup/verify", params: [:])
+    func verifyFeishuSetup() async throws -> CoreServiceFeishuSetupResult {
+        try await decode(method: "feishu/setup/verify", params: [:])
     }
 
-    func activateFeishuSetup(targetAlias: String) throws -> CoreServiceFeishuSetupResult {
-        try decode(method: "feishu/setup/activate", params: ["targetAlias": targetAlias])
+    func activateFeishuSetup(targetAlias: String) async throws -> CoreServiceFeishuSetupResult {
+        try await decode(method: "feishu/setup/activate", params: ["targetAlias": targetAlias])
     }
 
-    func cancelFeishuSetup() throws -> FeishuSetupState {
-        try decode(method: "feishu/setup/cancel", params: [:])
+    func cancelFeishuSetup() async throws -> FeishuSetupState {
+        try await decode(method: "feishu/setup/cancel", params: [:])
     }
 
-    func restartFeishuSupervisor() throws {
-        _ = try requestData(method: "feishu/supervisor/restart", params: [:])
+    func restartFeishuSupervisor() async throws {
+        _ = try await requestData(method: "feishu/supervisor/restart", params: [:])
     }
 
     private static func locateFeishuRuntime() -> (bridge: URL, larkCLI: URL)? {
@@ -652,6 +666,7 @@ private struct ProjectTaskDTO: Decodable {
     let classification: String
     let waitingReason: String?
     let route: KSFRouteSummary?
+    let taskRuntime: ProjectTaskRuntime?
     let createdAt: Date
     let projectId: String
 
@@ -663,6 +678,7 @@ private struct ProjectTaskDTO: Decodable {
             classification: classificationValue,
             waitingReason: waitingReasonValue,
             route: route,
+            taskRuntime: taskRuntime,
             createdAt: createdAt,
             projectID: projectId
         )

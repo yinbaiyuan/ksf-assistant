@@ -21,7 +21,7 @@ import (
 	"ksfassistant/core/internal/privateipc"
 )
 
-const version = "0.10.0-preview.1"
+const version = "0.11.0-preview.3"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -68,19 +68,37 @@ func run(arguments []string) error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	var credentials feishu.OfficialCredentials
-	if settings.Profile == feishu.ProfilePrimary || settings.Outbound.Enabled {
-		credentials, err = feishu.LoadOfficialCredentials()
+	approvalGate := &feishu.UserApprovalGate{}
+	executor := feishu.CapabilityExecutor{Binary: strings.TrimSpace(os.Getenv("LARK_CLI_BIN")), Profile: strings.TrimSpace(os.Getenv("LARK_CLI_PROFILE")), DataRoot: dataRoot, WorkingDirectory: dataRoot, UserApproval: approvalGate}
+	if executor.Profile == "" {
+		executor.Profile = "default"
 	}
+	defer feishu.CancelUserAuthFlow(dataRoot)
 	var messageClient *feishu.OfficialMessageClient
-	if err == nil && (settings.Profile == feishu.ProfilePrimary || settings.Outbound.Enabled) {
-		messageClient, err = feishu.NewOfficialMessageClient(credentials.AppID, credentials.AppSecret)
+	if settings.Profile == feishu.ProfilePrimary || settings.Outbound.Enabled {
+		if probe := feishu.ProbeLarkCLI(ctx, executor.Binary); probe.State != "ready" {
+			err = errors.New("fixed_lark_cli_unavailable")
+		} else {
+			var identity map[string]any
+			identity, err = executor.RunAuthJSON(ctx, []string{"auth", "status", "--json"}, nil, 5*time.Second)
+			if err == nil {
+				identities, _ := identity["identities"].(map[string]any)
+				bot, _ := identities["bot"].(map[string]any)
+				appID, _ := identity["appId"].(string)
+				if bot["available"] != true || identity["brand"] != "feishu" {
+					err = errors.New("official_cli_bot_identity_unavailable")
+				} else {
+					messageClient, err = feishu.NewOfficialMessageClient(appID, executor)
+				}
+			}
+		}
 	}
-	executor := feishu.CapabilityExecutor{Binary: strings.TrimSpace(os.Getenv("LARK_CLI_BIN")), Profile: strings.TrimSpace(os.Getenv("LARK_CLI_PROFILE")), DataRoot: dataRoot, WorkingDirectory: dataRoot}
 	serviceExecutor := feishu.UnifiedCapabilityExecutor{LongTail: executor, DataRoot: dataRoot}
 	capabilityService := feishu.NewCapabilityService(dataRoot, serviceExecutor, nil)
 	rpcServer := newBridgeRPCServer(dataRoot, settings, capabilityService)
+	rpcServer.degrade(err)
 	peer := privateipc.NewPeer(os.Stdin, os.Stdout, feishucli.NewUploadHandler(rpcServer, feishuprotocol.ClientExecute))
+	approvalGate.SetCaller(peer.Call)
 	rpcServer.setRuntime(messageClient)
 	defer peer.Close()
 	parentClosed := make(chan error, 1)
@@ -176,7 +194,7 @@ func run(arguments []string) error {
 				rpcServer.degrade(recoverErr)
 			}
 			go runInboundRecovery(ctx, processor)
-			inbound, err = feishu.NewOfficialInbound(credentials.AppID, credentials.AppSecret,
+			inbound, err = feishu.NewOfficialInbound(executor, messageClient,
 				func(callCtx context.Context, eventKey string, payload []byte) error {
 					if eventKey == feishu.MailMessageReceivedEvent && !rpcServer.mailEventsEnabled() {
 						return nil

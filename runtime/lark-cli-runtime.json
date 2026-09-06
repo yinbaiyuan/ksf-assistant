@@ -1,26 +1,915 @@
 {
-  "version": "1.0.92",
-  "baseUrl": "https://github.com/larksuite/cli/releases/download/v1.0.92",
+  "version": "1.0.93",
+  "license": "MIT",
+  "sourceTag": "v1.0.93",
+  "automaticUpdate": false,
+  "baseUrl": "https://github.com/larksuite/cli/releases/download/v1.0.93",
   "artifacts": {
     "darwin-x64": {
-      "archive": "lark-cli-1.0.92-darwin-amd64.tar.gz",
-      "sha256": "421b36f95966028fb047231cb6351c4224a0fdcb076d2bc434d4aed1bb6d1891",
-      "executable": "lark-cli"
+      "archive": "lark-cli-1.0.93-darwin-amd64.tar.gz",
+      "sha256": "bf37861ce5b5fb10c093ffd8b7305f2a80349280cf32563267c29f81cb864e53",
+      "executable": "lark-cli",
+      "executableSha256": "8264bb7982df6c4f89ddea5635f7986352d371fb09a33fad5bf3352caa24f9ba",
+      "goVersion": "go1.26.5",
+      "embeddedGoModules": [
+        {
+          "name": "github.com/atotto/clipboard",
+          "version": "v0.1.4",
+          "sum": "h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4="
+        },
+        {
+          "name": "github.com/aymanbagabas/go-osc52/v2",
+          "version": "v2.0.1",
+          "sum": "h1:HwpRHbFMcZLEVr42D4p7XBqjyuxQH5SMiErDT4WkJ2k="
+        },
+        {
+          "name": "github.com/bmatcuk/doublestar/v4",
+          "version": "v4.10.0",
+          "sum": "h1:zU9WiOla1YA122oLM6i4EXvGW62DvKZVxIe6TYWexEs="
+        },
+        {
+          "name": "github.com/catppuccin/go",
+          "version": "v0.3.0",
+          "sum": "h1:d+0/YicIq+hSTo5oPuRi5kOpqkVA5tAsU6dNhvRu+aY="
+        },
+        {
+          "name": "github.com/charmbracelet/bubbles",
+          "version": "v0.21.1-0.20250623103423-23b8fd6302d7",
+          "sum": "h1:JFgG/xnwFfbezlUnFMJy0nusZvytYysV4SCS2cYbvws="
+        },
+        {
+          "name": "github.com/charmbracelet/bubbletea",
+          "version": "v1.3.6",
+          "sum": "h1:VkHIxPJQeDt0aFJIsVxw8BQdh/F/L2KKZGsK6et5taU="
+        },
+        {
+          "name": "github.com/charmbracelet/colorprofile",
+          "version": "v0.2.3-0.20250311203215-f60798e515dc",
+          "sum": "h1:4pZI35227imm7yK2bGPcfpFEmuY1gc2YSTShr4iJBfs="
+        },
+        {
+          "name": "github.com/charmbracelet/huh",
+          "version": "v1.0.0",
+          "sum": "h1:wOnedH8G4qzJbmhftTqrpppyqHakl/zbbNdXIWJyIxw="
+        },
+        {
+          "name": "github.com/charmbracelet/lipgloss",
+          "version": "v1.1.0",
+          "sum": "h1:vYXsiLHVkK7fp74RkV7b2kq9+zDLoEU4MZoFqR/noCY="
+        },
+        {
+          "name": "github.com/charmbracelet/x/ansi",
+          "version": "v0.9.3",
+          "sum": "h1:BXt5DHS/MKF+LjuK4huWrC6NCvHtexww7dMayh6GXd0="
+        },
+        {
+          "name": "github.com/charmbracelet/x/cellbuf",
+          "version": "v0.0.13",
+          "sum": "h1:/KBBKHuVRbq1lYx5BzEHBAFBP8VcQzJejZ/IA3iR28k="
+        },
+        {
+          "name": "github.com/charmbracelet/x/exp/strings",
+          "version": "v0.0.0-20240722160745-212f7b056ed0",
+          "sum": "h1:qko3AQ4gK1MTS/de7F5hPGx6/k1u0w4TeYmBFwzYVP4="
+        },
+        {
+          "name": "github.com/charmbracelet/x/term",
+          "version": "v0.2.1",
+          "sum": "h1:AQeHeLZ1OqSXhrAWpYUtZyX1T3zVxfpZuEQMIQaGIAQ="
+        },
+        {
+          "name": "github.com/dustin/go-humanize",
+          "version": "v1.0.1",
+          "sum": "h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY="
+        },
+        {
+          "name": "github.com/gofrs/flock",
+          "version": "v0.8.1",
+          "sum": "h1:+gYjHKf32LDeiEEFhQaotPbLuUXjY5ZqxKgXy7n59aw="
+        },
+        {
+          "name": "github.com/gogo/protobuf",
+          "version": "v1.3.2",
+          "sum": "h1:Ov1cvc58UF3b5XjBnZv7+opcTcQFZebYjWzi34vdm4Q="
+        },
+        {
+          "name": "github.com/google/uuid",
+          "version": "v1.6.0",
+          "sum": "h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0="
+        },
+        {
+          "name": "github.com/gorilla/websocket",
+          "version": "v1.5.0",
+          "sum": "h1:PPwGk2jz7EePpoHN/+ClbZu8SPxiqlu12wZP/3sWmnc="
+        },
+        {
+          "name": "github.com/itchyny/gojq",
+          "version": "v0.12.17",
+          "sum": "h1:8av8eGduDb5+rvEdaOO+zQUjA04MS0m3Ps8HiD+fceg="
+        },
+        {
+          "name": "github.com/itchyny/timefmt-go",
+          "version": "v0.1.6",
+          "sum": "h1:ia3s54iciXDdzWzwaVKXZPbiXzxxnv1SPGFfM/myJ5Q="
+        },
+        {
+          "name": "github.com/larksuite/oapi-sdk-go/v3",
+          "version": "v3.7.2",
+          "sum": "h1:SCIcXHRmtpQbiaZgDTDi1NYNCzrusi7ePJBR9uKoduE="
+        },
+        {
+          "name": "github.com/lucasb-eyer/go-colorful",
+          "version": "v1.2.0",
+          "sum": "h1:1nnpGOrhyZZuNyfu1QjKiUICQ74+3FNCN69Aj6K7nkY="
+        },
+        {
+          "name": "github.com/mattn/go-isatty",
+          "version": "v0.0.20",
+          "sum": "h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY="
+        },
+        {
+          "name": "github.com/mattn/go-runewidth",
+          "version": "v0.0.16",
+          "sum": "h1:E5ScNMtiwvlvB5paMFdw9p4kSQzbXFikJ5SQO6TULQc="
+        },
+        {
+          "name": "github.com/mitchellh/hashstructure/v2",
+          "version": "v2.0.2",
+          "sum": "h1:vGKWl0YJqUNxE8d+h8f6NJLcCJrgbhC4NcD46KavDd4="
+        },
+        {
+          "name": "github.com/muesli/ansi",
+          "version": "v0.0.0-20230316100256-276c6243b2f6",
+          "sum": "h1:ZK8zHtRHOkbHy6Mmr5D264iyp3TiX5OmNcI5cIARiQI="
+        },
+        {
+          "name": "github.com/muesli/cancelreader",
+          "version": "v0.2.2",
+          "sum": "h1:3I4Kt4BQjOR54NavqnDogx/MIoWBFa0StPA8ELUXHmA="
+        },
+        {
+          "name": "github.com/muesli/termenv",
+          "version": "v0.16.0",
+          "sum": "h1:S5AlUN9dENB57rsbnkPyfdGuWIlkmzJjbFf0Tf5FWUc="
+        },
+        {
+          "name": "github.com/rivo/uniseg",
+          "version": "v0.4.7",
+          "sum": "h1:WUdvkW8uEhrYfLC4ZzdpI2ztxP1I582+49Oc5Mq64VQ="
+        },
+        {
+          "name": "github.com/sergi/go-diff",
+          "version": "v1.4.0",
+          "sum": "h1:n/SP9D5ad1fORl+llWyN+D6qoUETXNZARKjyY2/KVCw="
+        },
+        {
+          "name": "github.com/skip2/go-qrcode",
+          "version": "v0.0.0-20200617195104-da1b6568686e",
+          "sum": "h1:MRM5ITcdelLK2j1vwZ3Je0FKVCfqOLp5zO6trqMLYs0="
+        },
+        {
+          "name": "github.com/spf13/cobra",
+          "version": "v1.10.2",
+          "sum": "h1:DMTTonx5m65Ic0GOoRY2c16WCbHxOOw6xxezuLaBpcU="
+        },
+        {
+          "name": "github.com/spf13/pflag",
+          "version": "v1.0.9",
+          "sum": "h1:9exaQaMOCwffKiiiYk6/BndUBv+iRViNW+4lEMi0PvY="
+        },
+        {
+          "name": "github.com/xo/terminfo",
+          "version": "v0.0.0-20220910002029-abceb7e1c41e",
+          "sum": "h1:JVG44RsyaB9T2KIHavMF/ppJZNG9ZpyihvCd0w101no="
+        },
+        {
+          "name": "github.com/zalando/go-keyring",
+          "version": "v0.2.8",
+          "sum": "h1:6sD/Ucpl7jNq10rM2pgqTs0sZ9V3qMrqfIIy5YPccHs="
+        },
+        {
+          "name": "golang.org/x/image",
+          "version": "v0.30.0",
+          "sum": "h1:jD5RhkmVAnjqaCUXfbGBrn3lpxbknfN9w2UhHHU+5B4="
+        },
+        {
+          "name": "golang.org/x/net",
+          "version": "v0.33.0",
+          "sum": "h1:74SYHlV8BIgHIFC/LrYkOGIwL19eTYXQ5wc6TBuO36I="
+        },
+        {
+          "name": "golang.org/x/sync",
+          "version": "v0.16.0",
+          "sum": "h1:ycBJEhp9p4vXvUZNszeOq0kGTPghopOL8q0fq3vstxw="
+        },
+        {
+          "name": "golang.org/x/sys",
+          "version": "v0.33.0",
+          "sum": "h1:q3i8TbbEz+JRD9ywIRlyRAQbM0qF7hu24q3teo2hbuw="
+        },
+        {
+          "name": "golang.org/x/term",
+          "version": "v0.27.0",
+          "sum": "h1:WP60Sv1nlK1T6SupCHbXzSaN0b9wUmsPoRS9b61A23Q="
+        },
+        {
+          "name": "golang.org/x/text",
+          "version": "v0.28.0",
+          "sum": "h1:rhazDwis8INMIwQ4tpjLDzUhx6RlXqZNPEM0huQojng="
+        },
+        {
+          "name": "gopkg.in/yaml.v3",
+          "version": "v3.0.1",
+          "sum": "h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA="
+        }
+      ]
     },
     "darwin-arm64": {
-      "archive": "lark-cli-1.0.92-darwin-arm64.tar.gz",
-      "sha256": "abb1b96eee5ad32da4e12f434e44d48a9e01ebb0e81772419ac0347f91c34265",
-      "executable": "lark-cli"
+      "archive": "lark-cli-1.0.93-darwin-arm64.tar.gz",
+      "sha256": "eaa09754925c00a6858e91518a49ab8e0a24bd4178e4698a7b185046b8ea24e2",
+      "executable": "lark-cli",
+      "executableSha256": "9092c3f255b749afdc2a842be5d582511d978424c11326d59af90c0fd5f5c044",
+      "goVersion": "go1.26.5",
+      "embeddedGoModules": [
+        {
+          "name": "github.com/atotto/clipboard",
+          "version": "v0.1.4",
+          "sum": "h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4="
+        },
+        {
+          "name": "github.com/aymanbagabas/go-osc52/v2",
+          "version": "v2.0.1",
+          "sum": "h1:HwpRHbFMcZLEVr42D4p7XBqjyuxQH5SMiErDT4WkJ2k="
+        },
+        {
+          "name": "github.com/bmatcuk/doublestar/v4",
+          "version": "v4.10.0",
+          "sum": "h1:zU9WiOla1YA122oLM6i4EXvGW62DvKZVxIe6TYWexEs="
+        },
+        {
+          "name": "github.com/catppuccin/go",
+          "version": "v0.3.0",
+          "sum": "h1:d+0/YicIq+hSTo5oPuRi5kOpqkVA5tAsU6dNhvRu+aY="
+        },
+        {
+          "name": "github.com/charmbracelet/bubbles",
+          "version": "v0.21.1-0.20250623103423-23b8fd6302d7",
+          "sum": "h1:JFgG/xnwFfbezlUnFMJy0nusZvytYysV4SCS2cYbvws="
+        },
+        {
+          "name": "github.com/charmbracelet/bubbletea",
+          "version": "v1.3.6",
+          "sum": "h1:VkHIxPJQeDt0aFJIsVxw8BQdh/F/L2KKZGsK6et5taU="
+        },
+        {
+          "name": "github.com/charmbracelet/colorprofile",
+          "version": "v0.2.3-0.20250311203215-f60798e515dc",
+          "sum": "h1:4pZI35227imm7yK2bGPcfpFEmuY1gc2YSTShr4iJBfs="
+        },
+        {
+          "name": "github.com/charmbracelet/huh",
+          "version": "v1.0.0",
+          "sum": "h1:wOnedH8G4qzJbmhftTqrpppyqHakl/zbbNdXIWJyIxw="
+        },
+        {
+          "name": "github.com/charmbracelet/lipgloss",
+          "version": "v1.1.0",
+          "sum": "h1:vYXsiLHVkK7fp74RkV7b2kq9+zDLoEU4MZoFqR/noCY="
+        },
+        {
+          "name": "github.com/charmbracelet/x/ansi",
+          "version": "v0.9.3",
+          "sum": "h1:BXt5DHS/MKF+LjuK4huWrC6NCvHtexww7dMayh6GXd0="
+        },
+        {
+          "name": "github.com/charmbracelet/x/cellbuf",
+          "version": "v0.0.13",
+          "sum": "h1:/KBBKHuVRbq1lYx5BzEHBAFBP8VcQzJejZ/IA3iR28k="
+        },
+        {
+          "name": "github.com/charmbracelet/x/exp/strings",
+          "version": "v0.0.0-20240722160745-212f7b056ed0",
+          "sum": "h1:qko3AQ4gK1MTS/de7F5hPGx6/k1u0w4TeYmBFwzYVP4="
+        },
+        {
+          "name": "github.com/charmbracelet/x/term",
+          "version": "v0.2.1",
+          "sum": "h1:AQeHeLZ1OqSXhrAWpYUtZyX1T3zVxfpZuEQMIQaGIAQ="
+        },
+        {
+          "name": "github.com/dustin/go-humanize",
+          "version": "v1.0.1",
+          "sum": "h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY="
+        },
+        {
+          "name": "github.com/gofrs/flock",
+          "version": "v0.8.1",
+          "sum": "h1:+gYjHKf32LDeiEEFhQaotPbLuUXjY5ZqxKgXy7n59aw="
+        },
+        {
+          "name": "github.com/gogo/protobuf",
+          "version": "v1.3.2",
+          "sum": "h1:Ov1cvc58UF3b5XjBnZv7+opcTcQFZebYjWzi34vdm4Q="
+        },
+        {
+          "name": "github.com/google/uuid",
+          "version": "v1.6.0",
+          "sum": "h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0="
+        },
+        {
+          "name": "github.com/gorilla/websocket",
+          "version": "v1.5.0",
+          "sum": "h1:PPwGk2jz7EePpoHN/+ClbZu8SPxiqlu12wZP/3sWmnc="
+        },
+        {
+          "name": "github.com/itchyny/gojq",
+          "version": "v0.12.17",
+          "sum": "h1:8av8eGduDb5+rvEdaOO+zQUjA04MS0m3Ps8HiD+fceg="
+        },
+        {
+          "name": "github.com/itchyny/timefmt-go",
+          "version": "v0.1.6",
+          "sum": "h1:ia3s54iciXDdzWzwaVKXZPbiXzxxnv1SPGFfM/myJ5Q="
+        },
+        {
+          "name": "github.com/larksuite/oapi-sdk-go/v3",
+          "version": "v3.7.2",
+          "sum": "h1:SCIcXHRmtpQbiaZgDTDi1NYNCzrusi7ePJBR9uKoduE="
+        },
+        {
+          "name": "github.com/lucasb-eyer/go-colorful",
+          "version": "v1.2.0",
+          "sum": "h1:1nnpGOrhyZZuNyfu1QjKiUICQ74+3FNCN69Aj6K7nkY="
+        },
+        {
+          "name": "github.com/mattn/go-isatty",
+          "version": "v0.0.20",
+          "sum": "h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY="
+        },
+        {
+          "name": "github.com/mattn/go-runewidth",
+          "version": "v0.0.16",
+          "sum": "h1:E5ScNMtiwvlvB5paMFdw9p4kSQzbXFikJ5SQO6TULQc="
+        },
+        {
+          "name": "github.com/mitchellh/hashstructure/v2",
+          "version": "v2.0.2",
+          "sum": "h1:vGKWl0YJqUNxE8d+h8f6NJLcCJrgbhC4NcD46KavDd4="
+        },
+        {
+          "name": "github.com/muesli/ansi",
+          "version": "v0.0.0-20230316100256-276c6243b2f6",
+          "sum": "h1:ZK8zHtRHOkbHy6Mmr5D264iyp3TiX5OmNcI5cIARiQI="
+        },
+        {
+          "name": "github.com/muesli/cancelreader",
+          "version": "v0.2.2",
+          "sum": "h1:3I4Kt4BQjOR54NavqnDogx/MIoWBFa0StPA8ELUXHmA="
+        },
+        {
+          "name": "github.com/muesli/termenv",
+          "version": "v0.16.0",
+          "sum": "h1:S5AlUN9dENB57rsbnkPyfdGuWIlkmzJjbFf0Tf5FWUc="
+        },
+        {
+          "name": "github.com/rivo/uniseg",
+          "version": "v0.4.7",
+          "sum": "h1:WUdvkW8uEhrYfLC4ZzdpI2ztxP1I582+49Oc5Mq64VQ="
+        },
+        {
+          "name": "github.com/sergi/go-diff",
+          "version": "v1.4.0",
+          "sum": "h1:n/SP9D5ad1fORl+llWyN+D6qoUETXNZARKjyY2/KVCw="
+        },
+        {
+          "name": "github.com/skip2/go-qrcode",
+          "version": "v0.0.0-20200617195104-da1b6568686e",
+          "sum": "h1:MRM5ITcdelLK2j1vwZ3Je0FKVCfqOLp5zO6trqMLYs0="
+        },
+        {
+          "name": "github.com/spf13/cobra",
+          "version": "v1.10.2",
+          "sum": "h1:DMTTonx5m65Ic0GOoRY2c16WCbHxOOw6xxezuLaBpcU="
+        },
+        {
+          "name": "github.com/spf13/pflag",
+          "version": "v1.0.9",
+          "sum": "h1:9exaQaMOCwffKiiiYk6/BndUBv+iRViNW+4lEMi0PvY="
+        },
+        {
+          "name": "github.com/xo/terminfo",
+          "version": "v0.0.0-20220910002029-abceb7e1c41e",
+          "sum": "h1:JVG44RsyaB9T2KIHavMF/ppJZNG9ZpyihvCd0w101no="
+        },
+        {
+          "name": "github.com/zalando/go-keyring",
+          "version": "v0.2.8",
+          "sum": "h1:6sD/Ucpl7jNq10rM2pgqTs0sZ9V3qMrqfIIy5YPccHs="
+        },
+        {
+          "name": "golang.org/x/image",
+          "version": "v0.30.0",
+          "sum": "h1:jD5RhkmVAnjqaCUXfbGBrn3lpxbknfN9w2UhHHU+5B4="
+        },
+        {
+          "name": "golang.org/x/net",
+          "version": "v0.33.0",
+          "sum": "h1:74SYHlV8BIgHIFC/LrYkOGIwL19eTYXQ5wc6TBuO36I="
+        },
+        {
+          "name": "golang.org/x/sync",
+          "version": "v0.16.0",
+          "sum": "h1:ycBJEhp9p4vXvUZNszeOq0kGTPghopOL8q0fq3vstxw="
+        },
+        {
+          "name": "golang.org/x/sys",
+          "version": "v0.33.0",
+          "sum": "h1:q3i8TbbEz+JRD9ywIRlyRAQbM0qF7hu24q3teo2hbuw="
+        },
+        {
+          "name": "golang.org/x/term",
+          "version": "v0.27.0",
+          "sum": "h1:WP60Sv1nlK1T6SupCHbXzSaN0b9wUmsPoRS9b61A23Q="
+        },
+        {
+          "name": "golang.org/x/text",
+          "version": "v0.28.0",
+          "sum": "h1:rhazDwis8INMIwQ4tpjLDzUhx6RlXqZNPEM0huQojng="
+        },
+        {
+          "name": "gopkg.in/yaml.v3",
+          "version": "v3.0.1",
+          "sum": "h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA="
+        }
+      ]
     },
     "windows-x64": {
-      "archive": "lark-cli-1.0.92-windows-amd64.zip",
-      "sha256": "dfcf920d8e31bcef99960c584fda8bac49a8dca0b6634b1f05bde0de382080b3",
-      "executable": "lark-cli.exe"
+      "archive": "lark-cli-1.0.93-windows-amd64.zip",
+      "sha256": "18e9320e378a0eefdb3b7004e0c6d42f48da85ae196d2bf5e89e4299ae7674d7",
+      "executable": "lark-cli.exe",
+      "executableSha256": "39ba320129d7c700f907d0ea0d4a79467262a72ca0f971879f5f45cf5f782645",
+      "goVersion": "go1.26.5",
+      "embeddedGoModules": [
+        {
+          "name": "github.com/Microsoft/go-winio",
+          "version": "v0.6.2",
+          "sum": "h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY="
+        },
+        {
+          "name": "github.com/atotto/clipboard",
+          "version": "v0.1.4",
+          "sum": "h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4="
+        },
+        {
+          "name": "github.com/aymanbagabas/go-osc52/v2",
+          "version": "v2.0.1",
+          "sum": "h1:HwpRHbFMcZLEVr42D4p7XBqjyuxQH5SMiErDT4WkJ2k="
+        },
+        {
+          "name": "github.com/bmatcuk/doublestar/v4",
+          "version": "v4.10.0",
+          "sum": "h1:zU9WiOla1YA122oLM6i4EXvGW62DvKZVxIe6TYWexEs="
+        },
+        {
+          "name": "github.com/catppuccin/go",
+          "version": "v0.3.0",
+          "sum": "h1:d+0/YicIq+hSTo5oPuRi5kOpqkVA5tAsU6dNhvRu+aY="
+        },
+        {
+          "name": "github.com/charmbracelet/bubbles",
+          "version": "v0.21.1-0.20250623103423-23b8fd6302d7",
+          "sum": "h1:JFgG/xnwFfbezlUnFMJy0nusZvytYysV4SCS2cYbvws="
+        },
+        {
+          "name": "github.com/charmbracelet/bubbletea",
+          "version": "v1.3.6",
+          "sum": "h1:VkHIxPJQeDt0aFJIsVxw8BQdh/F/L2KKZGsK6et5taU="
+        },
+        {
+          "name": "github.com/charmbracelet/colorprofile",
+          "version": "v0.2.3-0.20250311203215-f60798e515dc",
+          "sum": "h1:4pZI35227imm7yK2bGPcfpFEmuY1gc2YSTShr4iJBfs="
+        },
+        {
+          "name": "github.com/charmbracelet/huh",
+          "version": "v1.0.0",
+          "sum": "h1:wOnedH8G4qzJbmhftTqrpppyqHakl/zbbNdXIWJyIxw="
+        },
+        {
+          "name": "github.com/charmbracelet/lipgloss",
+          "version": "v1.1.0",
+          "sum": "h1:vYXsiLHVkK7fp74RkV7b2kq9+zDLoEU4MZoFqR/noCY="
+        },
+        {
+          "name": "github.com/charmbracelet/x/ansi",
+          "version": "v0.9.3",
+          "sum": "h1:BXt5DHS/MKF+LjuK4huWrC6NCvHtexww7dMayh6GXd0="
+        },
+        {
+          "name": "github.com/charmbracelet/x/cellbuf",
+          "version": "v0.0.13",
+          "sum": "h1:/KBBKHuVRbq1lYx5BzEHBAFBP8VcQzJejZ/IA3iR28k="
+        },
+        {
+          "name": "github.com/charmbracelet/x/exp/strings",
+          "version": "v0.0.0-20240722160745-212f7b056ed0",
+          "sum": "h1:qko3AQ4gK1MTS/de7F5hPGx6/k1u0w4TeYmBFwzYVP4="
+        },
+        {
+          "name": "github.com/charmbracelet/x/term",
+          "version": "v0.2.1",
+          "sum": "h1:AQeHeLZ1OqSXhrAWpYUtZyX1T3zVxfpZuEQMIQaGIAQ="
+        },
+        {
+          "name": "github.com/dustin/go-humanize",
+          "version": "v1.0.1",
+          "sum": "h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY="
+        },
+        {
+          "name": "github.com/erikgeiser/coninput",
+          "version": "v0.0.0-20211004153227-1c3628e74d0f",
+          "sum": "h1:Y/CXytFA4m6baUTXGLOoWe4PQhGxaX0KpnayAqC48p4="
+        },
+        {
+          "name": "github.com/gofrs/flock",
+          "version": "v0.8.1",
+          "sum": "h1:+gYjHKf32LDeiEEFhQaotPbLuUXjY5ZqxKgXy7n59aw="
+        },
+        {
+          "name": "github.com/gogo/protobuf",
+          "version": "v1.3.2",
+          "sum": "h1:Ov1cvc58UF3b5XjBnZv7+opcTcQFZebYjWzi34vdm4Q="
+        },
+        {
+          "name": "github.com/google/uuid",
+          "version": "v1.6.0",
+          "sum": "h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0="
+        },
+        {
+          "name": "github.com/gorilla/websocket",
+          "version": "v1.5.0",
+          "sum": "h1:PPwGk2jz7EePpoHN/+ClbZu8SPxiqlu12wZP/3sWmnc="
+        },
+        {
+          "name": "github.com/inconshreveable/mousetrap",
+          "version": "v1.1.0",
+          "sum": "h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2s0bqwp9tc8="
+        },
+        {
+          "name": "github.com/itchyny/gojq",
+          "version": "v0.12.17",
+          "sum": "h1:8av8eGduDb5+rvEdaOO+zQUjA04MS0m3Ps8HiD+fceg="
+        },
+        {
+          "name": "github.com/itchyny/timefmt-go",
+          "version": "v0.1.6",
+          "sum": "h1:ia3s54iciXDdzWzwaVKXZPbiXzxxnv1SPGFfM/myJ5Q="
+        },
+        {
+          "name": "github.com/larksuite/oapi-sdk-go/v3",
+          "version": "v3.7.2",
+          "sum": "h1:SCIcXHRmtpQbiaZgDTDi1NYNCzrusi7ePJBR9uKoduE="
+        },
+        {
+          "name": "github.com/lucasb-eyer/go-colorful",
+          "version": "v1.2.0",
+          "sum": "h1:1nnpGOrhyZZuNyfu1QjKiUICQ74+3FNCN69Aj6K7nkY="
+        },
+        {
+          "name": "github.com/mattn/go-isatty",
+          "version": "v0.0.20",
+          "sum": "h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY="
+        },
+        {
+          "name": "github.com/mattn/go-localereader",
+          "version": "v0.0.1",
+          "sum": "h1:ygSAOl7ZXTx4RdPYinUpg6W99U8jWvWi9Ye2JC/oIi4="
+        },
+        {
+          "name": "github.com/mattn/go-runewidth",
+          "version": "v0.0.16",
+          "sum": "h1:E5ScNMtiwvlvB5paMFdw9p4kSQzbXFikJ5SQO6TULQc="
+        },
+        {
+          "name": "github.com/mitchellh/hashstructure/v2",
+          "version": "v2.0.2",
+          "sum": "h1:vGKWl0YJqUNxE8d+h8f6NJLcCJrgbhC4NcD46KavDd4="
+        },
+        {
+          "name": "github.com/muesli/ansi",
+          "version": "v0.0.0-20230316100256-276c6243b2f6",
+          "sum": "h1:ZK8zHtRHOkbHy6Mmr5D264iyp3TiX5OmNcI5cIARiQI="
+        },
+        {
+          "name": "github.com/muesli/cancelreader",
+          "version": "v0.2.2",
+          "sum": "h1:3I4Kt4BQjOR54NavqnDogx/MIoWBFa0StPA8ELUXHmA="
+        },
+        {
+          "name": "github.com/muesli/termenv",
+          "version": "v0.16.0",
+          "sum": "h1:S5AlUN9dENB57rsbnkPyfdGuWIlkmzJjbFf0Tf5FWUc="
+        },
+        {
+          "name": "github.com/rivo/uniseg",
+          "version": "v0.4.7",
+          "sum": "h1:WUdvkW8uEhrYfLC4ZzdpI2ztxP1I582+49Oc5Mq64VQ="
+        },
+        {
+          "name": "github.com/sergi/go-diff",
+          "version": "v1.4.0",
+          "sum": "h1:n/SP9D5ad1fORl+llWyN+D6qoUETXNZARKjyY2/KVCw="
+        },
+        {
+          "name": "github.com/skip2/go-qrcode",
+          "version": "v0.0.0-20200617195104-da1b6568686e",
+          "sum": "h1:MRM5ITcdelLK2j1vwZ3Je0FKVCfqOLp5zO6trqMLYs0="
+        },
+        {
+          "name": "github.com/spf13/cobra",
+          "version": "v1.10.2",
+          "sum": "h1:DMTTonx5m65Ic0GOoRY2c16WCbHxOOw6xxezuLaBpcU="
+        },
+        {
+          "name": "github.com/spf13/pflag",
+          "version": "v1.0.9",
+          "sum": "h1:9exaQaMOCwffKiiiYk6/BndUBv+iRViNW+4lEMi0PvY="
+        },
+        {
+          "name": "github.com/xo/terminfo",
+          "version": "v0.0.0-20220910002029-abceb7e1c41e",
+          "sum": "h1:JVG44RsyaB9T2KIHavMF/ppJZNG9ZpyihvCd0w101no="
+        },
+        {
+          "name": "golang.org/x/image",
+          "version": "v0.30.0",
+          "sum": "h1:jD5RhkmVAnjqaCUXfbGBrn3lpxbknfN9w2UhHHU+5B4="
+        },
+        {
+          "name": "golang.org/x/net",
+          "version": "v0.33.0",
+          "sum": "h1:74SYHlV8BIgHIFC/LrYkOGIwL19eTYXQ5wc6TBuO36I="
+        },
+        {
+          "name": "golang.org/x/sync",
+          "version": "v0.16.0",
+          "sum": "h1:ycBJEhp9p4vXvUZNszeOq0kGTPghopOL8q0fq3vstxw="
+        },
+        {
+          "name": "golang.org/x/sys",
+          "version": "v0.33.0",
+          "sum": "h1:q3i8TbbEz+JRD9ywIRlyRAQbM0qF7hu24q3teo2hbuw="
+        },
+        {
+          "name": "golang.org/x/term",
+          "version": "v0.27.0",
+          "sum": "h1:WP60Sv1nlK1T6SupCHbXzSaN0b9wUmsPoRS9b61A23Q="
+        },
+        {
+          "name": "golang.org/x/text",
+          "version": "v0.28.0",
+          "sum": "h1:rhazDwis8INMIwQ4tpjLDzUhx6RlXqZNPEM0huQojng="
+        },
+        {
+          "name": "gopkg.in/yaml.v3",
+          "version": "v3.0.1",
+          "sum": "h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA="
+        }
+      ]
     },
     "windows-arm64": {
-      "archive": "lark-cli-1.0.92-windows-arm64.zip",
-      "sha256": "cef96c61c388f7e1100394edcfa1f5ca8322e9bed73a951e119a7e7b6e0f4c6a",
-      "executable": "lark-cli.exe"
+      "archive": "lark-cli-1.0.93-windows-arm64.zip",
+      "sha256": "3739889cab8d938bbe2015032cd3e8de82ba0608b01e6b3ce3740f999199b4fb",
+      "executable": "lark-cli.exe",
+      "executableSha256": "42d3c009171fdefc82554f63b46d53aa983f2d08c4fb4400f7ac52b742231f05",
+      "goVersion": "go1.26.5",
+      "embeddedGoModules": [
+        {
+          "name": "github.com/Microsoft/go-winio",
+          "version": "v0.6.2",
+          "sum": "h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY="
+        },
+        {
+          "name": "github.com/atotto/clipboard",
+          "version": "v0.1.4",
+          "sum": "h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4="
+        },
+        {
+          "name": "github.com/aymanbagabas/go-osc52/v2",
+          "version": "v2.0.1",
+          "sum": "h1:HwpRHbFMcZLEVr42D4p7XBqjyuxQH5SMiErDT4WkJ2k="
+        },
+        {
+          "name": "github.com/bmatcuk/doublestar/v4",
+          "version": "v4.10.0",
+          "sum": "h1:zU9WiOla1YA122oLM6i4EXvGW62DvKZVxIe6TYWexEs="
+        },
+        {
+          "name": "github.com/catppuccin/go",
+          "version": "v0.3.0",
+          "sum": "h1:d+0/YicIq+hSTo5oPuRi5kOpqkVA5tAsU6dNhvRu+aY="
+        },
+        {
+          "name": "github.com/charmbracelet/bubbles",
+          "version": "v0.21.1-0.20250623103423-23b8fd6302d7",
+          "sum": "h1:JFgG/xnwFfbezlUnFMJy0nusZvytYysV4SCS2cYbvws="
+        },
+        {
+          "name": "github.com/charmbracelet/bubbletea",
+          "version": "v1.3.6",
+          "sum": "h1:VkHIxPJQeDt0aFJIsVxw8BQdh/F/L2KKZGsK6et5taU="
+        },
+        {
+          "name": "github.com/charmbracelet/colorprofile",
+          "version": "v0.2.3-0.20250311203215-f60798e515dc",
+          "sum": "h1:4pZI35227imm7yK2bGPcfpFEmuY1gc2YSTShr4iJBfs="
+        },
+        {
+          "name": "github.com/charmbracelet/huh",
+          "version": "v1.0.0",
+          "sum": "h1:wOnedH8G4qzJbmhftTqrpppyqHakl/zbbNdXIWJyIxw="
+        },
+        {
+          "name": "github.com/charmbracelet/lipgloss",
+          "version": "v1.1.0",
+          "sum": "h1:vYXsiLHVkK7fp74RkV7b2kq9+zDLoEU4MZoFqR/noCY="
+        },
+        {
+          "name": "github.com/charmbracelet/x/ansi",
+          "version": "v0.9.3",
+          "sum": "h1:BXt5DHS/MKF+LjuK4huWrC6NCvHtexww7dMayh6GXd0="
+        },
+        {
+          "name": "github.com/charmbracelet/x/cellbuf",
+          "version": "v0.0.13",
+          "sum": "h1:/KBBKHuVRbq1lYx5BzEHBAFBP8VcQzJejZ/IA3iR28k="
+        },
+        {
+          "name": "github.com/charmbracelet/x/exp/strings",
+          "version": "v0.0.0-20240722160745-212f7b056ed0",
+          "sum": "h1:qko3AQ4gK1MTS/de7F5hPGx6/k1u0w4TeYmBFwzYVP4="
+        },
+        {
+          "name": "github.com/charmbracelet/x/term",
+          "version": "v0.2.1",
+          "sum": "h1:AQeHeLZ1OqSXhrAWpYUtZyX1T3zVxfpZuEQMIQaGIAQ="
+        },
+        {
+          "name": "github.com/dustin/go-humanize",
+          "version": "v1.0.1",
+          "sum": "h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY="
+        },
+        {
+          "name": "github.com/erikgeiser/coninput",
+          "version": "v0.0.0-20211004153227-1c3628e74d0f",
+          "sum": "h1:Y/CXytFA4m6baUTXGLOoWe4PQhGxaX0KpnayAqC48p4="
+        },
+        {
+          "name": "github.com/gofrs/flock",
+          "version": "v0.8.1",
+          "sum": "h1:+gYjHKf32LDeiEEFhQaotPbLuUXjY5ZqxKgXy7n59aw="
+        },
+        {
+          "name": "github.com/gogo/protobuf",
+          "version": "v1.3.2",
+          "sum": "h1:Ov1cvc58UF3b5XjBnZv7+opcTcQFZebYjWzi34vdm4Q="
+        },
+        {
+          "name": "github.com/google/uuid",
+          "version": "v1.6.0",
+          "sum": "h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0="
+        },
+        {
+          "name": "github.com/gorilla/websocket",
+          "version": "v1.5.0",
+          "sum": "h1:PPwGk2jz7EePpoHN/+ClbZu8SPxiqlu12wZP/3sWmnc="
+        },
+        {
+          "name": "github.com/inconshreveable/mousetrap",
+          "version": "v1.1.0",
+          "sum": "h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2s0bqwp9tc8="
+        },
+        {
+          "name": "github.com/itchyny/gojq",
+          "version": "v0.12.17",
+          "sum": "h1:8av8eGduDb5+rvEdaOO+zQUjA04MS0m3Ps8HiD+fceg="
+        },
+        {
+          "name": "github.com/itchyny/timefmt-go",
+          "version": "v0.1.6",
+          "sum": "h1:ia3s54iciXDdzWzwaVKXZPbiXzxxnv1SPGFfM/myJ5Q="
+        },
+        {
+          "name": "github.com/larksuite/oapi-sdk-go/v3",
+          "version": "v3.7.2",
+          "sum": "h1:SCIcXHRmtpQbiaZgDTDi1NYNCzrusi7ePJBR9uKoduE="
+        },
+        {
+          "name": "github.com/lucasb-eyer/go-colorful",
+          "version": "v1.2.0",
+          "sum": "h1:1nnpGOrhyZZuNyfu1QjKiUICQ74+3FNCN69Aj6K7nkY="
+        },
+        {
+          "name": "github.com/mattn/go-isatty",
+          "version": "v0.0.20",
+          "sum": "h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY="
+        },
+        {
+          "name": "github.com/mattn/go-localereader",
+          "version": "v0.0.1",
+          "sum": "h1:ygSAOl7ZXTx4RdPYinUpg6W99U8jWvWi9Ye2JC/oIi4="
+        },
+        {
+          "name": "github.com/mattn/go-runewidth",
+          "version": "v0.0.16",
+          "sum": "h1:E5ScNMtiwvlvB5paMFdw9p4kSQzbXFikJ5SQO6TULQc="
+        },
+        {
+          "name": "github.com/mitchellh/hashstructure/v2",
+          "version": "v2.0.2",
+          "sum": "h1:vGKWl0YJqUNxE8d+h8f6NJLcCJrgbhC4NcD46KavDd4="
+        },
+        {
+          "name": "github.com/muesli/ansi",
+          "version": "v0.0.0-20230316100256-276c6243b2f6",
+          "sum": "h1:ZK8zHtRHOkbHy6Mmr5D264iyp3TiX5OmNcI5cIARiQI="
+        },
+        {
+          "name": "github.com/muesli/cancelreader",
+          "version": "v0.2.2",
+          "sum": "h1:3I4Kt4BQjOR54NavqnDogx/MIoWBFa0StPA8ELUXHmA="
+        },
+        {
+          "name": "github.com/muesli/termenv",
+          "version": "v0.16.0",
+          "sum": "h1:S5AlUN9dENB57rsbnkPyfdGuWIlkmzJjbFf0Tf5FWUc="
+        },
+        {
+          "name": "github.com/rivo/uniseg",
+          "version": "v0.4.7",
+          "sum": "h1:WUdvkW8uEhrYfLC4ZzdpI2ztxP1I582+49Oc5Mq64VQ="
+        },
+        {
+          "name": "github.com/sergi/go-diff",
+          "version": "v1.4.0",
+          "sum": "h1:n/SP9D5ad1fORl+llWyN+D6qoUETXNZARKjyY2/KVCw="
+        },
+        {
+          "name": "github.com/skip2/go-qrcode",
+          "version": "v0.0.0-20200617195104-da1b6568686e",
+          "sum": "h1:MRM5ITcdelLK2j1vwZ3Je0FKVCfqOLp5zO6trqMLYs0="
+        },
+        {
+          "name": "github.com/spf13/cobra",
+          "version": "v1.10.2",
+          "sum": "h1:DMTTonx5m65Ic0GOoRY2c16WCbHxOOw6xxezuLaBpcU="
+        },
+        {
+          "name": "github.com/spf13/pflag",
+          "version": "v1.0.9",
+          "sum": "h1:9exaQaMOCwffKiiiYk6/BndUBv+iRViNW+4lEMi0PvY="
+        },
+        {
+          "name": "github.com/xo/terminfo",
+          "version": "v0.0.0-20220910002029-abceb7e1c41e",
+          "sum": "h1:JVG44RsyaB9T2KIHavMF/ppJZNG9ZpyihvCd0w101no="
+        },
+        {
+          "name": "golang.org/x/image",
+          "version": "v0.30.0",
+          "sum": "h1:jD5RhkmVAnjqaCUXfbGBrn3lpxbknfN9w2UhHHU+5B4="
+        },
+        {
+          "name": "golang.org/x/net",
+          "version": "v0.33.0",
+          "sum": "h1:74SYHlV8BIgHIFC/LrYkOGIwL19eTYXQ5wc6TBuO36I="
+        },
+        {
+          "name": "golang.org/x/sync",
+          "version": "v0.16.0",
+          "sum": "h1:ycBJEhp9p4vXvUZNszeOq0kGTPghopOL8q0fq3vstxw="
+        },
+        {
+          "name": "golang.org/x/sys",
+          "version": "v0.33.0",
+          "sum": "h1:q3i8TbbEz+JRD9ywIRlyRAQbM0qF7hu24q3teo2hbuw="
+        },
+        {
+          "name": "golang.org/x/term",
+          "version": "v0.27.0",
+          "sum": "h1:WP60Sv1nlK1T6SupCHbXzSaN0b9wUmsPoRS9b61A23Q="
+        },
+        {
+          "name": "golang.org/x/text",
+          "version": "v0.28.0",
+          "sum": "h1:rhazDwis8INMIwQ4tpjLDzUhx6RlXqZNPEM0huQojng="
+        },
+        {
+          "name": "gopkg.in/yaml.v3",
+          "version": "v3.0.1",
+          "sum": "h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA="
+        }
+      ]
     }
   }
 }

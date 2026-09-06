@@ -286,6 +286,22 @@ func (server *bridgeRPCServer) HandlePrivateRPC(ctx context.Context, method stri
 			return nil, privateipc.NewError(-32061, "fixed lark-cli capability unavailable")
 		}
 		return feishu.AuthPermissions(ctx, runner)
+	case "bridge/auth/cancel":
+		if err := requireNoBridgeParams(params); err != nil {
+			return nil, err
+		}
+		feishu.CancelUserAuthFlow(server.dataRoot)
+		return feishuprotocol.AuthStatus{SchemaVersion: 1, Status: "cancelled", Identity: "user", Profile: "default", MissingCapabilities: []string{}}, nil
+	case feishuprotocol.MethodAuthStatus:
+		if err := requireNoBridgeParams(params); err != nil {
+			return nil, err
+		}
+		return feishu.ReadAuthStatus(ctx, server.authRunner(), server.dataRoot)
+	case feishuprotocol.MethodAuthLogout:
+		if err := requireNoBridgeParams(params); err != nil {
+			return nil, err
+		}
+		return feishu.LogoutUserAuth(ctx, server.authRunner(), server.dataRoot)
 	case feishuprotocol.MethodAuthConfigure:
 		var request struct {
 			AppID     string `json:"appId"`
@@ -319,13 +335,10 @@ func (server *bridgeRPCServer) HandlePrivateRPC(ctx context.Context, method stri
 		}
 		return server.attachQR(result)
 	case feishuprotocol.MethodAuthFinish:
-		var request struct {
-			DeviceCode string `json:"deviceCode"`
-		}
-		if err := decodeBridgeParams(params, &request); err != nil {
+		if err := requireNoBridgeParams(params); err != nil {
 			return nil, err
 		}
-		return feishu.FinishUserAuthFlow(ctx, server.authRunner(), server.dataRoot, request.DeviceCode)
+		return feishu.FinishUserAuthFlow(ctx, server.authRunner(), server.dataRoot, "")
 	case feishuprotocol.MethodAuthEnsureUser:
 		if err := requireNoBridgeParams(params); err != nil {
 			return nil, err
@@ -416,7 +429,11 @@ func (server *bridgeRPCServer) HandlePrivateRPC(ctx context.Context, method stri
 }
 
 func (server *bridgeRPCServer) authRunner() feishu.CapabilityExecutor {
-	return feishu.CapabilityExecutor{Binary: strings.TrimSpace(os.Getenv("LARK_CLI_BIN")), Profile: strings.TrimSpace(os.Getenv("LARK_CLI_PROFILE")), DataRoot: server.dataRoot, WorkingDirectory: server.dataRoot}
+	profile := strings.TrimSpace(os.Getenv("LARK_CLI_PROFILE"))
+	if profile == "" {
+		profile = "default"
+	}
+	return feishu.CapabilityExecutor{Binary: strings.TrimSpace(os.Getenv("LARK_CLI_BIN")), Profile: profile, DataRoot: server.dataRoot, WorkingDirectory: server.dataRoot}
 }
 
 func (server *bridgeRPCServer) mailEventsEnabled() bool {
@@ -447,7 +464,7 @@ func (server *bridgeRPCServer) attachQR(result map[string]any) (map[string]any, 
 		return nil, errors.New("private QR file is invalid")
 	}
 	public := map[string]any{}
-	for _, key := range []string{"status", "flow", "profile", "verificationUrl", "userCode", "next"} {
+	for _, key := range []string{"schemaVersion", "status", "identity", "identityValid", "profileValid", "grantedScopeCount", "missingCapabilities", "flow", "profile", "verificationUrl", "userCode", "next"} {
 		if value, found := result[key]; found {
 			public[key] = value
 		}
@@ -495,11 +512,11 @@ func (server *bridgeRPCServer) snapshot(ctx context.Context) feishuprotocol.Snap
 	sort.Strings(aliases)
 	eventState, _ := feishu.NewEventConsumerStateStore(server.dataRoot).Read()
 	connection, _ := eventState["connection"].(map[string]any)
-	connected := strings.TrimSpace(stringValue(connection["state"])) == "connected"
+	connected := messages != nil && eventState["transport"] == "official-cli" && strings.TrimSpace(stringValue(connection["state"])) == "connected"
 	if settings.Profile == feishu.ProfilePrimary && connected {
 		capabilities["feishuInbound"] = feishuprotocol.CapabilityHealth{State: "ready"}
 	} else if settings.Profile == feishu.ProfilePrimary && messages != nil {
-		capabilities["feishuInbound"] = feishuprotocol.CapabilityHealth{State: "degraded", Detail: "official SDK inbound disconnected"}
+		capabilities["feishuInbound"] = feishuprotocol.CapabilityHealth{State: "degraded", Detail: "official CLI consumers are not ready"}
 	}
 	if settings.Outbound.Enabled && messages == nil {
 		capabilities["outbox"] = feishuprotocol.CapabilityHealth{State: "degraded", Detail: "Feishu outbound unavailable"}
@@ -521,6 +538,12 @@ func (server *bridgeRPCServer) snapshot(ctx context.Context) feishuprotocol.Snap
 	if messages == nil {
 		blockers = append(blockers, "feishuOutbound")
 	}
+	if settings.Profile == feishu.ProfilePrimary && !connected {
+		blockers = append(blockers, "feishuInbound")
+	}
+	if probe.State != "ready" {
+		blockers = append(blockers, "larkCLI")
+	}
 	availability, message := "ready", ""
 	if messages == nil {
 		availability, message = "unavailable", "飞书凭据缺失或传输尚未连接。"
@@ -528,6 +551,10 @@ func (server *bridgeRPCServer) snapshot(ctx context.Context) feishuprotocol.Snap
 		availability, message = "unavailable", "飞书服务尚未启用主动出站。"
 	} else if settings.Outbound.DryRun {
 		availability = "dryRun"
+	} else if settings.Profile == feishu.ProfilePrimary && !connected {
+		availability, message = "degraded", "飞书事件消费者尚未就绪。"
+	} else if probe.State != "ready" {
+		availability, message = "degraded", "固定版官方 CLI 尚未通过验证。"
 	}
 	if runtimeError != "" {
 		availability, message = "degraded", "Feishu runtime processing unavailable"

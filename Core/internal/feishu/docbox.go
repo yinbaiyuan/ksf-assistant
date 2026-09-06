@@ -195,7 +195,16 @@ func executeDocumentTransport(ctx context.Context, executor DocumentExecutionTra
 		}
 		response, err := executor.DocumentCreate(ctx, request)
 		if err != nil {
+			result.Response = cliFailureResult(response, err)
+			if isUserApprovalError(err) {
+				result.Status, result.Error, result.FailurePhase = "failed", err.Error(), "approval"
+				return result
+			}
 			result.Status, result.Error, result.FailurePhase = string(OperationOutcomeUnknown), safeCommandError(err.Error()), "write"
+			var failure *CLIExecutionError
+			if errors.As(err, &failure) && !failure.Started {
+				result.Status, result.FailurePhase = "failed", "preflight"
+			}
 			return result
 		}
 		result.Status, result.Response = "completed", response
@@ -207,6 +216,7 @@ func executeDocumentTransport(ctx context.Context, executor DocumentExecutionTra
 	}
 	preflight, err := executor.DocumentFetch(ctx, *request.Target)
 	if err != nil {
+		result.Preflight = cliFailureResult(preflight, err)
 		result.Status, result.Error = "failed", safeCommandError(err.Error())
 		return result
 	}
@@ -217,6 +227,11 @@ func executeDocumentTransport(ctx context.Context, executor DocumentExecutionTra
 	}
 	version, err := executor.DocumentVersion(ctx, *request.Target, preflight, request.ID)
 	if err != nil {
+		result.Version = cliFailureResult(version, err)
+		if isUserApprovalError(err) {
+			result.Status, result.Error, result.FailurePhase = "failed", err.Error(), "approval"
+			return result
+		}
 		result.Status, result.Error, result.FailurePhase = string(OperationOutcomeUnknown), safeCommandError(err.Error()), "write"
 		return result
 	}
@@ -227,12 +242,14 @@ func executeDocumentTransport(ctx context.Context, executor DocumentExecutionTra
 	}
 	response, err := executor.DocumentUpdate(ctx, request)
 	if err != nil {
+		result.Response = cliFailureResult(response, err)
 		result.Status, result.Error, result.FailurePhase = string(OperationOutcomeUnknown), safeCommandError(err.Error()), "write"
 		return result
 	}
 	result.Response = response
 	verification, err := executor.DocumentFetch(ctx, *request.Target)
 	if err != nil {
+		result.Verification = cliFailureResult(verification, err)
 		result.Status, result.Error, result.FailurePhase = string(OperationOutcomeUnknown), safeCommandError(err.Error()), "verification"
 		result.VerificationState = string(VerificationInconclusive)
 		return result
@@ -251,6 +268,15 @@ func (runner CapabilityExecutor) documentCreate(ctx context.Context, request Doc
 		args = append(args, "--parent-token", request.Target.Value)
 	}
 	args = append(args, "--doc-format", request.Content.Format, "--content", "-")
+	if request.Identity == "bot" {
+		if request.Target == nil || documentIdentity(*request.Target) != "bot" {
+			return nil, errors.New("unsupported_identity")
+		}
+		if err := validateDocumentExecution(ctx, request); err != nil {
+			return nil, err
+		}
+		return runner.runFixedBotBusiness(ctx, fixedBotDocumentCreate, args, []byte(request.Content.Text), 3*time.Minute)
+	}
 	return runner.run(ctx, definition, args, []byte(request.Content.Text), nil, 3*time.Minute)
 }
 func (runner CapabilityExecutor) documentFetch(ctx context.Context, target DocumentTarget) (map[string]any, error) {
@@ -264,7 +290,7 @@ func (runner CapabilityExecutor) documentUpdate(ctx context.Context, request Doc
 		mode = "append"
 	}
 	if request.NewTitle != "" {
-		return nil, errors.New("document title updates are not supported by lark-cli 1.0.92")
+		return nil, errors.New("document title updates are not supported by the frozen compatibility contract")
 	}
 	definition := CapabilityDefinition{ID: "docbox.update", Domain: "docs", Risk: "write", Identity: request.Identity, Command: []string{"docs", "+update"}}
 	args := []string{"docs", "+update", "--api-version", "v2", "--doc", request.Target.Value, "--command", mode, "--content", "-", "--doc-format", request.Content.Format}
@@ -275,6 +301,15 @@ func (runner CapabilityExecutor) documentUpdate(ctx context.Context, request Doc
 		}
 		args = append(args, "--pattern", pattern)
 	}
+	if request.Identity == "bot" {
+		if documentIdentity(*request.Target) != "bot" {
+			return nil, errors.New("unsupported_identity")
+		}
+		if err := validateDocumentExecution(ctx, request); err != nil {
+			return nil, err
+		}
+		return runner.runFixedBotBusiness(ctx, fixedBotDocumentUpdate, args, []byte(request.Content.Text), 3*time.Minute)
+	}
 	return runner.run(ctx, definition, args, []byte(request.Content.Text), nil, 3*time.Minute)
 }
 func (runner CapabilityExecutor) documentVersion(ctx context.Context, target DocumentTarget, preflight map[string]any, name string) (map[string]any, error) {
@@ -284,7 +319,15 @@ func (runner CapabilityExecutor) documentVersion(ctx context.Context, target Doc
 	}
 	definition := CapabilityDefinition{ID: "docbox.version", Domain: "drive", Risk: "write", Identity: documentIdentity(target), Transport: "raw", Command: []string{"api", "POST"}, APIPath: "/open-apis/drive/v1/files/{file-token}/versions", Flags: map[string]CapabilityField{"file-token": {Type: "string", Required: true, Path: true}, "data": {Type: "json", Body: ""}}}
 	args := []string{"api", "POST", "/open-apis/drive/v1/files/" + token + "/versions", "--data", "__PRIVATE_VERSION__"}
-	files := map[string][]byte{"__PRIVATE_VERSION__": []byte(`{"name":"` + name + `","obj_type":"docx"}`)}
+	body, err := json.Marshal(map[string]string{"name": name, "obj_type": "docx"})
+	if err != nil {
+		return nil, err
+	}
+	if definition.Identity == "bot" {
+		args[len(args)-1] = "-"
+		return runner.runFixedBotBusiness(ctx, fixedBotDocumentVersion, args, body, 60*time.Second)
+	}
+	files := map[string][]byte{"__PRIVATE_VERSION__": body}
 	return runner.run(ctx, definition, args, nil, files, 60*time.Second)
 }
 func documentIdentity(target DocumentTarget) string {

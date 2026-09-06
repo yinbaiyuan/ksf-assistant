@@ -14,11 +14,13 @@ class CoreClient {
     this.sequence = 0;
     this.pending = new Map();
     this.startPromise = null;
+    this.closing = false;
   }
 
   async start() {
-    if (this.process && !this.process.killed) return;
+    if (this.closing) throw new Error('核心服务正在退出');
     if (this.startPromise) return this.startPromise;
+    if (this.process && !this.process.killed) return;
     this.startPromise = this.#start();
     try {
       await this.startPromise;
@@ -35,17 +37,20 @@ class CoreClient {
       env: { ...process.env, ...this.env },
     });
     this.process = child;
-    createInterface({ input: child.stdout }).on('line', (line) => this.#handleLine(line));
+    const reader = createInterface({ input: child.stdout });
+    reader.on('line', (line) => { if (this.process === child) this.#handleLine(line); });
+    reader.once('close', () => { if (this.process === child) this.#failAll(new Error('核心服务输出已关闭'), true); });
     child.stderr.on('data', () => {});
-    child.once('exit', (_code, signal) => this.#failAll(new Error(`核心服务已停止${signal ? `（${signal}）` : ''}`)));
-    child.once('error', (error) => this.#failAll(error));
+    child.once('exit', (_code, signal) => { if (this.process === child) this.#failAll(new Error(`核心服务已停止${signal ? `（${signal}）` : ''}`)); });
+    child.once('error', (error) => { if (this.process === child) this.#failAll(error, true); });
     await this.request('initialize', {
-      clientInfo: { name: 'ksf_assistant_windows', title: 'KSFAssistant for Windows', version: '0.10.0-preview.1' },
+      clientInfo: { name: 'ksf_assistant_windows', title: 'KSFAssistant for Windows', version: '0.11.0-preview.1' },
       integrations: this.integrations,
     }, { skipStart: true });
   }
 
-  async request(method, params = {}, { skipStart = false } = {}) {
+  async request(method, params = {}, { skipStart = false, timeoutMs } = {}) {
+    if (this.closing && method !== 'shutdown') throw new Error('核心服务正在退出');
     if (!skipStart) await this.start();
     if (!this.process?.stdin?.writable) throw new Error('核心服务未运行');
     const id = ++this.sequence;
@@ -54,7 +59,7 @@ class CoreClient {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`${method} 等待核心服务响应超时`));
-      }, this.timeoutMs);
+      }, timeoutMs ?? (['feishu/setup/activate', 'feishu/setup/verify', 'feishu/setup/continue'].includes(method) ? Math.max(this.timeoutMs, 125_000) : this.timeoutMs));
       this.pending.set(id, { resolve, reject, timeout });
       this.process.stdin.write(`${payload}\n`, (error) => {
         if (!error) return;
@@ -68,6 +73,7 @@ class CoreClient {
   }
 
   async close() {
+    this.closing = true;
     const child = this.process;
     if (!child) return;
     let shutdownTimer;
@@ -83,7 +89,7 @@ class CoreClient {
     child.stdin?.end();
     await this.#waitForExit(child, 2_000);
     if (child.exitCode === null && !child.killed) this.#forceStopTree(child);
-    this.process = null;
+    this.#failAll(new Error('核心服务已关闭'));
   }
 
   async #waitForExit(child, timeoutMs) {
@@ -126,13 +132,20 @@ class CoreClient {
     else pending.resolve(message.result);
   }
 
-  #failAll(error) {
+  #failAll(error, stopChild = false) {
+    const child = this.process;
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timeout);
       pending.reject(error);
     }
     this.pending.clear();
     this.process = null;
+    if (stopChild && child) {
+      child.stdin?.end();
+      void this.#waitForExit(child, 2000).then(() => {
+        if (child.exitCode === null && !child.killed) this.#forceStopTree(child);
+      });
+    }
   }
 }
 

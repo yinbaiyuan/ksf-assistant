@@ -23,7 +23,7 @@ func TestFixedEventCatalogMatchesFrozenContract(t *testing.T) {
 func TestOfficialInboundDispatchesFrozenReplayWithoutSecondConsumer(t *testing.T) {
 	var gotKey string
 	var gotBody []byte
-	inbound, err := NewOfficialInbound("cli_test", "secret", func(_ context.Context, key string, body []byte) error {
+	inbound, err := NewOfficialInbound(CapabilityExecutor{Binary: "fixture-cli"}, nil, func(_ context.Context, key string, body []byte) error {
 		gotKey, gotBody = key, body
 		return nil
 	}, nil)
@@ -45,7 +45,7 @@ func TestOfficialInboundDispatchesFrozenReplayWithoutSecondConsumer(t *testing.T
 
 func TestOfficialInboundDispatchesApprovalReplay(t *testing.T) {
 	var got string
-	inbound, err := NewOfficialInbound("cli_test", "secret", func(_ context.Context, key string, _ []byte) error { got = key; return nil }, nil)
+	inbound, err := NewOfficialInbound(CapabilityExecutor{Binary: "fixture-cli"}, nil, func(_ context.Context, key string, _ []byte) error { got = key; return nil }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

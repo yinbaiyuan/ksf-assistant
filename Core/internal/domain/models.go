@@ -214,12 +214,14 @@ type ProjectCatalog struct {
 }
 
 type RouteCategory struct {
+	ContextPolicy    *string `json:"context_policy,omitempty"`
 	CategoryID       *string `json:"category_id,omitempty"`
 	Name             *string `json:"name,omitempty"`
 	ValidationStatus *string `json:"validation_status,omitempty"`
 }
 
 type RouteJob struct {
+	ContextPolicy    *string `json:"context_policy,omitempty"`
 	JobID            *string `json:"job_id,omitempty"`
 	Name             *string `json:"name,omitempty"`
 	Role             *string `json:"role,omitempty"`
@@ -227,6 +229,8 @@ type RouteJob struct {
 }
 
 type RouteAbility struct {
+	ContextPolicy    *string `json:"context_policy,omitempty"`
+	ResponsibilityID *string `json:"responsibility_id,omitempty"`
 	AbilityID        *string `json:"ability_id,omitempty"`
 	Name             *string `json:"name,omitempty"`
 	JobID            *string `json:"job_id,omitempty"`
@@ -287,16 +291,35 @@ type ProjectUsageSummary struct {
 }
 
 type ProjectTask struct {
-	ID             string        `json:"id"`
-	ThreadID       string        `json:"threadId"`
-	TaskKey        string        `json:"taskKey"`
-	HostID         string        `json:"hostId"`
-	Name           *string       `json:"name,omitempty"`
-	Classification string        `json:"classification"`
-	WaitingReason  *string       `json:"waitingReason,omitempty"`
-	Route          *RouteSummary `json:"route,omitempty"`
-	CreatedAt      time.Time     `json:"createdAt"`
-	ProjectID      string        `json:"projectId"`
+	TaskRuntime    *TaskRuntimeState `json:"taskRuntime,omitempty"`
+	ID             string            `json:"id"`
+	ThreadID       string            `json:"threadId"`
+	TaskKey        string            `json:"taskKey"`
+	HostID         string            `json:"hostId"`
+	Name           *string           `json:"name,omitempty"`
+	Classification string            `json:"classification"`
+	WaitingReason  *string           `json:"waitingReason,omitempty"`
+	Route          *RouteSummary     `json:"route,omitempty"`
+	CreatedAt      time.Time         `json:"createdAt"`
+	ProjectID      string            `json:"projectId"`
+}
+
+type TaskRuntimeProgress struct {
+	Summary string `json:"summary,omitempty"`
+	Percent *int   `json:"percent,omitempty"`
+}
+
+type TaskRuntimeState struct {
+	TaskID          string               `json:"taskId"`
+	Revision        uint64               `json:"revision"`
+	Scope           string               `json:"scope"`
+	ReportedStatus  string               `json:"reportedStatus"`
+	ReportedAt      time.Time            `json:"reportedAt"`
+	ReportFreshness string               `json:"reportFreshness"`
+	RouteFreshness  string               `json:"routeFreshness"`
+	ObservedStatus  string               `json:"observedStatus"`
+	ObservedAt      time.Time            `json:"observedAt"`
+	Progress        *TaskRuntimeProgress `json:"progress,omitempty"`
 }
 
 type ProjectLaunchAction struct {

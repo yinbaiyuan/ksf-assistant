@@ -19,7 +19,8 @@ test('formal product identity is KSFAssistant on both desktop hosts', () => {
   assert.equal(manifest.build.appId, 'com.ksfassistant.desktop');
   assert.match(macInfo, /<string>KSFAssistant<\/string>/);
   assert.match(macInfo, /<string>com\.ksfassistant\.desktop<\/string>/);
-  assert.match(macInfo, /<string>0\.10\.0-preview\.1<\/string>/);
+  const releaseVersion = macInfo.match(/<key>KSFAssistantReleaseVersion<\/key>\s*<string>([^<]+)<\/string>/);
+  assert.equal(releaseVersion?.[1], manifest.version);
 });
 
 test('Windows host keeps business reads behind the KSFAssistant Core contract', () => {
@@ -90,7 +91,8 @@ test('interactive states and reduced motion are present', () => {
 
 test('explicit app exit waits for the KSFAssistant Core to stop the full server tree', () => {
   assert.match(main, /event\.preventDefault\(\)/);
-  assert.match(main, /Promise\.resolve\(core\?\.close\(\)\)/);
+  assert.match(main, /Promise\.resolve\(userApproval\?\.stop\(\)\)/);
+  assert.match(main, /then\(\(\) => core\?\.close\(\)\)/);
   assert.match(main, /finally\(\(\) => app\.exit\(0\)\)/);
   assert.match(fs.readFileSync(path.join(root, 'src', 'core-client.cjs'), 'utf8'), /taskkill\.exe/);
   assert.match(app, /退出 KSFAssistant 将停止核心服务、飞书服务及其子进程/);
@@ -133,6 +135,6 @@ test('Feishu ready settings expose permissions, optional capabilities, and diagn
 
 test('KSF is an optional integration and preview version is explicit', () => {
   assert.match(app, /KSF 是可选增强能力/);
-  assert.match(app, /0\.10\.0-preview\.1/);
+  assert.match(app, /0\.11\.0-preview\.1/);
   assert.doesNotMatch(app, /请先选择 KSF/);
 });

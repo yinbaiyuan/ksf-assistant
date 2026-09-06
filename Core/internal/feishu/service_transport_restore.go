@@ -4,13 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"time"
-
-	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 )
 
 type ServiceMessageOwnershipVerifier interface {
@@ -78,7 +75,7 @@ func (transport *ServiceTransport) RestoreCardBinding(ctx context.Context, targe
 			if binding.Target != target || !binding.Writable {
 				return ErrOperationRequestMismatch
 			}
-			if marker.Evidence == "sdk-bot-owned" && marker.VerifierIdentity == identity {
+			if marker.Evidence == "cli-bot-owned" && marker.VerifierIdentity == identity {
 				return nil
 			}
 		}
@@ -108,7 +105,7 @@ func (transport *ServiceTransport) RestoreCardBinding(ctx context.Context, targe
 				return err
 			}
 		}
-		marker = cardRestoration{Version: 1, Target: target, MessageFingerprint: secretHash(messageID), Evidence: "sdk-bot-owned", VerifierIdentity: identity, CompletedAt: time.Now().UTC()}
+		marker = cardRestoration{Version: 1, Target: target, MessageFingerprint: secretHash(messageID), Evidence: "cli-bot-owned", VerifierIdentity: identity, CompletedAt: time.Now().UTC()}
 		return writePrivateJSON(markerPath, marker)
 	})
 }
@@ -123,31 +120,26 @@ func (client *OfficialMessageClient) VerifyBotMessage(ctx context.Context, targe
 	if strings.TrimSpace(messageID) == "" || len(messageID) > 400 || strings.TrimSpace(target.ID) == "" || (target.Type != "chat_id" && target.Type != "open_id") {
 		return errors.New("invalid_restoration_message")
 	}
-	response, err := client.client.Im.Message.Get(ctx, larkim.NewGetMessageReqBuilder().MessageId(messageID).Build())
+
+	message, err := client.ReadMessage(ctx, messageID)
 	if err != nil {
+		var failure *CLICommandError
+		if errors.As(err, &failure) {
+			if failure.HTTPStatus == 429 || failure.HTTPStatus >= 500 || failure.ExitCode == 4 {
+				return fmt.Errorf("restoration_service_temporarily_unavailable: %w", err)
+			}
+			return fmt.Errorf("restoration_message_get_failed: %w", err)
+		}
 		return err
 	}
-	if response == nil {
-		return errors.New("restoration_message_missing")
-	}
-	if response.ApiResp != nil && (response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= http.StatusInternalServerError) {
-		return fmt.Errorf("restoration_service_temporarily_unavailable: status=%d", response.StatusCode)
-	}
-	if !response.Success() {
-		return fmt.Errorf("restoration_message_get_failed: code=%d", response.Code)
-	}
-	if response.Data == nil || len(response.Data.Items) != 1 {
-		return errors.New("restoration_message_missing")
-	}
-	message := response.Data.Items[0]
-	if message == nil || message.MessageId == nil || *message.MessageId != messageID || message.MsgType == nil || *message.MsgType != "interactive" || (message.Deleted != nil && *message.Deleted) {
+	if message["msg_type"] != "interactive" || message["deleted"] == true {
 		return errors.New("restoration_not_bot_card")
 	}
-	sender := message.Sender
-	if sender == nil || sender.SenderType == nil || *sender.SenderType != "app" || sender.IdType == nil || *sender.IdType != "app_id" || sender.Id == nil || *sender.Id != client.appID {
+	sender, _ := message["sender"].(map[string]any)
+	if sender == nil || sender["sender_type"] != "app" || sender["id_type"] != "app_id" || sender["id"] != client.appID {
 		return errors.New("restoration_not_bot_card")
 	}
-	if target.Type == "chat_id" && (message.ChatId == nil || *message.ChatId != target.ID) {
+	if target.Type == "chat_id" && message["chat_id"] != target.ID {
 		return ErrOperationRequestMismatch
 	}
 	return nil

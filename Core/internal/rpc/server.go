@@ -13,6 +13,7 @@ import (
 	managedfeishu "ksfassistant/core/internal/feishu"
 	"ksfassistant/core/internal/privateipc"
 	"ksfassistant/core/internal/service"
+	"ksfassistant/core/internal/userapproval"
 )
 
 type request struct {
@@ -36,11 +37,12 @@ type responseError struct {
 }
 
 type Server struct {
-	service *service.Service
-	reader  io.Reader
-	writer  io.Writer
-	writeMu sync.Mutex
-	stop    chan struct{}
+	service  *service.Service
+	reader   io.Reader
+	writer   io.Writer
+	writeMu  sync.Mutex
+	stop     chan struct{}
+	stopOnce sync.Once
 }
 
 func New(core *service.Service, reader io.Reader, writer io.Writer) *Server {
@@ -48,28 +50,94 @@ func New(core *service.Service, reader io.Reader, writer io.Writer) *Server {
 }
 
 func (server *Server) Serve(ctx context.Context) error {
-	scanner := bufio.NewScanner(server.reader)
-	scanner.Buffer(make([]byte, 64*1024), 64*1024*1024)
-	for scanner.Scan() {
-		line := append([]byte(nil), scanner.Bytes()...)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	lines := make(chan []byte)
+	readError := make(chan error, 1)
+	go func() {
+		var scanError error
+		defer func() { readError <- scanError; close(lines) }()
+		scanner := bufio.NewScanner(server.reader)
+		scanner.Buffer(make([]byte, 64*1024), 64*1024*1024)
+		for scanner.Scan() {
+			line := append([]byte(nil), scanner.Bytes()...)
+			select {
+			case lines <- line:
+			case <-ctx.Done():
+				scanError = ctx.Err()
+				return
+			}
+		}
+		scanError = scanner.Err()
+	}()
+	normal := make(chan []byte, 32)
+	reads := make(chan []byte, 4)
+	var workers sync.WaitGroup
+	var closeWorkersOnce sync.Once
+	closeWorkers := func() { closeWorkersOnce.Do(func() { close(normal); close(reads) }) }
+	for _, queue := range []chan []byte{normal, reads} {
+		workers.Add(1)
+		go func(queue <-chan []byte) {
+			defer workers.Done()
+			for line := range queue {
+				if ctx.Err() == nil {
+					server.handle(ctx, line)
+				}
+			}
+		}(queue)
+	}
+	defer func() {
+		cancel()
+		closeWorkers()
+		if closer, ok := server.reader.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		workers.Wait()
+	}()
+	initialized := false
+	for {
 		select {
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-server.stop:
 			return nil
-		default:
-		}
-		server.handle(ctx, line)
-		// shutdown has already flushed its reply. Do not enter Scan again:
-		// the host keeps stdin open while it waits for this process to exit.
-		select {
-		case <-server.stop:
-			return nil
-		default:
+		case line, open := <-lines:
+			if !open {
+				closeWorkers()
+				workers.Wait()
+				return <-readError
+			}
+			var call request
+			_ = json.Unmarshal(line, &call)
+			switch call.Method {
+			case "initialize":
+				if initialized {
+					server.write(response{JSONRPC: "2.0", ID: call.ID, Error: &responseError{Code: -32000, Message: "desktop_already_initialized"}})
+				} else {
+					initialized = true
+					server.handle(ctx, line)
+				}
+			case "userApproval/poll", "userApproval/decide", "health/read":
+				server.handle(ctx, line)
+			case "shutdown":
+				cancel()
+				closeWorkers()
+				workers.Wait()
+				server.handle(context.WithoutCancel(ctx), line)
+				return nil
+			default:
+				queue := normal
+				if call.Method == "dashboard/read" {
+					queue = reads
+				}
+				select {
+				case queue <- line:
+				default:
+					server.write(response{JSONRPC: "2.0", ID: call.ID, Error: &responseError{Code: -32000, Message: "desktop_request_busy"}})
+				}
+			}
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-	return nil
 }
 
 func (server *Server) handle(parent context.Context, line []byte) {
@@ -82,7 +150,7 @@ func (server *Server) handle(parent context.Context, line []byte) {
 		server.write(response{JSONRPC: "2.0", ID: call.ID, Error: &responseError{Code: -32600, Message: "invalid JSON-RPC request"}})
 		return
 	}
-	ctx, cancel := context.WithTimeout(parent, 45*time.Second)
+	ctx, cancel := context.WithTimeout(parent, desktopRequestTimeout(call.Method))
 	defer cancel()
 	result, err := server.dispatch(ctx, call.Method, call.Params)
 	if len(call.ID) == 0 || string(call.ID) == "null" {
@@ -99,10 +167,30 @@ func (server *Server) handle(parent context.Context, line []byte) {
 		return
 	}
 	server.write(response{JSONRPC: "2.0", ID: call.ID, Result: result})
+	if call.Method == "shutdown" {
+		server.stopOnce.Do(func() { close(server.stop) })
+	}
 }
 
 func (server *Server) dispatch(ctx context.Context, method string, params json.RawMessage) (any, error) {
 	switch method {
+	case "userApproval/poll":
+		var input struct {
+			Interactive *bool `json:"interactive"`
+		}
+		if err := userapproval.DecodeParams(params, &input, "interactive"); err != nil || input.Interactive == nil {
+			return nil, errors.New("approval_invalid_request")
+		}
+		return server.service.UserApprovalPoll(*input.Interactive), nil
+	case "userApproval/decide":
+		var input struct {
+			ID      string `json:"id"`
+			Approve *bool  `json:"approve"`
+		}
+		if err := userapproval.DecodeParams(params, &input, "id", "approve"); err != nil || input.ID == "" || input.Approve == nil {
+			return nil, errors.New("approval_invalid_request")
+		}
+		return server.service.UserApprovalDecide(input.ID, *input.Approve), nil
 	case "initialize":
 		var input service.InitializeRequest
 		if err := decodeParams(params, &input); err != nil {
@@ -237,15 +325,12 @@ func (server *Server) dispatch(ctx context.Context, method string, params json.R
 			return nil, err
 		}
 		return map[string]bool{"configured": true}, nil
-	case "feishu/auth/start":
-		return server.service.StartFeishuAuth(ctx)
-	case "feishu/auth/finish":
-		if err := server.service.FinishFeishuAuth(ctx); err != nil {
-			return nil, err
-		}
-		return map[string]bool{"authenticated": true}, nil
+	case "feishu/auth/status", "feishu/auth/start", "feishu/auth/finish", "feishu/auth/logout":
+		return server.dispatchAuth(ctx, method, params)
 	case "feishu/permissions/read":
 		return server.service.FeishuPermissions(ctx)
+	case "toolchain/status", "toolchain/install":
+		return server.dispatchToolchain(method, params)
 	case "feishu/settings/overview/read":
 		return server.service.FeishuSettingsOverview(ctx)
 	case "feishu/setup/read":
@@ -308,7 +393,6 @@ func (server *Server) dispatch(ctx context.Context, method string, params json.R
 		return server.service.ControlFeishuService(ctx, input.Action)
 	case "shutdown":
 		server.service.Close()
-		close(server.stop)
 		return map[string]bool{"stopped": true}, nil
 	default:
 		return nil, fmt.Errorf("unknown method: %s", method)

@@ -32,7 +32,7 @@ esac
 	capabilityID, input := documentCapabilityInput(request)
 	ctx, operationID := reviewRunningBoundary(t, root, capabilityID, input)
 	request.OperationID = operationID
-	result := executeDocumentRequest(ctx, CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root}, request, false)
+	result := executeDocumentRequest(ctx, CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root, UserApproval: allowFixtureBusinessCommands()}, request, false)
 	if result.Status != "completed" || result.Verified || result.VerificationState != string(VerificationInconclusive) || result.Verification == nil {
 		t.Fatalf("unexpected result: %#v", result)
 	}
@@ -75,7 +75,7 @@ esac
 	capabilityID, input := documentCapabilityInput(request)
 	ctx, operationID := reviewRunningBoundary(t, root, capabilityID, input)
 	request.OperationID = operationID
-	result := executeDocumentRequest(ctx, CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root}, request, false)
+	result := executeDocumentRequest(ctx, CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root, UserApproval: allowFixtureBusinessCommands()}, request, false)
 	if result.Status != string(OperationOutcomeUnknown) || result.FailurePhase != "verification" || result.Verified || result.Error == "" {
 		t.Fatalf("unexpected result: %#v", result)
 	}

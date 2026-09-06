@@ -2,20 +2,12 @@ package feishu
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"slices"
 	"strings"
 	"sync"
-
-	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
-	larkevent "github.com/larksuite/oapi-sdk-go/v3/event"
-	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
-	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
-	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 )
 
-// FixedEventKeys is the reviewed lark-cli 1.0.92 event surface plus the mail
-// receive event. Arbitrary event keys remain unavailable.
 var FixedEventKeys = []string{
 	"application.bot.menu_v6",
 	"approval.instance.status_changed_v4",
@@ -52,95 +44,156 @@ const ApprovalTaskStatusChangedEvent = "approval.task.status_changed_v4"
 type EventSink func(context.Context, string, []byte) error
 type ConnectionObserver func(string)
 
-// OfficialInbound owns exactly one official SDK client. HandlePayload is also
-// used by deterministic replay tests, so production comparison never requires
-// a second real Feishu consumer.
 type OfficialInbound struct {
-	dispatcher *dispatcher.EventDispatcher
-	client     *larkws.Client
-	observer   ConnectionObserver
-	mu         sync.Mutex
-	started    bool
+	runner   CapabilityExecutor
+	messages *OfficialMessageClient
+	sink     EventSink
+	observer ConnectionObserver
+	mu       sync.Mutex
+	cancel   context.CancelFunc
+	done     chan struct{}
 }
 
-func NewOfficialInbound(appID, appSecret string, sink EventSink, observer ConnectionObserver) (*OfficialInbound, error) {
-	if strings.TrimSpace(appID) == "" || appSecret == "" {
-		return nil, errors.New("official SDK credentials are required")
-	}
-	if sink == nil {
-		return nil, errors.New("event sink is required")
+func NewOfficialInbound(runner CapabilityExecutor, messages *OfficialMessageClient, sink EventSink, observer ConnectionObserver) (*OfficialInbound, error) {
+	if runner.Binary == "" || sink == nil {
+		return nil, errors.New("official CLI runner and event sink are required")
 	}
 	if observer == nil {
 		observer = func(string) {}
 	}
-	d := dispatcher.NewEventDispatcher("", "")
-	for _, key := range FixedEventKeys {
-		if key == "card.action.trigger" {
-			continue
-		}
-		eventKey := key
-		d.OnCustomizedEvent(eventKey, func(ctx context.Context, event *larkevent.EventReq) error {
-			body := slices.Clone(event.Body)
-			return sink(ctx, eventKey, body)
-		})
-	}
-	// Card callbacks have a much shorter platform response budget than normal
-	// events. Return the acknowledgement on the same long connection and queue
-	// the bridge work after that; never make a callback wait for Codex or CLI.
-	d.OnP2CardActionTrigger(func(ctx context.Context, event *callback.CardActionTriggerEvent) (*callback.CardActionTriggerResponse, error) {
-		if event == nil || event.EventReq == nil {
-			return nil, errors.New("card callback has no raw request")
-		}
-		body := slices.Clone(event.EventReq.Body)
-		if err := sink(ctx, "card.action.trigger", body); err != nil {
-			return nil, err
-		}
-		return &callback.CardActionTriggerResponse{Toast: &callback.Toast{
-			Type: "info", Content: "已接收，正在提交",
-		}}, nil
-	})
-	client := larkws.NewClient(
-		strings.TrimSpace(appID), appSecret,
-		larkws.WithEventHandler(d),
-		larkws.WithLogLevel(larkcore.LogLevelError),
-		larkws.WithLogger(discardSDKLogger{}),
-		larkws.WithSource("ksf-assistant"),
-		larkws.WithAutoReconnect(true),
-		larkws.WithOnReady(func() { observer("connected") }),
-		larkws.WithOnReconnecting(func() { observer("reconnecting") }),
-		larkws.WithOnReconnected(func() { observer("connected") }),
-		larkws.WithOnError(func(error) { observer("failed") }),
-		larkws.WithOnDisconnected(func() { observer("disconnected") }),
-	)
-	return &OfficialInbound{dispatcher: d, client: client, observer: observer}, nil
+	return &OfficialInbound{runner: runner, messages: messages, sink: sink, observer: observer}, nil
 }
 
 func (inbound *OfficialInbound) Start(ctx context.Context) error {
 	inbound.mu.Lock()
-	if inbound.started {
+	if inbound.cancel != nil {
 		inbound.mu.Unlock()
-		return errors.New("official SDK consumer is already running")
+		return errors.New("official CLI consumer is already running")
 	}
-	inbound.started = true
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	inbound.cancel = cancel
+	inbound.done = done
 	inbound.mu.Unlock()
+	defer func() { cancel(); inbound.mu.Lock(); inbound.cancel = nil; close(done); inbound.mu.Unlock() }()
 	inbound.observer("starting")
-	err := inbound.client.Start(ctx)
-	inbound.mu.Lock()
-	inbound.started = false
-	inbound.mu.Unlock()
+	err := inbound.runConsumers(runCtx)
+	if err != nil && runCtx.Err() == nil {
+		inbound.observer("failed")
+	} else {
+		inbound.observer("disconnected")
+	}
 	return err
 }
 
-func (inbound *OfficialInbound) Close() { inbound.client.Close() }
+func (inbound *OfficialInbound) Close() {
+	inbound.mu.Lock()
+	cancel, done := inbound.cancel, inbound.done
+	inbound.mu.Unlock()
+	if cancel != nil {
+		cancel()
+		<-done
+	}
+}
 
 func (inbound *OfficialInbound) HandlePayload(ctx context.Context, payload []byte) error {
-	_, err := inbound.dispatcher.Do(ctx, slices.Clone(payload))
-	return err
+	var raw map[string]any
+	if json.Unmarshal(payload, &raw) != nil {
+		return errors.New("invalid_event_payload")
+	}
+	header, _ := raw["header"].(map[string]any)
+	key := stringValue(header["event_type"])
+	if !contains(FixedEventKeys, key) {
+		return errors.New("unsupported_event_key")
+	}
+	return inbound.sink(ctx, key, append([]byte(nil), payload...))
 }
 
-type discardSDKLogger struct{}
-
-func (discardSDKLogger) Debug(context.Context, ...interface{}) {}
-func (discardSDKLogger) Info(context.Context, ...interface{})  {}
-func (discardSDKLogger) Warn(context.Context, ...interface{})  {}
-func (discardSDKLogger) Error(context.Context, ...interface{}) {}
+func (inbound *OfficialInbound) HandleCLIEvent(ctx context.Context, key string, payload []byte) error {
+	if !contains(FixedEventKeys, key) {
+		return errors.New("unsupported_event_key")
+	}
+	var raw map[string]any
+	if json.Unmarshal(payload, &raw) != nil {
+		return errors.New("invalid_cli_event")
+	}
+	if raw["type"] != key {
+		return errors.New("cli_event_type_mismatch")
+	}
+	if key != "im.message.receive_v1" && key != "card.action.trigger" {
+		return inbound.sink(ctx, key, payload)
+	}
+	identity := stringValue(raw["event_id"])
+	if identity == "" {
+		return errors.New("cli_event_identity_missing")
+	}
+	event := map[string]any{}
+	if key == "im.message.receive_v1" {
+		messageID, chatID, senderID := stringValue(raw["message_id"]), stringValue(raw["chat_id"]), stringValue(raw["sender_id"])
+		if messageID == "" || chatID == "" || senderID == "" {
+			return errors.New("cli_message_binding_missing")
+		}
+		messageType := stringValue(raw["message_type"])
+		content := ""
+		if messageType == "text" {
+			body, _ := json.Marshal(map[string]string{"text": stringValue(raw["content"])})
+			content = string(body)
+		} else {
+			if inbound.messages == nil {
+				return errors.New("cli_original_message_required")
+			}
+			original, err := inbound.messages.ReadMessage(ctx, messageID)
+			if err != nil {
+				return err
+			}
+			sender, _ := original["sender"].(map[string]any)
+			if original["chat_id"] != chatID || original["msg_type"] != messageType || sender["id"] != senderID || sender["id_type"] != "open_id" {
+				return errors.New("cli_original_message_binding_mismatch")
+			}
+			body, _ := original["body"].(map[string]any)
+			content = stringValue(body["content"])
+			if content == "" {
+				return errors.New("cli_original_message_content_missing")
+			}
+		}
+		mentions := []any{}
+		if entries, ok := raw["mentions"].([]any); ok {
+			for _, entry := range entries {
+				mention, ok := entry.(map[string]any)
+				if !ok {
+					return errors.New("cli_mention_invalid")
+				}
+				mentions = append(mentions, map[string]any{"key": mention["key"], "name": mention["name"], "id": map[string]any{"open_id": mention["id"]}})
+			}
+		}
+		event["sender"] = map[string]any{"sender_type": raw["sender_type"], "sender_id": map[string]any{"open_id": senderID}}
+		event["message"] = map[string]any{"message_id": messageID, "chat_id": chatID, "chat_type": raw["chat_type"], "message_type": messageType, "content": content, "root_id": raw["root_id"], "parent_id": raw["reply_to"], "thread_id": raw["thread_id"], "mentions": mentions}
+	} else {
+		if stringValue(raw["message_id"]) == "" || stringValue(raw["operator_id"]) == "" {
+			return errors.New("cli_card_binding_missing")
+		}
+		value := jsonObject(raw["action_value"])
+		if len(value) == 0 && raw["action_tag"] == "overflow" {
+			value = jsonObject(raw["option"])
+		}
+		if len(value) == 0 {
+			return errors.New("cli_card_action_value_missing")
+		}
+		form := map[string]any{}
+		if text := stringValue(raw["form_value"]); text != "" && (json.Unmarshal([]byte(text), &form) != nil || form == nil) {
+			return errors.New("cli_card_form_invalid")
+		}
+		action := map[string]any{"tag": raw["action_tag"], "name": raw["action_name"], "value": value, "form_value": form, "input_value": raw["input_value"], "option": raw["option"], "checked": raw["checked"]}
+		if options := stringValue(raw["options"]); options != "" {
+			action["options"] = strings.Split(options, ",")
+		}
+		event["action"] = action
+		event["operator"] = map[string]any{"open_id": raw["operator_id"]}
+		event["context"] = map[string]any{"open_message_id": raw["message_id"], "open_chat_id": raw["chat_id"]}
+	}
+	normalized, err := json.Marshal(map[string]any{"schema": "2.0", "header": map[string]any{"event_type": key, "event_id": identity, "create_time": raw["timestamp"]}, "event": event})
+	if err != nil {
+		return err
+	}
+	return inbound.sink(ctx, key, normalized)
+}

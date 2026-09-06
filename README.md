@@ -4,7 +4,7 @@ KSFAssistant 的名称含义是“知识－技能－飞轮－助手”（Knowled
 
 KSFAssistant 是一个 macOS 菜单栏与 Windows 系统托盘应用，用来查看 Codex 额度、Token 活动和任务状态。它也可以在软件内接入飞书；KSF 项目工作台是可选增强能力。
 
-当前版本：`0.10.0-preview.1`。这是公开预览版源码，尚未正式发布。
+当前版本：`0.11.0-preview.3`。这是本机预览改造工作树；实机验收完成前不标记可发布。保留[用户身份写操作桌面批准门禁](docs/architecture/user-write-approval.md)，进行[受管飞书能力统一补全](docs/architecture/managed-feishu-capabilities.md)。
 
 KSFAssistant 是社区开源项目，不是 OpenAI 官方产品，也不代表 OpenAI
 背书。“Codex”和“OpenAI”及其相关商标归各自权利人所有。
@@ -14,7 +14,7 @@ KSFAssistant 是社区开源项目，不是 OpenAI 官方产品，也不代表 O
 1. 从未来公开 Release 页面下载与你的电脑匹配的安装包。
 2. 安装并打开 KSFAssistant。
 3. 保持 Codex 已登录。额度、Token 和任务状态会自动出现。
-4. 如需飞书，在“设置 → 飞书”中按向导完成创建新应用或接入已有应用。
+4. 如需飞书，在“设置 → 飞书”中接入已有飞书应用并完成官方授权；本预览不自动创建应用。
 5. 如需 KSF 项目工作台，在“设置 → KSF 知识库”中选择目录；软件会自动验证。
 
 普通用户不需要安装 Node.js、Go、Git 或 Ruby，不需要运行 Terminal/PowerShell，不需要启动后台服务，也不需要编辑 `.env`、JSON 或其他配置文件。飞书租户管理员必须完成的官方授权和应用发布确认会由软件打开对应飞书页面，并在返回后自动检查。
@@ -28,7 +28,8 @@ KSFAssistant 是社区开源项目，不是 OpenAI 官方产品，也不代表 O
 - 显示 Codex Desktop 顶层任务的运行、等待与完成状态。
 - 可选连接 KSF 项目目录；KSF 不可用时不影响额度、Token、任务状态或飞书。
 - KSFAssistant 自动管理 KSFAssistant Core 与飞书服务的完整生命周期。关闭面板或最小化到托盘不会停止服务；明确退出应用才会关闭进程树。
-- 飞书 App Secret、OAuth token 和其他凭据只进入当前用户的 Keychain 或 DPAPI 安全存储，不返回界面、不进入日志或命令行。
+- 飞书凭据由官方 CLI 管理本机安全存储；App Secret 通过私有 stdin 传入，Token 与设备凭据不返回界面、不进入普通日志或命令行。
+- 官方 CLI/Skills 随应用固定版本；任务报告 CLI 可在 Core 关闭时运行，报告不改变 Codex 的执行权。
 - 飞书真实用户 ID、消息正文和队列内容不进入 KSFAssistant 的渲染层。
 
 ## 平台支持
@@ -48,9 +49,9 @@ macOS 与 Windows 安装包都只携带 Go 飞书服务与固定版 `lark-cli`�
 - [支持范围](SUPPORT.md)
 - [行为准则](CODE_OF_CONDUCT.md)
 - [架构说明](docs/ARCHITECTURE.md)
+- [0.11 本机预览边界](docs/architecture/preview-0.11.md)
 - [产品身份与升级](docs/architecture/product-identity-migration.md)
 - [开发者构建说明](docs/CONTRIBUTING_BUILD.md)
-- [Vue 3 飞书人工测试台](FeishuLab/README.md)（开发工具，不随桌面包自动启动）
 - [第三方依赖声明](THIRD_PARTY_NOTICES.md)
 
 本轮只准备源码与预览资产，不创建公开远端、不推送或发布。未来公开仓库将从审计通过的工作树导出干净快照并创建单一首提交，不携带当前私有 Git 历史、remote、refs、reflog 或对象库。

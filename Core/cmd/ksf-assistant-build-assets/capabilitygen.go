@@ -169,7 +169,7 @@ func generateFeishuCapabilities(repoRoot, binary string) error {
 		return err
 	}
 	sort.Slice(definitions, func(i, j int) bool { return definitions[i].ID < definitions[j].ID })
-	output := capabilityAdditions{SchemaVersion: 2, BridgeVersion: "2.0.0", LarkCLIVersion: "1.0.92", Capabilities: definitions}
+	output := capabilityAdditions{SchemaVersion: 2, BridgeVersion: "2.0.0", LarkCLIVersion: feishu.PinnedLarkCLIVersion, Capabilities: definitions}
 	data, err := json.MarshalIndent(output, "", "  ")
 	if err != nil {
 		return err
@@ -553,7 +553,7 @@ func shortcutCapability(binary, domain, commandLine string) (feishu.CapabilityDe
 		return feishu.CapabilityDefinition{}, err
 	}
 	definition.FlagOrder = sortedKeys(definition.Flags)
-	return definition, nil
+	return feishu.CanonicalCapabilityContract(definition)
 }
 
 func baseGeneratedDefinition(id string, command []string, risk string) feishu.CapabilityDefinition {
@@ -632,7 +632,6 @@ func helpCapabilityField(name, kind, description string) feishu.CapabilityField 
 	if name == "data" || name == "json" || strings.HasSuffix(name, "-json") {
 		field.Type, field.Private, field.Max, field.MaxBytes = "json", true, 0, 2*1024*1024
 	}
-	field.Required = strings.Contains(strings.ToLower(description), "required") || strings.Contains(description, "必填")
 	return field
 }
 
@@ -797,7 +796,7 @@ func excludedShortcutFlag(name, kind string) bool {
 			return true
 		}
 	}
-	return strings.Contains(name, "permission") || strings.Contains(name, "member") || strings.Contains(name, "role")
+	return false
 }
 
 func runCLI(binary string, arguments ...string) ([]byte, error) {

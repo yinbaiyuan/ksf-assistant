@@ -48,6 +48,14 @@ func (store EventConsumerStateStore) UpdateConnection(profile, state string) err
 				item["status"] = "stopped"
 			}
 			item["updatedAt"] = now
+			if !contains(CLIManagedEventKeys, key) {
+				item["status"] = "not_enabled"
+				item["errorCode"] = "explicit_subscription_required"
+				if key == MailMessageReceivedEvent {
+					item["status"] = "unsupported"
+					item["errorCode"] = "unsupported_by_pinned_cli"
+				}
+			}
 			events[key] = item
 		}
 		value["events"] = events
@@ -90,7 +98,7 @@ func (store EventConsumerStateStore) update(change func(map[string]any, string))
 		}
 		now := time.Now().UTC().Format(time.RFC3339Nano)
 		value["schemaVersion"] = 3
-		value["transport"] = "official-sdk"
+		value["transport"] = "official-cli"
 		value["updatedAt"] = now
 		change(value, now)
 		return writePrivateJSON(store.path, value)

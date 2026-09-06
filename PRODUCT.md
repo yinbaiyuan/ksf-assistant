@@ -8,7 +8,7 @@ KSFAssistant is an open-source macOS menu-bar and Windows system-tray instrument
 
 ## Current release
 
-The prepared `0.10.0-preview.1` public preview keeps the platform UI, shared Go core, and supervised Feishu Bridge in one product. Ordinary users configure integrations entirely inside the software and do not install runtimes or operate background services.
+The `0.11.0-preview.1` local preview keeps the platform UI, shared Go core, and supervised Feishu service in one product, with pinned official CLI/Skills and an independent advisory task-reporting CLI. Real hardware acceptance is separate from build success. Ordinary users configure integrations inside the software and do not install runtimes or operate background services.
 
 ## Confirmed hierarchy
 
@@ -33,7 +33,7 @@ The prepared `0.10.0-preview.1` public preview keeps the platform UI, shared Go 
 - Opening the panel, waking the device, and existing timers refresh data; platform shells may expose an explicit refresh control when that matches native conventions.
 - New tasks always use the configured KSF root as their Codex Desktop project root and receive the explicit name `项目名 · 新任务`. The exact task opens first; its visible Codex Desktop window then submits the compact KSF context-preparation turn and immediately shows the native active-reply state. Engineering-folder actions still use a menu when multiple roots exist.
 - Project launch is a direct user action and only recognizes `start.sh` on macOS or `start.ps1` on Windows in the KSF project directory. It opens a visible Terminal or PowerShell window in that directory and executes the script; Git mappings and action manifests do not participate.
-- Settings owns a resumable Feishu setup page with new-app and existing-app paths, factual bridge status, sanitized target-alias selection, and explicit test delivery. It never displays real target IDs, credentials, command contents, or chat history.
+- Settings owns existing-app Feishu setup, official streaming user authorization, separate permission/readiness checks, sanitized target aliases and explicit test delivery. Automatic app creation is unavailable in this preview. Token and device credentials never return to the UI.
 - The daily Token page uses the server-published account bucket as the full bar and overlays this device's independently reconstructed local usage. Selecting a date shows both exact totals and the unclamped local/server percentage. A missing server date remains `未同步`, never zero; the page states that server publication can lag and retains the local input/cache/output composition.
 
 ## Trust boundaries
@@ -42,11 +42,11 @@ The prepared `0.10.0-preview.1` public preview keeps the platform UI, shared Go 
 - The core re-resolves project IDs against the current KSF catalog before task creation or project launch. It does not trust renderer-provided project paths, titles or state.
 - KSF owns Markdown interpretation and exports `ksf-panel-catalog-v1`; the app is a read-only consumer.
 - Route projection is display-only and never replaces the verified receipt, task trace, project memory contract, or governance authority.
-- Raw task IDs are HMAC-addressed on disk. Task titles, conversation content, complete receipts, and governance evidence are never persisted.
+- Independent runtime records use HMAC task IDs and retain actual v6 routing receipts plus minimal Agent-reported progress in the selected workspace. Raw task IDs and conversation history are excluded; reporting is not governance evidence or proof of Skill execution.
 - Project Token totals begin at verified binding time, include child agents by inheritance, split on later project bindings, and report incomplete local coverage instead of showing a false zero.
 - Quota and the global task counter remain available when the KSF bridge fails.
-- KSFAssistant owns the isolated Feishu Bridge process but not its authority. The bridge implements transport and inbound handling, derives authoritative task state, enforces the exact direct-message operator, observes/steers/interrupts Codex turns, handles ordinary attachments and non-secret input, and owns the 24-hour inactivity lease, redaction and wake assertion.
-- The bot token and queue encryption key stay in Keychain; the bounded command queue and protocol cursor are encrypted at rest.
+- Core integration owns task links, Desktop requests, Plan/questions and card business rules. The isolated Feishu process handles CLI transport, inbound normalization, operator authorization and durable delivery; it does not decide task orchestration.
+- Official CLI owns authentication persistence. Existing secure credentials and durable queues remain in place; the preview does not export secrets or duplicate queues.
 
 ## Not in this preview
 

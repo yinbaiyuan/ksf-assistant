@@ -1,6 +1,6 @@
 {
   "name": "ksfassistant-windows",
-  "version": "0.10.0-preview.1",
+  "version": "0.11.0-preview.3",
   "private": true,
   "description": "Windows system-tray host for KSFAssistant",
   "author": "KSFAssistant contributors",
@@ -23,12 +23,31 @@
     "appId": "com.ksfassistant.desktop",
     "productName": "KSFAssistant",
     "asar": true,
+    "afterSign": "scripts/seal-runtime.cjs",
     "files": [
       "src/**/*",
       "assets/**/*",
       "package.json"
     ],
     "extraResources": [
+      {
+        "from": "../dist/runtime/toolchain/windows-${arch}",
+        "to": "runtime/toolchain/windows-${arch}",
+        "filter": ["ksf-assistant-toolchain.exe"]
+      },
+      {
+        "from": "../dist/runtime/task/windows-${arch}",
+        "to": "runtime/task/windows-${arch}",
+        "filter": ["ksf-assistant-task.exe"]
+      },
+      {
+        "from": "../dist/runtime/lark-skills",
+        "to": "runtime/lark-skills"
+      },
+      {
+        "from": "../dist/runtime/lark-cli-runtime.json",
+        "to": "runtime/lark-cli-runtime.json"
+      },
       {
         "from": "../dist/core/windows-${arch}",
         "to": "core/windows-${arch}",

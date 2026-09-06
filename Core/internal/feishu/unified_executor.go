@@ -45,7 +45,7 @@ func (executor UnifiedCapabilityExecutor) ExecuteWithOptions(ctx context.Context
 			return nil, &CapabilityExecutionError{Phase: "preflight", Err: err}
 		}
 	}
-	if options.Timeout > 0 {
+	if options.Timeout > 0 && definition.Identity != "user" {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, options.Timeout)
 		defer cancel()
@@ -174,6 +174,9 @@ func (executor UnifiedCapabilityExecutor) executeDocumentDirect(ctx context.Cont
 		}
 		return map[string]any{"capabilityId": id, "response": result, "verified": false, "verificationState": result.VerificationState}, &CapabilityExecutionError{Phase: phase, Err: errors.New("document_update_outcome_unknown")}
 	default:
+		if result.FailurePhase == "approval" {
+			return nil, &CapabilityExecutionError{Phase: "approval", Err: &UserApprovalError{Code: result.Error}}
+		}
 		return nil, &CapabilityExecutionError{Phase: "remote_result", Err: errors.New("document_update_" + result.Status)}
 	}
 }

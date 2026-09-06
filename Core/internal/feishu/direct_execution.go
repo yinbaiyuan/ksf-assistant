@@ -184,6 +184,17 @@ func beforeRemoteWrite(ctx context.Context) error {
 	if err := checkExecutionBoundary(ctx); err != nil {
 		return err
 	}
+	boundary := ctx.Value(executionBoundaryKey{}).(executionBoundary)
+	if definition, ok := CapabilityByID(boundary.capabilityID); ok && definition.Identity == "user" {
+		return nil
+	}
+	return beforeApprovedRemoteWrite(ctx)
+}
+
+func beforeApprovedRemoteWrite(ctx context.Context) error {
+	if err := checkExecutionBoundary(ctx); err != nil {
+		return err
+	}
 	if work, ok := ctx.Value(executionWorkKey{}).(executionWork); ok {
 		return work.repository.setExecutionPhase(work.item.ID, "writing")
 	}

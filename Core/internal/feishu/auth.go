@@ -5,58 +5,50 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+
+	"ksfassistant/core/internal/userapproval"
 )
 
-type userAuthState struct {
-	SchemaVersion   int       `json:"schemaVersion"`
-	Flow            string    `json:"flow"`
-	StartedAt       time.Time `json:"startedAt"`
-	VerificationURL string    `json:"verificationUrl"`
-	UserCode        string    `json:"userCode"`
-	DeviceCode      string    `json:"deviceCode"`
-	QRPath          string    `json:"qrPath"`
-}
-
 func (runner CapabilityExecutor) RunAuthJSON(ctx context.Context, args []string, stdin []byte, timeout time.Duration) (map[string]any, error) {
-	if runner.Binary == "" {
-		return nil, errors.New("lark-cli binary is required")
+	if err := validateAuthCommand(runner, args, stdin); err != nil {
+		return nil, err
 	}
-	if len(args) < 2 || !contains([]string{"auth", "contact", "config"}, args[0]) {
-		return nil, errors.New("unsupported lark auth command")
+	if args[0] == "config" && args[1] == "init" || args[0] == "auth" && args[1] == "logout" {
+		release, err := userapproval.TryExecutionLease(runner.DataRoot)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
 	}
-	full := []string{}
-	if runner.Profile != "" && args[0] != "config" {
-		full = append(full, "--profile", runner.Profile)
+	if timeout <= 0 || timeout > time.Minute {
+		timeout = time.Minute
 	}
-	full = append(full, args...)
 	commandCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	command := exec.CommandContext(commandCtx, runner.Binary, full...)
+	command := exec.CommandContext(commandCtx, runner.Binary, append([]string{"--profile", "default"}, args...)...)
 	command.Dir = runner.WorkingDirectory
+	command.Env = authEnvironment()
+	command.WaitDelay = 2 * time.Second
 	command.Stdin = bytes.NewReader(stdin)
-	var stdout, stderr bytes.Buffer
+	stdout := boundedCommandBuffer{limit: maximumAuthOutputBytes}
+	stderr := boundedCommandBuffer{limit: 32 * 1024}
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err != nil {
-		return nil, fmt.Errorf("lark-cli auth failed: %s", safeCommandError(stderr.String(), stdout.String()))
+		return nil, errors.New("官方 CLI 授权操作失败，请检查授权配置后重试")
 	}
-	data := stdout.Bytes()
-	if len(bytes.TrimSpace(data)) == 0 {
-		data = stderr.Bytes()
+	if stdout.overflow || stderr.overflow {
+		return nil, errors.New("官方 CLI 授权输出超出安全限制")
 	}
 	var result map[string]any
-	if json.Unmarshal(data, &result) != nil {
-		if args[0] == "config" {
-			return map[string]any{}, nil
-		}
-		return nil, errors.New("lark-cli auth returned non-json")
+	if json.Unmarshal(stdout.Bytes(), &result) != nil || result == nil || !validAuthResult(args, result) {
+		return nil, errors.New("官方 CLI 授权响应格式无效")
 	}
 	return result, nil
 }
@@ -65,133 +57,48 @@ func ConfigureExistingApp(ctx context.Context, runner CapabilityExecutor, appID,
 	if !regexp.MustCompile(`^[A-Za-z0-9_-]{3,128}$`).MatchString(appID) || strings.TrimSpace(appSecret) == "" {
 		return nil, errors.New("invalid existing app credentials")
 	}
-	if brand != "lark" {
-		brand = "feishu"
+	if brand != "" && brand != "feishu" {
+		return nil, errors.New("此版本仅支持飞书品牌 feishu")
 	}
+	brand = "feishu"
 	if profile == "" {
 		profile = "default"
 	}
+	CancelUserAuthFlow(runner.DataRoot)
 	_, err := runner.RunAuthJSON(ctx, []string{"config", "init", "--name", profile, "--app-id", appID, "--app-secret-stdin", "--brand", brand, "--lang", "zh_cn", "--json"}, []byte(appSecret+"\n"), time.Minute)
 	if err != nil {
 		return nil, err
 	}
-	if err := storePlatformOfficialCredentials(runner.DataRoot, appID, appSecret, brand); err != nil {
-		return nil, err
-	}
-	return map[string]any{"status": "configured", "flow": "existing-app", "profile": profile, "brand": brand, "larkCliProfile": "configured", "sdkCredential": platformOfficialCredentialStatus(), "next": "run_auth_start_user_for_qr_oauth"}, nil
+	return map[string]any{"status": "configured", "flow": "existing-app", "profile": profile, "brand": brand, "larkCliProfile": "configured", "next": "run_auth_start_user_for_qr_oauth"}, nil
 }
 
 func StartAppConfiguration(ctx context.Context, runner CapabilityExecutor, dataRoot, profile string, createNew bool) (map[string]any, error) {
+	if createNew {
+		return nil, errors.New("此版本暂不支持自动创建专用飞书应用，请在飞书后台创建后接入已有应用")
+	}
 	if profile == "" {
 		profile = "default"
 	}
-	if !createNew {
-		if _, err := runner.RunAuthJSON(ctx, []string{"auth", "status", "--json"}, nil, 15*time.Second); err != nil {
-			return nil, errors.New("existing_app_credentials_required")
-		}
-		return map[string]any{"status": "configured", "flow": "existing-config", "profile": profile, "next": "run_auth_start_user_for_qr_oauth"}, nil
+	if profile != "default" {
+		return nil, errors.New("官方 CLI 配置必须为 default")
 	}
-	authRoot := filepath.Join(dataRoot, "auth")
-	if err := ensurePrivateDirectory(authRoot); err != nil {
-		return nil, err
+	if _, err := runner.RunAuthJSON(ctx, []string{"auth", "status", "--json"}, nil, 15*time.Second); err != nil {
+		return nil, errors.New("existing_app_credentials_required")
 	}
-	logPath := filepath.Join(authRoot, "config-init.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	command := exec.Command(runner.Binary, "config", "init", "--new", "--name", profile, "--lang", "zh_cn")
-	command.Dir = runner.WorkingDirectory
-	command.Stdin = nil
-	command.Stdout = logFile
-	command.Stderr = logFile
-	if err := command.Start(); err != nil {
-		_ = logFile.Close()
-		return nil, err
-	}
-	_ = command.Process.Release()
-	_ = logFile.Close()
-	deadline := time.Now().Add(15 * time.Second)
-	verification := ""
-	for time.Now().Before(deadline) {
-		data, _ := os.ReadFile(logPath)
-		verification = regexp.MustCompile(`https?://[^\s"'<>]+`).FindString(string(data))
-		if verification != "" {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
-	if verification == "" {
-		return nil, fmt.Errorf("lark-cli config init did not return a verification URL; see private log: %s", logPath)
-	}
-	qrPath := filepath.Join(authRoot, "config-init.png")
-	if err := runQRCode(ctx, runner, verification, qrPath); err != nil {
-		return nil, err
-	}
-	statePath := filepath.Join(authRoot, "config-init.json")
-	if err := writePrivateJSON(statePath, map[string]any{"schemaVersion": 1, "flow": "config-init", "profile": profile, "verificationUrl": verification, "qrPath": qrPath, "logPath": logPath, "startedAt": time.Now().UTC()}); err != nil {
-		return nil, err
-	}
-	return map[string]any{"status": "pending", "flow": "config-init", "profile": profile, "verificationUrl": verification, "qrPath": qrPath, "statePath": statePath, "next": "scan_qr_then_run_auth_start_user"}, nil
+	return map[string]any{"status": "configured", "flow": "existing-config", "profile": profile, "next": "run_auth_start_user_for_qr_oauth"}, nil
 }
 
 func StartUserAuth(ctx context.Context, runner CapabilityExecutor, dataRoot, scope string) (map[string]any, error) {
-	args := []string{"auth", "login", "--no-wait", "--json"}
-	if scope == "" || scope == "required" {
-		contract, err := RequiredPermissionScopes()
-		if err != nil {
-			return nil, err
-		}
-		args = append(args, "--scope", strings.Join(contract.User, ","))
-	} else if scope != "recommend" {
-		args = append(args, "--scope", scope)
-	} else {
-		args = append(args, "--recommend")
-	}
-	result, err := runner.RunAuthJSON(ctx, args, nil, 20*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	verification := firstHTTPURL(result)
-	device := recursiveText(result, "device_code", "deviceCode")
-	userCode := recursiveText(result, "user_code", "userCode")
-	if verification == "" || device == "" {
-		return nil, errors.New("lark-cli auth login did not return verification data")
-	}
-	authRoot := filepath.Join(dataRoot, "auth")
-	if err := ensurePrivateDirectory(authRoot); err != nil {
-		return nil, err
-	}
-	qrPath := filepath.Join(authRoot, "user-oauth.png")
-	if err := runQRCode(ctx, runner, verification, qrPath); err != nil {
-		return nil, err
-	}
-	state := userAuthState{SchemaVersion: 1, Flow: "user-oauth", StartedAt: time.Now().UTC(), VerificationURL: verification, UserCode: userCode, DeviceCode: device, QRPath: qrPath}
-	statePath := filepath.Join(authRoot, "user-oauth.json")
-	if err := writePrivateJSON(statePath, state); err != nil {
-		return nil, err
-	}
-	return map[string]any{"status": "pending", "flow": "user-oauth", "verificationUrl": verification, "userCode": userCode, "qrPath": qrPath, "statePath": statePath, "next": "scan_qr_then_run_auth_finish_user"}, nil
+	status, err := startUserAuthSession(ctx, runner, dataRoot, scope)
+	return authStatusMap(status), err
 }
 
 func FinishUserAuthFlow(ctx context.Context, runner CapabilityExecutor, dataRoot, deviceCode string) (map[string]any, error) {
-	if deviceCode == "" {
-		var state userAuthState
-		missing, err := readPrivateJSON(filepath.Join(dataRoot, "auth", "user-oauth.json"), &state)
-		if err != nil || missing {
-			return nil, errors.New("device code is unavailable; run auth start-user first")
-		}
-		deviceCode = state.DeviceCode
+	if deviceCode != "" {
+		return nil, errors.New("旧版授权续传已停用，请重新发起授权")
 	}
-	result, err := runner.RunAuthJSON(ctx, []string{"auth", "login", "--device-code", deviceCode, "--json"}, nil, 2*time.Minute)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{"status": "completed", "flow": "user-oauth", "result": result}, nil
+	status, err := finishUserAuthSession(ctx, runner, dataRoot)
+	return authStatusMap(status), err
 }
 
 func EnsureCurrentUser(ctx context.Context, runner CapabilityExecutor, store ClientConfigStore) (map[string]any, error) {
@@ -241,7 +148,7 @@ func AuthPermissions(ctx context.Context, runner CapabilityExecutor) (map[string
 	oauthGranted := stringList(user["scope"])
 	appGranted := stringList(scopes["userScopes"])
 	appReportAvailable := scopes["userScopes"] != nil
-	effectiveGranted := oauthGranted
+	effectiveGranted := append([]string{}, oauthGranted...)
 	if appReportAvailable {
 		allowed := map[string]bool{}
 		for _, value := range appGranted {
@@ -270,13 +177,21 @@ func AuthPermissions(ctx context.Context, runner CapabilityExecutor) (map[string
 }
 
 func runQRCode(ctx context.Context, runner CapabilityExecutor, url, path string) error {
+	if !validAuthVerificationURL(url) {
+		return errors.New("二维码链接无效")
+	}
 	command := exec.CommandContext(ctx, runner.Binary, "auth", "qrcode", url, "--output", filepath.Base(path), "--size", "360")
 	command.Dir = filepath.Dir(path)
-	var output bytes.Buffer
+	command.Env = authEnvironment()
+	command.WaitDelay = 2 * time.Second
+	output := boundedCommandBuffer{limit: maximumAuthOutputBytes}
 	command.Stdout = &output
 	command.Stderr = &output
 	if err := command.Run(); err != nil {
-		return fmt.Errorf("QR code generation failed: %s", safeCommandError(output.String()))
+		return errors.New("二维码生成失败，请使用官方授权链接")
+	}
+	if output.overflow {
+		return errors.New("二维码输出超出安全限制")
 	}
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {

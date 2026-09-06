@@ -23,7 +23,7 @@ func TestCapabilityResultIsClippedBeforePersistence(t *testing.T) {
 	}
 }
 
-func TestCapabilityInvocationKeepsPrivateTextOutOfArguments(t *testing.T) {
+func TestCapabilityInvocationUsesOnlyDeclaredInputCarriers(t *testing.T) {
 	definition, ok := CapabilityByID("im.message.reply")
 	if !ok {
 		t.Fatal("missing capability")
@@ -32,11 +32,8 @@ func TestCapabilityInvocationKeepsPrivateTextOutOfArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(stdin) != "private body" {
-		t.Fatalf("private body not routed to stdin: %q", stdin)
-	}
-	if strings.Contains(strings.Join(args, " "), "private body") || len(files) != 0 {
-		t.Fatalf("private body leaked into invocation: %#v", args)
+	if len(stdin) != 0 || !strings.Contains(strings.Join(args, " "), "--text private body") || len(files) != 0 {
+		t.Fatalf("plain text used an undeclared input carrier: %#v", args)
 	}
 }
 
@@ -63,29 +60,17 @@ func TestRawCapabilityUsesPrivatePayloadFiles(t *testing.T) {
 	}
 }
 
-func TestForbiddenPayloadTraversesArrays(t *testing.T) {
-	if !forbiddenPayload(map[string]any{"items": []any{map[string]any{"operation": "delete"}}}) {
-		t.Fatal("nested destructive operation accepted")
-	}
-}
-
-func TestApprovalCarrierPayloadIsNotRejectedByLegacyDomainBan(t *testing.T) {
-	if forbiddenPayload(map[string]any{"data": map[string]any{"approval": "approved", "instance_code": "instance_1"}}) {
-		t.Fatal("fixed approval capability payload was rejected by the retired domain ban")
-	}
-}
-
 func TestApprovalDecisionInvocationUsesPrivateDataAndCLIGate(t *testing.T) {
 	definition, ok := CapabilityByID("approval.tasks.approve")
 	if !ok {
 		t.Fatal("missing approval decision capability")
 	}
-	args, _, files, err := capabilityInvocation(definition, map[string]any{"data": map[string]any{"instance_code": "instance_1", "task_id": "task_1", "comment": "private approval comment"}})
+	args, stdin, files, err := capabilityInvocation(definition, map[string]any{"data": map[string]any{"instance_code": "instance_1", "task_id": "task_1", "comment": "private approval comment"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "--yes") || strings.Contains(joined, "private approval comment") || len(files) != 1 {
+	if strings.Contains(joined, "--yes") || strings.Contains(joined, "private approval comment") || len(files) != 0 || !strings.Contains(string(stdin), "private approval comment") {
 		t.Fatalf("unsafe approval invocation: args=%#v files=%d", args, len(files))
 	}
 }
@@ -99,8 +84,8 @@ func TestEnabledApprovalCancellationStillUsesTheCLIGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !contains(args, "--yes") {
-		t.Fatalf("destructive approval invocation omitted CLI confirmation: %#v", args)
+	if contains(args, "--yes") {
+		t.Fatalf("destructive approval invocation confirmed before the gate: %#v", args)
 	}
 }
 
@@ -155,7 +140,7 @@ esac
 	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	runner := CapabilityExecutor{Binary: bin, Profile: "test", DataRoot: root, WorkingDirectory: root}
+	runner := CapabilityExecutor{Binary: bin, Profile: "test", DataRoot: root, WorkingDirectory: root, UserApproval: allowFixtureBusinessCommands()}
 	result, err := runner.Execute(context.Background(), "markdown.overwrite", map[string]any{
 		"file-token": "fm_test", "content": "replacement",
 	})
@@ -231,7 +216,7 @@ esac
 	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	runner := CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root}
+	runner := CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root, UserApproval: allowFixtureBusinessCommands()}
 	result, err := runner.Execute(context.Background(), "markdown.overwrite", map[string]any{"file-token": "fm_test", "content": "replacement"})
 	if err == nil || !CapabilityOutcomeUncertain(err) {
 		t.Fatalf("reread error = %v", err)
@@ -310,7 +295,7 @@ printf '{"data":{"ok":true}}\n'
 	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	runner := CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root}
+	runner := CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root, UserApproval: allowFixtureBusinessCommands()}
 	result, err := runner.Execute(context.Background(), "note.shortcut.transcript", map[string]any{"note-id": "note_test"})
 	if err != nil {
 		t.Fatal(err)
@@ -338,9 +323,9 @@ func TestCapabilityExecutorRejectsOversizedCLIOutput(t *testing.T) {
 	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	runner := CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root}
+	runner := CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root, UserApproval: allowFixtureBusinessCommands()}
 	_, err := runner.run(context.Background(), CapabilityDefinition{Command: []string{"fake"}}, []string{"fake"}, nil, nil, time.Minute)
-	if err == nil || !strings.Contains(err.Error(), "output exceeds safe limit") {
+	if err == nil || err.Error() != "lark_cli_output_limit" {
 		t.Fatalf("oversized output result = %v", err)
 	}
 }

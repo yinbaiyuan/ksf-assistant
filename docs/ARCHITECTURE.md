@@ -19,19 +19,14 @@ macOS：SwiftUI / AppKit                 Windows：Electron
                      ├─ KSF 外部桥：项目目录与任务归属投影
                      ├─ integration：任务关联、动作解释与业务卡片
                      ├─ 本机网关：原生 CLI 的受限请求入口
+                     ├─ userapproval：用户身份写操作的单次桌面批准
                      └─ v2 匿名管道 ─ Go 飞书子进程
                                          ├─ 消息、卡片、事件与授权
                                          ├─ 执行治理、工作队列与审计
-                                         └─ Go SDK / lark-cli → 飞书
+                                         └─ 随包 lark-cli → 飞书
 ```
 
 ## 代码地图
-
-### 可选开发入口：FeishuLab
-
-`FeishuLab` 是 Vue 3 人工测试台：浏览器 → 仅回环同源 Node 适配器 → 安装版原生 CLI → Core 当前用户本机网关 → 飞书服务。Node 只执行固定客户端命令，不直接访问 SDK、凭据或业务文件；治理和实际执行仍由 Go 飞书服务负责。它是显式启动的开发工具，不增加生产业务 HTTP 端口，不进入桌面受管进程树。能力目录、策略及权限来自服务/客户端，页面展示不构成授权。
-
-浏览器人工测试需要主动查看业务结果，因此采用独立受限通信入口，不复用桌面的脱敏通知广播。真实正文仅按用户请求展示，记录和参数用例只在内存中，导出仅为脱敏摘要。详见 [使用与边界](../FeishuLab/README.md) 和 [产品规则](prd/feishu-lab.md)。
 
 以下路径均相对于代码仓库根目录；源码负责实现事实，本文负责解释模块之间的关系。
 
@@ -47,6 +42,8 @@ macOS：SwiftUI / AppKit                 Windows：Electron
 | [Core/internal/tokens](../Core/internal/tokens/) / [pricing](../Core/internal/pricing/) | 读取本地会话 Token、构建历史与项目统计，并按所选价格方案计算估算费用。 |
 | [Core/internal/bridge](../Core/internal/bridge/) | 调用外部 KSF 桥，消费版本化项目目录和任务投影，不直接解析 KSF Markdown。 |
 | [Core/internal/integration](../Core/internal/integration/) | Core 内部业务模块：任务链接唯一存储、Codex 动作、Plan/输入选择、观察器、卡片内容与持久事件接收。 |
+| [Core/internal/taskruntime](../Core/internal/taskruntime/) / [ksf-assistant-task](../Core/cmd/ksf-assistant-task/) | Core 关闭时仍可读写的中立任务记录；任务级锁、CAS、幂等及快照/历史原子提交。仅消费当前 KSF v6，不编排执行。 |
+| [Core/internal/toolchain](../Core/internal/toolchain/) / [ksf-assistant-toolchain](../Core/cmd/ksf-assistant-toolchain/) | 随包 CLI、官方 Skills 与用户受管入口的校验、所有权、冲突检测和回退。 |
 | [Core/internal/feishuprotocol](../Core/internal/feishuprotocol/) / [privateipc](../Core/internal/privateipc/) | 飞书 v2 通用契约与有界私有通信；corebridge 仅保留 Core 内部控制 DTO，不再暴露跨进程控制方法。 |
 | [Core/internal/feishucli](../Core/internal/feishucli/) / [localipc](../Core/internal/localipc/) | 原生 CLI 解析、静态目录和当前用户本机网关；feishucommands 只在受管飞书进程执行命令。 |
 | [Core/cmd/ksf-assistant-feishu-bridge](../Core/cmd/ksf-assistant-feishu-bridge/) / [Core/internal/feishu](../Core/internal/feishu/) | 飞书可执行入口及传输、授权、能力策略、通用卡片操作、工作队列、审计和子进程监管实现。 |
@@ -74,6 +71,10 @@ Windows 的 Electron 仍使用自身的 Node 环境；“不携带独立 Node �
 项目程序启动是另一条链路：Core 准备结构化启动动作，平台宿主负责在可见终端中执行，并保持用户触发和项目路径边界。实现入口见 [service.go](../Core/internal/service/service.go)、[launch.go](../Core/internal/service/launch.go) 和平台宿主。
 
 ### 飞书事件与任务控制
+
+`0.11.0-preview.2` 增加独立[用户身份写操作批准](architecture/user-write-approval.md)：受管 CLI 与飞书执行器共用 Go Core 状态机，宿主通过专属控制管道显示原生批准窗口。user 纯读取默认不弹框，user 写先经原有策略再逐次批准，bot 保持原权限；无法确定语义的命令拒绝。它不属于 integration 的任务卡片批准，也不属于 KSF 任务运行态或治理 Skill。等待 UI 不占业务锁，授权切换与实际执行通过短生命周期跨进程锁互斥。
+
+0.11 只由固定版官方 CLI 承担生产授权、传输和事件消费，不直接链接飞书 SDK。官方总线 ACK 先于应用工作队列持久化；它不是业务执行确认，也不是零丢失承诺。CLI 转换后的消息/卡片按固定 schema 归一化；附件读取原消息核对绑定，延迟卡片 Token 不进入应用持久化队列。具体边界见 [本机预览改造](architecture/preview-0.11.md)。
 
 飞书服务先持久保存事件，验证当前授权后通过 v2 事件端口交付 Core。Core 的 integration 模块持久接受后才 ACK；ACK 只代表交付，不代表任务执行成功。Core 解释任务链接、Plan 和输入动作，调用本地 Codex/Desktop 适配器，构建业务卡片；卡片发送和更新仍必须经过飞书服务的绑定与治理门禁。未注册业务处理器的事件留在飞书事件查询能力中，不自动创建任务。
 
@@ -105,7 +106,7 @@ Core 事件执行分为 `preparing` 与 `executing`：只有可证明尚未开�
 
 飞书服务快照只描述自身运行状态；Core 合成业务链接与 Codex/Desktop/KSF 状态。Feishu inbound/outbound、Codex App Server、Desktop IPC、KSF context、固定 `lark-cli` 能力及三个工作箱分别报告 `ready / degraded / unavailable / disabled`；单项能力不可用不终止服务。只有重复实例、父级管道关闭或私有数据安全无法保证时退出。
 
-飞书守护进程只创建一个 `CapabilityService`，私有 RPC、调度、目录解析和结果核对均使用同一实例；native one-shot client 不再创建执行器、读取凭据或修改队列；它只发送类型化本机请求。应用未运行时业务命令明确失败，不自动启动或离线排队。`lark-cli` 只有在路径安全、可执行、`--version` 精确为 `1.0.92` 且本地 schema 探针成功后才标记为 ready；探针结果按文件身份缓存，不随 Dashboard 刷新访问远端 API。
+飞书守护进程只创建一个 `CapabilityService`，私有 RPC、调度、目录解析和结果核对均使用同一实例；native one-shot client 不再创建执行器、读取凭据或修改队列；它只发送类型化本机请求。应用未运行时业务命令明确失败，不自动启动或离线排队。`lark-cli` 只有在路径安全、可执行、`--version` 精确为 `1.0.93` 且本地 schema 探针成功后才标记为 ready；探针结果按文件身份缓存，不随 Dashboard 刷新访问远端 API。
 
 飞书服务维护带 revision 的运行快照并在变化时推送给核心服务。Core 为每次连接生成新代次，只在同代次内比较 revision；自动重启与手动重启共用握手和缓存初始化，拒绝旧连接迟到数据。Dashboard 读取核心服务内存，不再组合 `status`、`targets list`、`task-link protocol` 和 `task-link list` 四次子进程调用。macOS 与 Windows 桌面应用都合并并发 Dashboard 请求；面板活跃状态 3 秒、空闲 15 秒、后台额度 5 分钟。设置、价格、飞书向导和权限只在进入对应页面或修改后读取。
 
@@ -113,7 +114,7 @@ Core 事件执行分为 `preparing` 与 `executing`：只有可证明尚未开�
 
 ## 飞书迁移
 
-Go 入口维持 `client.json` schema v4 与任务连接 schema v2；旧队列 schema v2 由一次性迁移器导入内部 V4 工作项仓（持久保存 Operation 关联及执行阶段）。能力注册表升级为 v2，共 816 项。原有 23 类事件、邮件接收事件和 2 类审批状态事件，共 26 类事件由 `oapi-sdk-go/v3.11.0` 的同一条长连接接入。审批事件还需通过固定能力为当前授权用户建立“参与审批”或“管理审批”订阅关系；不会启动第二个 watcher。邮件事件本地开关默认关闭，关闭时载荷不入箱、不持久化、不触发工作流。219 项冻结能力及扩展长尾能力继续委托随包 `lark-cli 1.0.92`，消息、卡片和媒体由 Go SDK 执行。Node 只保留冻结离线回放基线，不进入安装包、运行入口或真实事件链路。
+Go 入口维持 `client.json` schema v4、任务连接 schema v2 和已有队列迁移；本次更换传输不重建业务事实。冻结能力注册表继续兼容，生产执行统一使用 `lark-cli 1.0.93`。历史 26 个事件名保留查询/回放；本预览受管监听只启用消息和卡片，其他事件需显式订阅接入，Mail 旧事件明确不支持。消息、卡片、附件与归属核验也由官方 CLI 完成。Node 只保留离线回放，不进入安装包或真实事件链路。
 
 能力策略使用 `disabled / confirm_each / allowed` 三态。读取与普通写入默认允许，立即发送、高影响写入和远程操作默认逐次确认，删除、清空、覆盖、移动与历史回退默认禁用。101 项破坏性能力不能按风险级整体放开，也不能设为免确认，只能逐项设为 `confirm_each`。每项都有版本化守卫：`strong` 使用权威预读和后置核验，`bounded` 至少生成脱敏影响摘要；远端结果无法证明时只能进入 `outcome_unknown`。五分钟确认凭证绑定能力、目标参数指纹、预读证据和策略 revision；执行前队列再次复核总开关、策略与预读证据。
 

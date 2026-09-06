@@ -1,140 +1,49 @@
 package feishu
 
-import (
-	"errors"
-	"fmt"
-	"path/filepath"
-	"time"
-)
+import "ksfassistant/core/internal/capabilitypolicy"
 
-const CapabilityPolicyVersion = 1
+const CapabilityPolicyVersion = capabilitypolicy.Version
 
-type CapabilityPermission string
+type CapabilityPermission = capabilitypolicy.Permission
 
 const (
-	CapabilityDisabled    CapabilityPermission = "disabled"
-	CapabilityConfirmEach CapabilityPermission = "confirm_each"
-	CapabilityAllowed     CapabilityPermission = "allowed"
+	CapabilityDisabled    = capabilitypolicy.Disabled
+	CapabilityConfirmEach = capabilitypolicy.ConfirmEach
+	CapabilityAllowed     = capabilitypolicy.Allowed
 )
 
-var ErrCapabilityPolicyRevisionConflict = errors.New("capability_policy_revision_conflict")
+var ErrCapabilityPolicyRevisionConflict = capabilitypolicy.ErrRevisionConflict
 
-type CapabilityPolicy struct {
-	Version             int                             `json:"version"`
-	Revision            uint64                          `json:"revision"`
-	RiskDefaults        map[string]CapabilityPermission `json:"riskDefaults"`
-	CapabilityOverrides map[string]CapabilityPermission `json:"capabilityOverrides"`
-	UpdatedAt           time.Time                       `json:"updatedAt"`
-}
+type CapabilityPolicy capabilitypolicy.Policy
 
 func DefaultCapabilityPolicy() CapabilityPolicy {
-	return CapabilityPolicy{
-		Version:  CapabilityPolicyVersion,
-		Revision: 1,
-		RiskDefaults: map[string]CapabilityPermission{
-			"read":              CapabilityAllowed,
-			"write":             CapabilityAllowed,
-			"high-impact-write": CapabilityConfirmEach,
-			"remote-operation":  CapabilityConfirmEach,
-			"destructive":       CapabilityDisabled,
-		},
-		CapabilityOverrides: map[string]CapabilityPermission{},
-	}
+	return CapabilityPolicy(capabilitypolicy.Default())
 }
 
 func validCapabilityPermission(value CapabilityPermission) bool {
-	return value == CapabilityDisabled || value == CapabilityConfirmEach || value == CapabilityAllowed
+	return capabilitypolicy.ValidPermission(value)
 }
 
 func (policy *CapabilityPolicy) normalize() error {
-	if policy.Version == 0 {
-		policy.Version = CapabilityPolicyVersion
-	}
-	if policy.Version != CapabilityPolicyVersion {
-		return fmt.Errorf("unsupported capability policy version %d", policy.Version)
-	}
-	if policy.Revision == 0 {
-		policy.Revision = 1
-	}
-	defaults := DefaultCapabilityPolicy().RiskDefaults
-	if policy.RiskDefaults == nil {
-		policy.RiskDefaults = map[string]CapabilityPermission{}
-	}
-	for risk, fallback := range defaults {
-		if policy.RiskDefaults[risk] == "" {
-			policy.RiskDefaults[risk] = fallback
-		}
-	}
-	for risk, permission := range policy.RiskDefaults {
-		if _, ok := defaults[risk]; !ok {
-			return fmt.Errorf("invalid capability risk %q", risk)
-		}
-		if !validCapabilityPermission(permission) {
-			return fmt.Errorf("invalid capability permission %q for risk %q", permission, risk)
-		}
-	}
-	if policy.CapabilityOverrides == nil {
-		policy.CapabilityOverrides = map[string]CapabilityPermission{}
-	}
-	for id, permission := range policy.CapabilityOverrides {
-		if id == "" || !validCapabilityPermission(permission) {
-			return fmt.Errorf("invalid capability override %q", id)
-		}
-	}
-	return nil
+	return (*capabilitypolicy.Policy)(policy).Normalize()
 }
 
 func (policy CapabilityPolicy) Decision(definition CapabilityDefinition) CapabilityPermission {
-	if value := policy.CapabilityOverrides[definition.ID]; validCapabilityPermission(value) {
-		return value
-	}
-	if value := policy.RiskDefaults[definition.Risk]; validCapabilityPermission(value) {
-		return value
-	}
-	return CapabilityDisabled
+	return capabilitypolicy.Policy(policy).Decision(definition.ID, definition.Risk)
 }
 
-type CapabilityPolicyStore struct{ path string }
+type CapabilityPolicyStore struct{ store capabilitypolicy.Store }
 
 func NewCapabilityPolicyStore(dataRoot string) CapabilityPolicyStore {
-	return CapabilityPolicyStore{path: filepath.Join(dataRoot, "feishu-capability-policy-v1.json")}
+	return CapabilityPolicyStore{store: capabilitypolicy.NewStore(dataRoot)}
 }
 
 func (store CapabilityPolicyStore) Load() (CapabilityPolicy, error) {
-	policy := DefaultCapabilityPolicy()
-	missing, err := readPrivateJSON(store.path, &policy)
-	if missing {
-		return policy, nil
-	}
-	if err != nil {
-		return CapabilityPolicy{}, err
-	}
-	if err := policy.normalize(); err != nil {
-		return CapabilityPolicy{}, err
-	}
-	return policy, nil
+	policy, err := store.store.Load()
+	return CapabilityPolicy(policy), err
 }
 
 func (store CapabilityPolicyStore) Save(policy CapabilityPolicy, expectedRevision uint64) (CapabilityPolicy, error) {
-	var saved CapabilityPolicy
-	err := withProcessFileLock(store.path+".lock", func() error {
-		current, err := store.Load()
-		if err != nil {
-			return err
-		}
-		if current.Revision != expectedRevision {
-			return ErrCapabilityPolicyRevisionConflict
-		}
-		if err := policy.normalize(); err != nil {
-			return err
-		}
-		policy.Revision = current.Revision + 1
-		policy.UpdatedAt = time.Now().UTC()
-		if err := writePrivateJSON(store.path, policy); err != nil {
-			return err
-		}
-		saved = policy
-		return nil
-	})
-	return saved, err
+	saved, err := store.store.Save(capabilitypolicy.Policy(policy), expectedRevision)
+	return CapabilityPolicy(saved), err
 }

@@ -17,7 +17,7 @@ import (
 )
 
 const MethodExecute = "cli/execute"
-const Version = "0.10.0-preview.1"
+const Version = "0.11.0-preview.3"
 const MaxPayloadBytes = 4 * 1024 * 1024
 const MaxRequestBytes = privateipc.MaxFrameBytes - 65536
 

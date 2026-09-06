@@ -20,7 +20,7 @@ func TestProbeLarkCLIVerifiesPinnedExecutableAndCachesResult(t *testing.T) {
 	script := fmt.Sprintf(`#!/bin/sh
 printf x >> %q
 case "$1" in
-  --version) printf 'lark-cli version 1.0.92\n' ;;
+  --version) printf 'lark-cli version 1.0.93\n' ;;
   schema) printf '{"name":"approval approvals get","inputSchema":{"type":"object"}}\n' ;;
   *) exit 2 ;;
 esac

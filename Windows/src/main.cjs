@@ -1,11 +1,12 @@
 'use strict';
 
-const { app, BrowserWindow, Tray, Menu, dialog, ipcMain, nativeImage, screen, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, dialog, ipcMain, nativeImage, screen, shell, powerMonitor } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { CoreClient } = require('./core-client.cjs');
+const { UserApprovalController } = require('./user-approval.cjs');
 const { ConfigStore } = require('./config-store.cjs');
 const { migrateLegacySettings: migrateSettings } = require('./identity-migration.cjs');
 const { taskURL, clamp, isPathInside } = require('./security.cjs');
@@ -19,6 +20,8 @@ let store = null;
 let quitting = false;
 let shutdownStarted = false;
 let dashboardPromise = null;
+let userApproval = null;
+const approvalUnavailableReasons = new Set();
 
 app.setAppUserModelId('com.ksfassistant.desktop');
 app.setName('KSFAssistant');
@@ -264,6 +267,18 @@ function registerIPC() {
   ipcMain.handle('feishu:setup-activate', (_event, targetAlias) => core.request('feishu/setup/activate', { targetAlias }));
   ipcMain.handle('feishu:setup-cancel', () => core.request('feishu/setup/cancel'));
   ipcMain.handle('feishu:overview-read', () => core.request('feishu/settings/overview/read'));
+  ipcMain.handle('feishu:auth-status', () => core.request('feishu/auth/status'));
+  ipcMain.handle('feishu:auth-start', () => core.request('feishu/auth/start', { scope: 'required' }));
+  ipcMain.handle('feishu:auth-finish', () => core.request('feishu/auth/finish'));
+  ipcMain.handle('feishu:auth-logout', async (_event, confirm) => {
+    if (confirm !== true) throw new Error('退出授权需要明确确认');
+    return core.request('feishu/auth/logout');
+  });
+  ipcMain.handle('toolchain:status', () => core.request('toolchain/status'));
+  ipcMain.handle('toolchain:install', async (_event, confirm) => {
+    if (confirm !== true) throw new Error('安装官方工具链需要明确确认');
+    return core.request('toolchain/install', { confirm: true });
+  });
   ipcMain.handle('feishu:feature-update', (_event, payload) => core.request('feishu/features/update', payload));
   ipcMain.handle('feishu:supervisor-restart', () => core.request('feishu/supervisor/restart'));
   ipcMain.handle('feishu:open-external', async (_event, value) => {
@@ -351,6 +366,19 @@ app.whenReady().then(async () => {
   createTray();
   app.setLoginItemSettings({ openAtLogin: store.get().launchAtLogin, openAsHidden: true });
   await core.start().catch((error) => window.webContents.once('did-finish-load', () => window.webContents.send('ksfassistant:core-error', error.message)));
+  userApproval = new UserApprovalController({
+    core,
+    dialog,
+    isInteractive: () => !quitting && approvalUnavailableReasons.size === 0 && screen.getAllDisplays().length > 0 && ['active', 'idle'].includes(powerMonitor.getSystemIdleState(1)),
+  });
+  for (const [unavailable, available] of [['lock-screen', 'unlock-screen'], ['suspend', 'resume']]) {
+    powerMonitor.on(unavailable, () => {
+      approvalUnavailableReasons.add(unavailable);
+      void userApproval.unavailable();
+    });
+    powerMonitor.on(available, () => { approvalUnavailableReasons.delete(unavailable); });
+  }
+  userApproval.start();
   if (!app.isPackaged || process.env.KSF_ASSISTANT_SHOW_ON_START === '1') {
     showWindowWhenReady();
   }
@@ -362,7 +390,9 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   quitting = true;
   shutdownStarted = true;
-  Promise.resolve(core?.close())
+  Promise.resolve(userApproval?.stop())
+    .catch(() => {})
+    .then(() => core?.close())
     .catch(() => {})
     .finally(() => app.exit(0));
 });

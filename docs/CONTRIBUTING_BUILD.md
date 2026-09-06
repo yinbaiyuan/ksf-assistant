@@ -6,14 +6,14 @@
 
 - Go 1.23+
 - macOS 构建：Swift 5.8+；正式测试还要求工具链提供支持 `swift test` 的 macOS SDK PlatformPath
-- Windows Electron 宿主构建及冻结 Node 回放基线：Node.js 20+ 与 npm
+- 固定 CLI/Skills 资产准备、SBOM、Windows 宿主及冻结 Node 回放基线：Node.js 20+ 与 npm（仅构建/测试期）
 - 仅使用 KSF 开发集成时：Ruby 3.2+
 
 macOS 与 Windows 安装包都会携带运行所需的 Go 飞书服务和固定版 lark-cli，不携带独立 Node runtime、飞书 npm 生产依赖或 Node 服务源码。Windows 的 Electron 宿主仍使用其内建 Node，但飞书业务不会在 renderer 或 JavaScript 主进程中执行。
 
 ## 验证
 
-可选 Vue 3 飞书人工测试台需要 Node.js 22+：`npm --prefix FeishuLab ci`、`npm --prefix FeishuLab run check`。启动、客户端路径和隔离验收步骤见 [FeishuLab](../FeishuLab/README.md)。它不加入桌面安装包，也不替换 Go 飞书服务。
+`0.11.0-preview.1` 的发布边界、兼容入口和实机门槛见 [本机预览改造](architecture/preview-0.11.md)。本机预览使用 `bash scripts/package-preview.sh --mac` 冻结当前工作树；不要为了运行公共发布脚本而暂存、提交或用 HEAD 冒充新源码。
 
 统一入口为 `bash scripts/run-tests.sh`。Swift 测试只支持 Swift Package Manager / XCTest，不再支持缺少 SDK PlatformPath 时的旧 standalone 兜底分支；工具链不满足要求时立即报错，不切换旧测试。身份迁移、Core 管道和 AppKit 退出链路的独立隔离测试仍是正式测试，继续保留。应用包本身的构建方式不因测试入口收敛而改变。
 

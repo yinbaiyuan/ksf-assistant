@@ -4,7 +4,7 @@ export LC_ALL=C
 export LANG=C
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-version="${RELEASE_VERSION:-0.10.0-preview.1}"
+version="${RELEASE_VERSION:-0.11.0-preview.3}"
 release_root="$repo_root/dist/release-$version"
 app_path="$repo_root/dist/KSFAssistant.app"
 zip_path="$release_root/KSFAssistant-$version-macOS-universal.zip"

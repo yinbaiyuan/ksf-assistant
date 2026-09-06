@@ -4,131 +4,114 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
-
-	lark "github.com/larksuite/oapi-sdk-go/v3"
-	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
-	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 )
 
+type MessageCLIRequest struct {
+	Resource string
+	Method   string
+	Params   map[string]string
+	Body     map[string]any
+	File     string
+}
+
+type MessageCLI interface {
+	CallMessage(context.Context, MessageCLIRequest) (map[string]any, error)
+}
+
 type OfficialMessageClient struct {
-	client *lark.Client
+	client MessageCLI
 	appID  string
 }
 
-func NewOfficialMessageClient(appID, appSecret string, options ...lark.ClientOptionFunc) (*OfficialMessageClient, error) {
-	if strings.TrimSpace(appID) == "" || appSecret == "" {
-		return nil, errors.New("official SDK credentials are required")
+func NewOfficialMessageClient(appID string, runner MessageCLI) (*OfficialMessageClient, error) {
+	if strings.TrimSpace(appID) == "" || runner == nil {
+		return nil, errors.New("official CLI application identity and runner are required")
 	}
-	base := []lark.ClientOptionFunc{lark.WithLogLevel(larkcore.LogLevelError), lark.WithLogger(discardSDKLogger{})}
-	base = append(base, options...)
-	return &OfficialMessageClient{client: lark.NewClient(strings.TrimSpace(appID), appSecret, base...), appID: strings.TrimSpace(appID)}, nil
+	return &OfficialMessageClient{client: runner, appID: strings.TrimSpace(appID)}, nil
 }
 
 func (client *OfficialMessageClient) Send(ctx context.Context, target MessageTarget, format, value, idempotencyKey string) (string, error) {
+	if target.Type != "chat_id" && target.Type != "open_id" {
+		return "", errors.New("unsupported_target_type")
+	}
 	msgType, content, err := client.prepareMessageContent(ctx, format, value)
 	if err != nil {
 		return "", err
 	}
-	if target.Type != "chat_id" && target.Type != "open_id" {
-		return "", errors.New("unsupported_target_type")
-	}
-	body := larkim.NewCreateMessageReqBodyBuilder().ReceiveId(target.ID).MsgType(msgType).Content(content).Uuid(idempotencyKey).Build()
-	req := larkim.NewCreateMessageReqBuilder().ReceiveIdType(target.Type).Body(body).Build()
-	response, err := client.client.Im.Message.Create(ctx, req)
-	if err != nil {
-		return "", err
-	}
-	if !response.Success() {
-		return "", fmt.Errorf("Feishu message create failed: code=%d", response.Code)
-	}
-	if response.Data == nil || response.Data.MessageId == nil || *response.Data.MessageId == "" {
-		return "", errors.New("Feishu message create returned no message id")
-	}
-	return *response.Data.MessageId, nil
+	result, err := client.client.CallMessage(ctx, MessageCLIRequest{Resource: "messages", Method: "create", Params: map[string]string{"receive_id_type": target.Type}, Body: map[string]any{"receive_id": target.ID, "msg_type": msgType, "content": content, "uuid": idempotencyKey}})
+	return messageResultID(result, err)
 }
 
 func (client *OfficialMessageClient) prepareMessageContent(ctx context.Context, format, value string) (string, string, error) {
 	if format != "image" && format != "file" {
 		return officialMessageContent(format, value)
 	}
-	info, err := os.Lstat(value)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() <= 0 {
-		return "", "", errors.New("unsafe_media_file")
+	request := MessageCLIRequest{Resource: "images", Method: "create", Body: map[string]any{"image_type": "message"}, File: value}
+	key := "image_key"
+	if format == "file" {
+		request.Resource = "files"
+		request.Body = map[string]any{"file_type": "stream"}
+		key = "file_key"
 	}
-	file, err := os.Open(value)
+	result, err := client.client.CallMessage(ctx, request)
 	if err != nil {
 		return "", "", err
 	}
-	defer file.Close()
-	if format == "image" {
-		if info.Size() > 10*1024*1024 {
-			return "", "", errors.New("image_too_large")
-		}
-		body := larkim.NewCreateImageReqBodyBuilder().ImageType("message").Image(file).Build()
-		response, err := client.client.Im.Image.Create(ctx, larkim.NewCreateImageReqBuilder().Body(body).Build())
-		if err != nil {
-			return "", "", err
-		}
-		if !response.Success() || response.Data == nil || response.Data.ImageKey == nil {
-			return "", "", fmt.Errorf("Feishu image upload failed: code=%d", response.Code)
-		}
-		data, _ := json.Marshal(map[string]string{"image_key": *response.Data.ImageKey})
-		return "image", string(data), nil
+	remoteKey, _ := result[key].(string)
+	if remoteKey == "" {
+		return "", "", errors.New("CLI media upload returned no resource key")
 	}
-	if info.Size() > 30*1024*1024 {
-		return "", "", errors.New("file_too_large")
-	}
-	body := larkim.NewCreateFileReqBodyBuilder().FileType("stream").FileName(filepath.Base(value)).File(file).Build()
-	response, err := client.client.Im.File.Create(ctx, larkim.NewCreateFileReqBuilder().Body(body).Build())
-	if err != nil {
-		return "", "", err
-	}
-	if !response.Success() || response.Data == nil || response.Data.FileKey == nil {
-		return "", "", fmt.Errorf("Feishu file upload failed: code=%d", response.Code)
-	}
-	data, _ := json.Marshal(map[string]string{"file_key": *response.Data.FileKey})
-	return "file", string(data), nil
+	content, _ := json.Marshal(map[string]string{key: remoteKey})
+	return format, string(content), nil
 }
 
 func (client *OfficialMessageClient) Reply(ctx context.Context, messageID, format, value, idempotencyKey string) (string, error) {
-	msgType, content, err := officialMessageContent(format, value)
+	msgType, content, err := client.prepareMessageContent(ctx, format, value)
 	if err != nil {
 		return "", err
 	}
-	body := larkim.NewReplyMessageReqBodyBuilder().MsgType(msgType).Content(content).Uuid(idempotencyKey).Build()
-	req := larkim.NewReplyMessageReqBuilder().MessageId(messageID).Body(body).Build()
-	response, err := client.client.Im.Message.Reply(ctx, req)
+	result, err := client.client.CallMessage(ctx, MessageCLIRequest{Resource: "messages", Method: "reply", Params: map[string]string{"message_id": messageID}, Body: map[string]any{"msg_type": msgType, "content": content, "uuid": idempotencyKey}})
+	return messageResultID(result, err)
+}
+
+func messageResultID(result map[string]any, err error) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !response.Success() {
-		return "", fmt.Errorf("Feishu message reply failed: code=%d", response.Code)
+	messageID, _ := result["message_id"].(string)
+	if messageID == "" {
+		return "", errors.New("CLI message operation returned no message id")
 	}
-	if response.Data == nil || response.Data.MessageId == nil || *response.Data.MessageId == "" {
-		return "", errors.New("Feishu message reply returned no message id")
-	}
-	return *response.Data.MessageId, nil
+	return messageID, nil
 }
 
 func (client *OfficialMessageClient) PatchCard(ctx context.Context, messageID, cardJSON string) error {
 	var card map[string]any
-	if json.Unmarshal([]byte(cardJSON), &card) != nil {
+	if json.Unmarshal([]byte(cardJSON), &card) != nil || card == nil {
 		return errors.New("invalid_card_json")
 	}
-	body := larkim.NewPatchMessageReqBodyBuilder().Content(cardJSON).Build()
-	req := larkim.NewPatchMessageReqBuilder().MessageId(messageID).Body(body).Build()
-	response, err := client.client.Im.Message.Patch(ctx, req)
+	_, err := client.client.CallMessage(ctx, MessageCLIRequest{Resource: "messages", Method: "patch", Params: map[string]string{"message_id": messageID}, Body: map[string]any{"content": cardJSON}})
+	return err
+}
+
+func (client *OfficialMessageClient) ReadMessage(ctx context.Context, messageID string) (map[string]any, error) {
+	if messageID == "" || len(messageID) > 400 {
+		return nil, errors.New("invalid_message_id")
+	}
+	result, err := client.client.CallMessage(ctx, MessageCLIRequest{Resource: "messages", Method: "get", Params: map[string]string{"message_id": messageID}})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if !response.Success() {
-		return fmt.Errorf("Feishu message patch failed: code=%d", response.Code)
+	items, _ := result["items"].([]any)
+	if len(items) != 1 {
+		return nil, errors.New("restoration_message_missing")
 	}
-	return nil
+	message, _ := items[0].(map[string]any)
+	if message == nil || message["message_id"] != messageID {
+		return nil, errors.New("restoration_message_missing")
+	}
+	return message, nil
 }
 
 func officialMessageContent(format, value string) (string, string, error) {
@@ -142,7 +125,7 @@ func officialMessageContent(format, value string) (string, string, error) {
 		return "interactive", string(data), nil
 	case "card":
 		var card map[string]any
-		if json.Unmarshal([]byte(value), &card) != nil {
+		if json.Unmarshal([]byte(value), &card) != nil || card == nil {
 			return "", "", errors.New("invalid_card_json")
 		}
 		return "interactive", value, nil

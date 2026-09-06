@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"ksfassistant/core/internal/domain"
@@ -72,6 +73,9 @@ func (service *Service) connectManagedBridge(ctx context.Context, generation uin
 }
 
 func (service *Service) handleLocalRPC(ctx context.Context, method string, params json.RawMessage) (any, error) {
+	if strings.HasPrefix(method, "userApproval/") {
+		return service.handleUserApproval(ctx, method, params)
+	}
 	if method != feishucli.MethodExecute {
 		return nil, privateipc.ErrMethodNotFound
 	}

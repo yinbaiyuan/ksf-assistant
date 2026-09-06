@@ -111,7 +111,7 @@ func TestReviewDocboxRejectsFictitiousOperation(t *testing.T) {
 	if err := box.Submit(request); err != nil {
 		return
 	}
-	if _, err := box.ProcessOne(context.Background(), CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root}, false); err != nil {
+	if _, err := box.ProcessOne(context.Background(), CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root, UserApproval: allowFixtureBusinessCommands()}, false); err != nil {
 		t.Fatal(err)
 	}
 	calls, err := os.ReadFile(log)

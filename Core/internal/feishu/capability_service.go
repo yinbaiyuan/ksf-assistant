@@ -121,6 +121,11 @@ func (service *CapabilityService) Prepare(ctx context.Context, capabilityID stri
 	}
 	_ = service.auditGovernance("operation_prepared", view)
 	prepared := PreparedOperation{Operation: view, Challenge: challenge}
+	if view.Status == OperationAwaitingConfirmation && definition.Identity == "user" && definition.Risk != "read" {
+		if executor, ok := service.executor.(interface{ DesktopApprovalEnabled() bool }); ok && executor.DesktopApprovalEnabled() {
+			return service.confirm(ctx, view.ID, challenge, true)
+		}
+	}
 	if view.Status == OperationQueued {
 		return service.dispatch(ctx, prepared)
 	}
@@ -128,6 +133,10 @@ func (service *CapabilityService) Prepare(ctx context.Context, capabilityID stri
 }
 
 func (service *CapabilityService) Confirm(ctx context.Context, id, challenge string) (PreparedOperation, error) {
+	return service.confirm(ctx, id, challenge, false)
+}
+
+func (service *CapabilityService) confirm(ctx context.Context, id, challenge string, desktopPending bool) (PreparedOperation, error) {
 	record, err := service.operations.Request(id)
 	if err != nil {
 		return PreparedOperation{}, err
@@ -153,7 +162,11 @@ func (service *CapabilityService) Confirm(ctx context.Context, id, challenge str
 		}
 		return PreparedOperation{Operation: view}, err
 	}
-	_ = service.auditGovernance("operation_confirmed", view)
+	event := "operation_confirmed"
+	if desktopPending {
+		event = "operation_waiting_desktop_approval"
+	}
+	_ = service.auditGovernance(event, view)
 	if record.InputProfile == serviceMessageInputProfile {
 		result, executeErr := service.transport.ResumeOperation(ctx, id)
 		current, statusErr := service.operations.Status(id)
@@ -287,6 +300,7 @@ func (service *CapabilityService) dispatch(ctx context.Context, prepared Prepare
 		}
 		result, runErr := service.executor.ExecuteWithOptions(ctx, record.CapabilityID, record.Input, CapabilityExecutionOptions{})
 		if runErr != nil {
+			prepared.Result = cliFailureResult(result, runErr)
 			prepared.Operation, _ = service.operations.Fail(record.ID, CapabilityOperationErrorCode(runErr))
 			return prepared, runErr
 		}

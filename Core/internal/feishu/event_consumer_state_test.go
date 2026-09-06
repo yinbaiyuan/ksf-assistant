@@ -14,7 +14,7 @@ func TestEventConsumerStateIsNodeCompatible(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value["schemaVersion"] != float64(3) || value["transport"] != "official-sdk" || value["status"] != "connected" {
+	if value["schemaVersion"] != float64(3) || value["transport"] != "official-cli" || value["status"] != "connected" {
 		t.Fatalf("unexpected state: %#v", value)
 	}
 	events := value["events"].(map[string]any)

@@ -50,10 +50,12 @@ final class UsageViewModel: ObservableObject {
     @Published private(set) var feishuService = FeishuServiceSnapshot.notConfigured
     @Published private(set) var feishuActionInProgress = false
     @Published private(set) var feishuFeedback: String?
-    @Published private(set) var feishuAuthQRCode: String?
-    @Published private(set) var feishuAuthUserCode: String?
+    @Published private(set) var feishuAuthStatus: CoreServiceFeishuAuth?
     @Published private(set) var feishuPermissionStatus = "尚未检查"
     @Published private(set) var feishuSettingsOverview: FeishuSettingsOverview?
+    @Published private(set) var toolchainStatus: ToolchainStatus?
+    @Published private(set) var toolchainActionInProgress = false
+    @Published private(set) var toolchainFeedback: String?
     @Published private(set) var feishuSetup = FeishuSetupState.notStarted
     @Published private(set) var feishuSetupQRCode: String?
     @Published private(set) var feishuTaskLinks: [String: FeishuTaskLinkSnapshot] = [:]
@@ -71,6 +73,7 @@ final class UsageViewModel: ObservableObject {
     private let actionLauncher = TerminalActionLauncher()
     private let taskOpener: CodexTaskOpening = WorkspaceCodexTaskOpener()
     private let coreService = CoreServiceProcessClient()
+    private lazy var userApprovalController = UserApprovalController(core: coreService)
     private var coreServiceEnabled = false
     private var shutdownStarted = false
     private var quitRequested = false
@@ -253,6 +256,7 @@ final class UsageViewModel: ObservableObject {
             let activeKSFRoot = isOnboardingComplete ? ksfRootPath : ""
             try await coreService.start(ksfRoot: activeKSFRoot)
             coreServiceEnabled = true
+            userApprovalController.start()
             await refreshPricingCatalog()
             await refreshSharedDashboard()
             startCoreServiceTimers()
@@ -693,38 +697,78 @@ final class UsageViewModel: ObservableObject {
     }
 
     func startFeishuAuth() {
-        guard coreServiceEnabled else { return }
+        guard coreServiceEnabled, !feishuActionInProgress else { return }
         feishuActionInProgress = true
         Task { [weak self] in
             guard let self else { return }
             defer { self.feishuActionInProgress = false }
             do {
-                let auth = try await self.coreService.startFeishuAuth()
-                self.feishuAuthQRCode = auth.qrDataURL
-                self.feishuAuthUserCode = auth.userCode
+                self.feishuAuthStatus = try await self.coreService.startFeishuAuth()
                 self.feishuFeedback = nil
             } catch {
-                self.feishuFeedback = error.localizedDescription
+                self.feishuFeedback = "无法发起授权，请检查官方工具链与应用配置后重试。"
             }
         }
     }
 
     func finishFeishuAuth() {
-        guard coreServiceEnabled else { return }
+        guard coreServiceEnabled, !feishuActionInProgress else { return }
         feishuActionInProgress = true
         Task { [weak self] in
             guard let self else { return }
             defer { self.feishuActionInProgress = false }
             do {
-                try await self.coreService.finishFeishuAuth()
-                self.feishuAuthQRCode = nil
-                self.feishuAuthUserCode = nil
-                self.feishuFeedback = "飞书 OAuth 认证完成。"
+                self.feishuAuthStatus = try await self.coreService.finishFeishuAuth()
+                self.feishuFeedback = self.feishuAuthStatus?.isAuthorized == true
+                    ? "用户授权已验证；功能权限以权限检查结果为准。"
+                    : "授权尚未完成，请在飞书确认后重新检查。"
+                await self.refreshFeishuSettingsOverview()
                 await self.refreshSharedDashboard()
             } catch {
-                self.feishuFeedback = error.localizedDescription
+                self.feishuAuthStatus = nil
+                self.feishuFeedback = "授权尚未验证，请重新检查；会话过期后需重新发起授权。"
             }
         }
+    }
+
+    func refreshFeishuAuthStatus() async {
+        guard coreServiceEnabled, !feishuActionInProgress else { return }
+        feishuActionInProgress = true
+        defer { feishuActionInProgress = false }
+        do {
+            feishuAuthStatus = try await coreService.feishuAuthStatus()
+            feishuFeedback = nil
+        } catch {
+            feishuAuthStatus = nil
+            feishuFeedback = "无法验证授权状态，请检查官方工具链后重试。"
+        }
+    }
+
+    func logoutFeishuAuth() {
+        guard coreServiceEnabled, !feishuActionInProgress else { return }
+        feishuActionInProgress = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.feishuActionInProgress = false }
+            do {
+                self.feishuAuthStatus = try await self.coreService.logoutFeishuAuth()
+                self.feishuFeedback = "已退出当前 CLI 用户授权；应用配置仍保留。"
+                await self.refreshFeishuSettingsOverview()
+                await self.refreshSharedDashboard()
+            } catch {
+                self.feishuAuthStatus = nil
+                self.feishuFeedback = "退出授权未确认，请重新检查授权状态。"
+            }
+        }
+    }
+
+    func openFeishuAuthURL() {
+        guard let value = feishuAuthStatus?.verificationUrl,
+              let url = URL(string: value), url.scheme == "https", url.user == nil, url.password == nil,
+              let host = url.host?.lowercased(),
+              ["feishu.cn", "larksuite.com", "larkoffice.com"].contains(where: { host == $0 || host.hasSuffix(".\($0)") })
+        else { feishuFeedback = "飞书官方链接无效。"; return }
+        NSWorkspace.shared.open(url)
     }
 
     func refreshFeishuPermissions() {
@@ -750,6 +794,38 @@ final class UsageViewModel: ObservableObject {
         guard coreServiceEnabled else { return }
         do { feishuSettingsOverview = try await coreService.feishuSettingsOverview() }
         catch { feishuFeedback = error.localizedDescription }
+    }
+
+    func refreshToolchainStatus() async {
+        guard coreServiceEnabled, !toolchainActionInProgress else { return }
+        toolchainActionInProgress = true
+        defer { toolchainActionInProgress = false }
+        do {
+            toolchainStatus = try await coreService.toolchainStatus()
+            toolchainFeedback = nil
+        } catch {
+            toolchainStatus = nil
+            toolchainFeedback = "无法检查官方工具链，请重试。"
+        }
+    }
+
+    func installToolchain() {
+        guard coreServiceEnabled, !toolchainActionInProgress else { return }
+        toolchainActionInProgress = true
+        toolchainFeedback = nil
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.toolchainActionInProgress = false }
+            do {
+                self.toolchainStatus = try await self.coreService.installToolchain()
+                self.toolchainFeedback = self.toolchainStatus?.healthy == true
+                    ? "官方工具链安装并验证完成。"
+                    : "安装后校验未通过，请重新检查。"
+            } catch {
+                self.toolchainStatus = nil
+                self.toolchainFeedback = "工具链未安装完成；请检查现有文件冲突后重试。"
+            }
+        }
     }
 
     func updateFeishuFeature(_ feature: String, mode: String, confirmRealWrite: Bool = false) {
@@ -982,6 +1058,7 @@ final class UsageViewModel: ObservableObject {
         shutdownStarted = true
         rateTimerTask?.cancel()
         coreServicePollTask?.cancel()
+        await userApprovalController.stop()
         await coreService.stop()
     }
 

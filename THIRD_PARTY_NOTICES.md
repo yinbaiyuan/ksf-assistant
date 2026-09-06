@@ -2,41 +2,26 @@
 
 The generated SPDX 2.3 SBOM is the machine-readable dependency inventory. This file highlights packages distributed with or linked into preview artifacts; upstream license files remain authoritative.
 
-## Optional FeishuLab development tool
-
-The separate Vue 3 manual testing workspace uses Vue 3.5.39 (MIT), Vite 7.3.5 (MIT), and `@vitejs/plugin-vue` 6.0.7 (MIT). Versions and transitive packages are pinned in `FeishuLab/package-lock.json`; package license files remain authoritative. This development workspace and its Node adapter are not bundled into the desktop application.
-
-## Lark/Feishu Go SDK
-
-Source: [larksuite/oapi-sdk-go](https://github.com/larksuite/oapi-sdk-go)
-
-Bundled version: 3.11.0
-License: MIT
-
-The Go Feishu Bridge uses the official SDK for the single inbound WebSocket and fixed event dispatch.
-
 ## lark-cli
 
 Source: [larksuite/cli](https://github.com/larksuite/cli)
 
-Bundled version: 1.0.92
+Bundled version: 1.0.93
 License: MIT
 
-Platform binaries are downloaded only during packaging from the upstream release and verified against the SHA-256 values in `runtime/lark-cli-runtime.json`.
+Platform binaries are downloaded only during packaging from the upstream release and verified against the SHA-256 values in `runtime/lark-cli-runtime.json`. The 28 official Skills and their MIT license come from the same v1.0.93 source tag, with per-file provenance in `runtime/lark-skills.json`. The app does not independently update these components.
+
+Core no longer directly links the Lark Go SDK. The official CLI embeds its own Go dependencies (including its SDK); the generated SBOM records those as CLI supply-chain contents, not Core dependencies. Post-signing binary hashes are recorded separately from upstream download hashes.
 
 ## Go runtime dependencies
 
 - `golang.org/x/sys` 0.10.0 — BSD-3-Clause
-- `github.com/gorilla/websocket` 1.5.0 — BSD-2-Clause
-- `github.com/gogo/protobuf` 1.3.2 — BSD-3-Clause
 
 These packages are linked into Go binaries. Their source repositories and license texts are identified by the generated SBOM and Go module metadata.
 
-## Node compatibility runtime
+## Frozen Node compatibility tests
 
-Node.js 24.20.0 is temporarily bundled for the pre-cutover Feishu compatibility implementation. Node.js is distributed under the MIT License with bundled third-party components under their respective licenses. The runtime archive and SHA-256 values are pinned in `runtime/node-runtime.json`.
-
-The compatibility bridge currently includes `@larksuiteoapi/node-sdk` 1.73.0 and `@larksuite/cli` 1.0.92 under their upstream licenses. This runtime is removed only after all Go production-cutover hardware gates pass.
+`Services/FeishuBridge` retains `@larksuiteoapi/node-sdk` 1.73.0 and `@larksuite/cli` 1.0.92 solely as a frozen offline regression baseline under their upstream licenses. They are not installed as a production service or bundled with the macOS application. Node.js is a build/test dependency; Windows Electron supplies its own host runtime.
 
 ## go-winio
 

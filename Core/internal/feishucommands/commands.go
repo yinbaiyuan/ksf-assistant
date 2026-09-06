@@ -126,8 +126,8 @@ func (call *invocation) runClient(dataRoot string, settings feishu.Settings, arg
 			return err
 		}
 		return write(map[string]any{"status": "ok", "capabilities": map[string]any{
-			"bridgeVersion": "2.0.0", "packageVersion": "1.2.0", "capabilityVersion": "2.0.0", "stabilityBaselineVersion": "0.6.1", "queueStateSchemaVersion": 2, "skillCompatibility": "phase2_pending", "larkCliVersion": "1.0.92", "officialSdk": "go", "officialSdkVersion": "3.11.0",
-			"identities": []string{"bot", "user"}, "eventTransport": "official-sdk", "singleInboundConnection": true, "events": feishu.FixedEventKeys, "fixedEventCatalog": true,
+			"bridgeVersion": "2.0.0", "packageVersion": "1.2.0", "capabilityVersion": "2.0.0", "stabilityBaselineVersion": "0.6.1", "queueStateSchemaVersion": 2, "skillCompatibility": "phase2_pending", "larkCliVersion": feishu.PinnedLarkCLIVersion, "frozenCatalogVersion": "1.0.92", "officialSdk": "none", "officialSdkVersion": "",
+			"identities": []string{"bot", "user"}, "eventTransport": "official-cli", "singleInboundConnection": true, "events": feishu.FixedEventKeys, "managedEvents": feishu.CLIManagedEventKeys, "unsupportedEvents": []string{feishu.MailMessageReceivedEvent}, "fixedEventCatalog": true,
 			"inboundMessageTypes": []string{"text", "image", "file", "audio", "media", "post"}, "outboundMessageFormats": []string{"text", "markdown", "card", "image", "file"},
 			"readCapabilities": readCapabilities, "queuedWriteCapabilities": queuedWriteCapabilities,
 			"registeredCapabilities": items, "registeredCapabilityCount": len(items), "riskCounts": riskCounts, "documentWrites": []string{"create_document", "append", "overwrite", "str_replace"},

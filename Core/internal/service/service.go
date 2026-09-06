@@ -25,7 +25,7 @@ import (
 	"ksfassistant/core/internal/tokens"
 )
 
-const Version = "0.10.0-preview.1"
+const Version = "0.11.0-preview.3"
 
 const (
 	rateRefreshInterval      = 5 * time.Minute
@@ -113,6 +113,8 @@ type PricingCatalogRequest struct {
 }
 
 type Service struct {
+	approvalMu              sync.Mutex
+	userApprovals           *approvalState
 	integrationRuntime      *integration.Runtime
 	localGateway            *localipc.Server
 	feishuGeneration        uint64
@@ -227,7 +229,7 @@ func (service *Service) Initialize(ctx context.Context, request InitializeReques
 		"platform": runtime.GOOS,
 		"capabilities": map[string]bool{
 			"usage": true, "localTokens": true, "tokenHistory": true, "tokenHistoryComparison": true, "tokenCostEstimate": true, "projects": true, "taskActivity": true,
-			"taskCreation": true, "projectLaunch": true, "feishuTaskLinks": true, "feishuServiceManagement": true, "feishuCapabilityGovernance": true,
+			"taskCreation": true, "projectLaunch": true, "feishuTaskLinks": true, "feishuServiceManagement": true, "feishuCapabilityGovernance": true, "userWriteApproval": true,
 		},
 	}
 	if hostContextErr == nil {
@@ -259,6 +261,7 @@ func configureCodexProcessEnvironment(home string) (string, error) {
 func (service *Service) Dashboard(ctx context.Context, request DashboardRequest) domain.DashboardSnapshot {
 	now := time.Now()
 	activity := service.desktop.Snapshot(now)
+	desktopActivity := activity
 	activeHint := activity.RunningCount > 0 || activity.WaitingCount > 0
 	usage, threads := service.readCodex(ctx, now, activeHint)
 	plan, _ := pricing.Resolve(request.PricingSelection)
@@ -276,6 +279,7 @@ func (service *Service) Dashboard(ctx context.Context, request DashboardRequest)
 		}
 	}
 	projects := service.readProjects(ctx, request, threads, observations, now)
+	service.enrichTaskRuntime(ctx, request.KSFRoot, &projects, desktopActivity, now)
 	feishu := normalizedFeishuSnapshot(domain.FeishuSnapshot{Availability: "notConfigured"})
 	if service.hasFeishuRuntime() {
 		feishu = service.readFeishu(ctx, now)
@@ -622,7 +626,7 @@ func (service *Service) ActivateFeishuSetup(ctx context.Context, targetAlias str
 	if err := service.saveAndRestartFeishuSettings(ctx, activated); err != nil {
 		return nil, err
 	}
-	_, err = service.waitForFeishuAvailability(ctx, "ready", 8*time.Second)
+	_, err = service.waitForFeishuAvailability(ctx, "ready", 45*time.Second)
 	if err == nil {
 		err = service.SendFeishuTest(ctx, targetAlias)
 	}
@@ -660,7 +664,7 @@ func (service *Service) prepareFeishuDryRun(ctx context.Context) error {
 	if err := service.saveAndRestartFeishuSettings(ctx, settings); err != nil {
 		return err
 	}
-	snapshot, err := service.waitForFeishuAvailability(ctx, "dryRun", 8*time.Second)
+	snapshot, err := service.waitForFeishuAvailability(ctx, "dryRun", 45*time.Second)
 	if err != nil {
 		return err
 	}
@@ -691,35 +695,10 @@ func (service *Service) saveAndRestartFeishuSettings(ctx context.Context, settin
 }
 
 func (service *Service) waitForFeishuAvailability(ctx context.Context, expected string, timeout time.Duration) (domain.FeishuSnapshot, error) {
-	deadline := time.Now().Add(timeout)
-	var lastError error
-	for {
-		var snapshot domain.FeishuSnapshot
-		var err error
-		if service.managedFeishuSupervisor == nil {
-			return domain.FeishuSnapshot{}, errors.New("KSFAssistant Feishu is unavailable")
-		}
-		snapshot, err = service.fetchFeishuSnapshot(ctx)
-		if err == nil && snapshot.Availability == expected {
-			return snapshot, nil
-		}
-		if err != nil {
-			lastError = err
-		} else {
-			lastError = errors.New(snapshot.Message)
-		}
-		if time.Now().After(deadline) {
-			if lastError == nil || strings.TrimSpace(lastError.Error()) == "" {
-				lastError = errors.New("飞书服务尚未完成启动")
-			}
-			return domain.FeishuSnapshot{}, lastError
-		}
-		select {
-		case <-ctx.Done():
-			return domain.FeishuSnapshot{}, ctx.Err()
-		case <-time.After(250 * time.Millisecond):
-		}
+	if service.managedFeishuSupervisor == nil {
+		return domain.FeishuSnapshot{}, errors.New("KSFAssistant Feishu is unavailable")
 	}
+	return waitForSetupSnapshot(ctx, expected, timeout, service.fetchFeishuSnapshot)
 }
 
 func prepareFeishuDryRunSettings(settings managedfeishu.Settings) managedfeishu.Settings {
@@ -761,6 +740,14 @@ func containsString(values []string, expected string) bool {
 }
 
 func (service *Service) CancelFeishuSetup() (managedfeishu.SetupState, error) {
+	if service.managedFeishuSupervisor == nil {
+		return managedfeishu.SetupState{}, errors.New("飞书授权服务不可用，尚未取消配置")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := service.managedFeishuSupervisor.Call(ctx, feishuprotocol.MethodAuthCancel, map[string]any{}, nil); err != nil {
+		return managedfeishu.SetupState{}, errors.New("未能终止飞书授权，请重试取消")
+	}
 	state := managedfeishu.DefaultSetupState()
 	err := (remoteSetupStore{service}).Save(state)
 	if err == nil && service.managedFeishuSupervisor != nil {
@@ -1148,6 +1135,7 @@ func (service *Service) PrepareProjectLaunch(ctx context.Context, request Prepar
 }
 
 func (service *Service) Close() {
+	service.approvals().broker.Close()
 	if service.localGateway != nil {
 		_ = service.localGateway.Close()
 	}

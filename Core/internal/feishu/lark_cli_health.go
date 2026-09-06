@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const PinnedLarkCLIVersion = "1.0.92"
+const PinnedLarkCLIVersion = "1.0.93"
 
 const (
 	larkCLIProbeTimeout = 3 * time.Second
@@ -108,7 +108,7 @@ func executeLarkCLIProbe(parent context.Context, binary string, now time.Time) L
 	if json.Unmarshal(schemaOutput, &schema) != nil || strings.TrimSpace(schema.Name) == "" || schema.InputSchema == nil {
 		return unavailableLarkCLIProbe(now, "schema_probe_invalid")
 	}
-	return LarkCLIProbeResult{State: "ready", Version: PinnedLarkCLIVersion, Code: "verified", Detail: "lark-cli 1.0.92 executable and contract verified", CheckedAt: now}
+	return LarkCLIProbeResult{State: "ready", Version: PinnedLarkCLIVersion, Code: "verified", Detail: "lark-cli " + PinnedLarkCLIVersion + " executable and contract verified", CheckedAt: now}
 }
 
 func runLocalLarkCLIProbe(ctx context.Context, binary string, arguments ...string) ([]byte, error) {
