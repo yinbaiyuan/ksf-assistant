@@ -14,6 +14,10 @@ struct ToolchainStatus: Decodable {
     let healthy: Bool
     let skills: [Skill]
     let problemCount: Int
+    let installationState: String?
+    let installationTitle: String?
+    let installationAction: String?
+    let installationDetails: [String]?
 
     var isHealthy: Bool { schemaVersion == 1 && healthy }
 

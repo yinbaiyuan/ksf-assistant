@@ -55,8 +55,6 @@ func CapabilityServiceErrorAdvice(err error) CapabilityServiceAdvice {
 		return CapabilityServiceAdvice{ErrorCode: code, NextAction: "enable_outbound"}
 	case "actionbox_disabled":
 		return CapabilityServiceAdvice{ErrorCode: code, NextAction: "enable_actionbox"}
-	case "docbox_disabled":
-		return CapabilityServiceAdvice{ErrorCode: code, NextAction: "enable_docbox"}
 	case "confirmation_expired", "confirmation_invalid", "confirmation_not_pending", "preflight_changed", "capability_policy_changed":
 		return CapabilityServiceAdvice{ErrorCode: code, NextAction: "reprepare_on_user_request"}
 	case ErrCapabilityPolicyRevisionConflict.Error():
@@ -91,6 +89,9 @@ func NewCapabilityService(dataRoot string, executor CapabilityServiceExecutor, n
 }
 
 func (service *CapabilityService) Prepare(ctx context.Context, capabilityID string, input map[string]any, source string) (PreparedOperation, error) {
+	if input["dry-run"] == true {
+		return PreparedOperation{}, errors.New("product_preview_retired")
+	}
 	definition, ok := CapabilityByID(capabilityID)
 	if !ok {
 		return PreparedOperation{}, errors.New("unknown_capability")
@@ -199,7 +200,25 @@ func (service *CapabilityService) UpdatePolicy(policy CapabilityPolicy, expected
 	if value := policy.RiskDefaults["destructive"]; value != "" && value != CapabilityDisabled {
 		return CapabilityPolicy{}, ErrUnsafeDestructivePolicy
 	}
+	current, err := service.policy.Load()
+	if err != nil {
+		return CapabilityPolicy{}, err
+	}
 	for capabilityID, permission := range policy.CapabilityOverrides {
+		// Historical overrides may be carried forward or removed, never newly granted.
+		if retiredDocumentPolicyID(capabilityID) && current.CapabilityOverrides[capabilityID] == permission {
+			continue
+		}
+		// Managed command effects have policy identifiers without queue adapters.
+		if capabilityID == "drive.file.version.create" {
+			continue
+		}
+		if capabilityID == "docs.shortcut.overwrite" {
+			if permission != CapabilityDisabled && permission != CapabilityConfirmEach {
+				return CapabilityPolicy{}, ErrUnsafeDestructivePolicy
+			}
+			continue
+		}
 		definition, ok := CapabilityByID(capabilityID)
 		if !ok {
 			return CapabilityPolicy{}, errors.New("unknown_capability_override")
@@ -265,7 +284,7 @@ func (service *CapabilityService) ExpireAwaiting(limit int) error {
 }
 
 func (service *CapabilityService) RecoverInterrupted(limit int) error {
-	for _, kind := range []string{"actionbox", "outbox", "docbox"} {
+	for _, kind := range []string{"actionbox", "outbox"} {
 		repo := newWorkRepository(service.dataRoot, kind)
 		if _, err := repo.recoverRunning(limit); err != nil {
 			return err
@@ -327,22 +346,8 @@ func (service *CapabilityService) dispatch(ctx context.Context, prepared Prepare
 	return prepared, nil
 }
 
-func validateCapabilityRuntimeGate(definition CapabilityDefinition, settings Settings) error {
-	if definition.Risk != "read" && !settings.Actionbox.Enabled {
-		return errors.New("actionbox_disabled")
-	}
-	if capabilityUsesOutbound(definition) && !settings.Outbound.Enabled {
-		return errors.New("outbound_disabled")
-	}
-	if definition.Queue == "docbox" && !settings.Docbox.Enabled {
-		return errors.New("docbox_disabled")
-	}
-	return nil
-}
-
-func effectiveCapabilityDryRun(definition CapabilityDefinition, settings Settings) bool {
-	return definition.Risk != "read" && (settings.Actionbox.DryRun || capabilityUsesOutbound(definition) && settings.Outbound.DryRun || definition.Queue == "docbox" && settings.Docbox.DryRun)
-}
+func validateCapabilityRuntimeGate(_ CapabilityDefinition, _ Settings) error { return nil }
+func effectiveCapabilityDryRun(_ CapabilityDefinition, _ Settings) bool      { return false }
 
 func capabilityUsesOutbound(definition CapabilityDefinition) bool {
 	return definition.Effect == "send" || contains([]string{"im.message.edit", "im.messages.patch"}, definition.ID)

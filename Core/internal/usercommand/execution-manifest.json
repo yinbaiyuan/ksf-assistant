@@ -31,7 +31,7 @@
       "path": "api POST /open-apis/task/v2/task_v2/task_subscription",
       "risk": "high-impact-write",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -65,7 +65,7 @@
       "path": "api POST /open-apis/board/v1/whiteboards/:target/subscribe",
       "risk": "high-impact-write",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -99,7 +99,7 @@
       "path": "api POST /open-apis/board/v1/whiteboards/:target/unsubscribe",
       "risk": "destructive",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -133,7 +133,7 @@
       "path": "api POST /open-apis/vc/v1/meetings/subscription",
       "risk": "high-impact-write",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -167,7 +167,7 @@
       "path": "api POST /open-apis/vc/v1/meetings/unsubscription",
       "risk": "destructive",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -201,7 +201,7 @@
       "path": "api POST /open-apis/vc/v1/notes/subscription",
       "risk": "high-impact-write",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -235,7 +235,7 @@
       "path": "api POST /open-apis/vc/v1/notes/unsubscription",
       "risk": "destructive",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -269,7 +269,7 @@
       "path": "api POST /open-apis/vc/v1/recordings/subscription",
       "risk": "high-impact-write",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -303,7 +303,7 @@
       "path": "api POST /open-apis/vc/v1/recordings/unsubscription",
       "risk": "destructive",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -337,7 +337,7 @@
       "path": "api POST /open-apis/minutes/v1/minutes/subscription",
       "risk": "high-impact-write",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -371,7 +371,7 @@
       "path": "api POST /open-apis/minutes/v1/minutes/unsubscription",
       "risk": "destructive",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -395,7 +395,7 @@
       "path": "api POST /open-apis/approval/v4/instances/subscription",
       "risk": "high-impact-write",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -419,7 +419,7 @@
       "path": "api DELETE /open-apis/approval/v4/instances/subscription",
       "risk": "high-impact-write",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -443,7 +443,7 @@
       "path": "api POST /open-apis/approval/v4/tasks/subscription",
       "risk": "high-impact-write",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -467,7 +467,7 @@
       "path": "api DELETE /open-apis/approval/v4/tasks/subscription",
       "risk": "high-impact-write",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -501,7 +501,7 @@
       "path": "api POST /open-apis/im/v1/messages",
       "risk": "write",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -526,7 +526,7 @@
       "path": "api POST /open-apis/im/v1/messages/:message-id/reply",
       "risk": "write",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -551,7 +551,7 @@
       "path": "api GET /open-apis/im/v1/messages/:message-id",
       "risk": "read",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -576,7 +576,7 @@
       "path": "api PATCH /open-apis/im/v1/messages/:message-id",
       "risk": "write",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -589,7 +589,7 @@
       "path": "api DELETE /open-apis/im/v1/messages/:message-id",
       "risk": "destructive",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -613,7 +613,7 @@
       "path": "api GET /open-apis/im/v1/messages",
       "risk": "read",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -647,7 +647,7 @@
       "path": "api POST /open-apis/im/v1/messages/search",
       "risk": "read",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -677,7 +677,7 @@
       "path": "api POST /open-apis/im/v1/images",
       "risk": "write",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -707,12 +707,12 @@
       "path": "api POST /open-apis/im/v1/files",
       "risk": "write",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
       "capabilityIds": [
-        "docbox.version"
+        "drive.file.version.create"
       ],
       "description": "创建文档版本",
       "flags": [
@@ -741,7 +741,7 @@
       "path": "api POST /open-apis/drive/v1/files/:file-token/versions",
       "risk": "write",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -766,7 +766,7 @@
       "path": "api GET /open-apis/calendar/v4/calendars/:calendar-id/events/:event-id",
       "risk": "read",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -802,7 +802,7 @@
       "path": "api POST /open-apis/calendar/v4/calendars/:calendar-id/events",
       "risk": "write",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -838,7 +838,7 @@
       "path": "api PATCH /open-apis/calendar/v4/calendars/:calendar-id/events/:event-id",
       "risk": "write",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -862,7 +862,7 @@
       "path": "api DELETE /open-apis/calendar/v4/calendars/:calendar-id/events/:event-id",
       "risk": "destructive",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -897,7 +897,7 @@
       "path": "api POST /open-apis/calendar/v4/freebusy/list",
       "risk": "read",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     },
     {
@@ -922,7 +922,7 @@
       "path": "api POST /open-apis/drive/v1/files/create_folder",
       "risk": "write",
       "source": "Core/internal/usercommand/catalog.go",
-      "sourceSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "sourceSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "status": "supported"
     }
   ],
@@ -119084,15 +119084,13 @@
     },
     {
       "capabilityIds": [
-        "docs.shortcut.create",
-        "docs.service.document.create"
+        "docs.shortcut.create"
       ],
       "path": "docs +create"
     },
     {
       "capabilityIds": [
-        "docs.shortcut.update",
-        "docs.service.document.append"
+        "docs.shortcut.update"
       ],
       "path": "docs +update"
     },
@@ -119632,28 +119630,30 @@
       "windows-x64": "39ba320129d7c700f907d0ea0d4a79467262a72ca0f971879f5f45cf5f782645"
     },
     "engineFiles": {
-      "Core/internal/capabilitypolicy/policy.go": "3b4478a1f0f3dbbc1fdd4ff8d901ccb267b1a1d80a891befe96ae97123a44392",
+      "Core/internal/capabilitypolicy/policy.go": "087d7b0dc03cfad8a7dd149a105e167712cfebf16e3eec85978a0477a262e798",
+      "Core/internal/capabilitypolicy/session.go": "9a15b81dd02a4e0c0ef82fc2b3f6c07c8498e4fe3a088f1f0c0a5c16519b9483",
       "Core/internal/usercommand/arguments.go": "e56b041d32eb4e1281ad376ef42bea3b54b6e1958bb04790026ca4c5df70791d",
       "Core/internal/usercommand/artifacts.go": "d2a51966c69726da504541ba5eb8d3afcbc94e07f12498be369eedca016e0378",
-      "Core/internal/usercommand/catalog.go": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+      "Core/internal/usercommand/catalog.go": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
       "Core/internal/usercommand/descriptor.go": "70cf563d447f899610e29cc9457456368b62ec76d54e05db6e077eb5df10a90c",
-      "Core/internal/usercommand/effects.go": "781d493cbc5b10da2fc797f16fac9ef192b85272a81a539e0a04c9bd1e664fcc",
-      "Core/internal/usercommand/evaluate.go": "5af592934716f04b0f8112198024807f121744ac9c9df2a52404d2019201027a",
+      "Core/internal/usercommand/effects.go": "b9a119d0435129cd640fbc2453b49b1268e9eb96a405aee92af782e72078adb6",
+      "Core/internal/usercommand/evaluate.go": "445496d5baaa6f8aeab0f2ed3158dd639dfec893274cf7e566081362baba2ead",
       "Core/internal/usercommand/freeze.go": "a32d9f857031980b724df70545ee67750209ccfadf4028756359aa939d0f37a3",
       "Core/internal/usercommand/frozen_validation.go": "ba6c37373753f1935ca2794c2fd5a9a4df41c5cd8d65605e748e5015a76d1d7b",
       "Core/internal/usercommand/gate.go": "c6e7ba760e191eac086904ddbdab3d4cc27d38c8b393e168b2f1cb275585972b",
       "Core/internal/usercommand/identity.go": "207e27dafcc5c45a5e7e211d93c11c805ca67fc62ac6a39d789a7a1b1c0936fd",
       "Core/internal/usercommand/json.go": "fd9bd05ae0030405901ce3c2ead67024ddba25a5272b4fb4023518c9c47a08fb",
-      "Core/internal/usercommand/policy.go": "0b67512d1fca4532badaf6a032cdf6c8fe0e38cff2887f9190532362e01e4d95",
+      "Core/internal/usercommand/permission_scopes.go": "fa76b781bf0e232ef921c1f4988940a0405f6abac0806aa17f8868113871f0b4",
+      "Core/internal/usercommand/policy.go": "791a801f5aa4a5cfe399e4b3b9c245ebe3389dd7cbb4c4dffb899272513e316e",
       "Core/internal/usercommand/resolved_text.go": "2df7659ccc9df5158ac45729a88ba42abf86fcc61f79785a8a6ca4fd91a74492",
       "Core/internal/usercommand/sheets_batch.go": "8ffa593f34cd4ddab1ce0d98b76024b5d15befc113d182f9b79ebd5e33e4551c",
-      "Core/internal/usercommand/types.go": "33c728f10b025efb65a3c3a34aa400f442d99f5bab31e8c0988cbda4aea8ff62"
+      "Core/internal/usercommand/types.go": "7f43816961d8b51e76a6011162ec5b290b5e43e468f52ea7b6567a97e2624cb6"
     },
-    "engineSha256": "1a332726c54f9a4c335fe5476d958892e5e6755b3b01dbac739e146bfa28a93f",
+    "engineSha256": "1f43347d84d2eda0945590d75f9a42ea9b43f2fdac6fa46b037b1e9d66e21ad9",
     "generatorSha256": "430623e3eee8613da49c1b1a19f45c3cd93b8e9f59076160c85ace5b754caf29",
     "overlaySha256": "a99d850c8264adf767e85101d41202d92325eb96977211397bd8dd88ad066065",
-    "productCatalogSha256": "6ff07ed40d4be39210070b0204a7094fbac274434bfaebf613a404c856babaf5",
-    "reviewAdapterSha256": "e3d0084a30a6067ac096c252cb141198a0322ae4d4cc1971e735c61e93b78aa3",
+    "productCatalogSha256": "cbc8428def4ad2fbfb7e2b2f5944c9141cb5ff756465e280ba15d4a747d28636",
+    "reviewAdapterSha256": "1ea26baf733653422360b954bcd7f2982168db16793330e809b880f9e784876c",
     "schemaSha256": "34312751798b583ef2ebb05b2b01a748cde421437128865b56716d24c861463e",
     "shortcutSource": "AST of AllShortcuts registration; actual fixed-binary help cross-check; source fallback typed catalog is not used",
     "skillsSha256": "e995848403b02c21e7f38f728ac82f4acb03a31b4bda1fe3f7a9516eb95c694e",

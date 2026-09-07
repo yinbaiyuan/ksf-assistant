@@ -28,22 +28,29 @@ type Config struct {
 }
 
 type SkillStatus struct {
-	Name  string `json:"name"`
-	State string `json:"state"`
+	Name    string   `json:"name"`
+	State   string   `json:"state"`
+	Details []string `json:"details,omitempty"`
 }
 
 type Status struct {
-	Version           string        `json:"version"`
-	ExecutionManifest string        `json:"executionManifest"`
-	Installed         bool          `json:"installed"`
-	Healthy           bool          `json:"healthy"`
-	Skills            []SkillStatus `json:"skills"`
-	LauncherPath      string        `json:"launcherPath"`
-	TaskLauncherPath  string        `json:"taskLauncherPath"`
-	Brand             string        `json:"brand"`
-	Profile           string        `json:"profile"`
-	ConfigDir         string        `json:"configDir"`
-	Problems          []string      `json:"problems"`
+	InstallationState     string        `json:"installationState"`
+	InstallationTitle     string        `json:"installationTitle"`
+	InstallationAction    string        `json:"installationAction"`
+	InstallationDetails   []string      `json:"installationDetails,omitempty"`
+	Version               string        `json:"version"`
+	ExecutionManifest     string        `json:"executionManifest"`
+	SkillsAdapterRevision string        `json:"skillsAdapterRevision,omitempty"`
+	SkillsAdapterDigest   string        `json:"skillsAdapterDigest,omitempty"`
+	Installed             bool          `json:"installed"`
+	Healthy               bool          `json:"healthy"`
+	Skills                []SkillStatus `json:"skills"`
+	LauncherPath          string        `json:"launcherPath"`
+	TaskLauncherPath      string        `json:"taskLauncherPath"`
+	Brand                 string        `json:"brand"`
+	Profile               string        `json:"profile"`
+	ConfigDir             string        `json:"configDir"`
+	Problems              []string      `json:"problems"`
 }
 
 type Skill struct {
@@ -52,11 +59,24 @@ type Skill struct {
 }
 
 type Manifest struct {
-	SchemaVersion int     `json:"schemaVersion"`
-	Version       string  `json:"version"`
-	License       string  `json:"license"`
-	LicenseSHA256 string  `json:"licenseSha256"`
-	Skills        []Skill `json:"skills"`
+	SchemaVersion int         `json:"schemaVersion"`
+	Version       string      `json:"version"`
+	License       string      `json:"license"`
+	LicenseSHA256 string      `json:"licenseSha256"`
+	Skills        []Skill     `json:"skills"`
+	Adaptation    *Adaptation `json:"adaptation,omitempty"`
+}
+
+type Adaptation struct {
+	SchemaVersion          int    `json:"schemaVersion"`
+	Revision               string `json:"revision"`
+	Digest                 string `json:"digest"`
+	UpstreamVersion        string `json:"upstreamVersion"`
+	UpstreamManifestSHA256 string `json:"upstreamManifestSha256"`
+}
+
+func (adaptation *Adaptation) valid(version string) bool {
+	return adaptation == nil || (adaptation.SchemaVersion == 1 && safeName.MatchString(adaptation.Revision) && digestPattern.MatchString(adaptation.Digest) && adaptation.UpstreamVersion == version && digestPattern.MatchString(adaptation.UpstreamManifestSHA256))
 }
 
 type Manager struct {
@@ -208,6 +228,15 @@ func (manager *Manager) manifest() (Manifest, error) {
 	}
 	if manifest.SchemaVersion != 1 || manifest.Version != Version || manifest.License != "MIT" || len(manifest.Skills) == 0 {
 		return manifest, errors.New("version_mismatch")
+	}
+	if !manifest.Adaptation.valid(manifest.Version) {
+		return manifest, errors.New("invalid_adaptation_manifest")
+	}
+	if manifest.Adaptation != nil {
+		digest, err := fileHash(filepath.Join(root, "adaptation-report.json"))
+		if err != nil || digest != manifest.Adaptation.Digest {
+			return manifest, errors.New("adaptation_checksum_mismatch")
+		}
 	}
 	licenseHash, err := fileHash(filepath.Join(root, "LICENSE"))
 	if err != nil || licenseHash != manifest.LicenseSHA256 {

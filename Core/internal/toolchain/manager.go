@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"ksfassistant/core/internal/usercommand"
 )
@@ -15,6 +16,7 @@ type receipt struct {
 	SchemaVersion     int               `json:"schemaVersion"`
 	Version           string            `json:"version"`
 	ExecutionManifest string            `json:"executionManifest,omitempty"`
+	Adaptation        *Adaptation       `json:"adaptation,omitempty"`
 	ResourcesDir      string            `json:"resourcesDir"`
 	Profile           string            `json:"profile"`
 	ConfigDir         string            `json:"configDir"`
@@ -56,6 +58,9 @@ func (manager *Manager) ownership() (*receipt, error) {
 	if err != nil || owned.SchemaVersion != 1 || owned.Version == "" || len(owned.Files) != 4 || owned.Files["launcher.json"] == "" || owned.Files["bin/ksfas-lark"+suffix()] == "" || owned.Files["bin/lark-cli"+suffix()] == "" || owned.Files["bin/ksf-assistant-task"+suffix()] == "" {
 		return nil, errors.New("invalid_receipt")
 	}
+	if !owned.Adaptation.valid(owned.Version) {
+		return nil, errors.New("invalid_receipt")
+	}
 	seen := map[string]bool{}
 	for _, skill := range owned.Skills {
 		if !safeName.MatchString(skill.Name) || seen[skill.Name] || len(skill.Files) == 0 || skill.Files["SKILL.md"] == "" {
@@ -84,14 +89,19 @@ func (manager *Manager) verifyState(owned *receipt) error {
 	return verifyTree(manager.config.StateDir, files)
 }
 
-func (manager *Manager) Status() (Status, error) {
-	status := Status{Version: Version, ExecutionManifest: usercommand.ManifestDigest(), Skills: []SkillStatus{}, LauncherPath: manager.launcherPath(), Profile: manager.config.Profile, ConfigDir: manager.config.ConfigDir, Problems: []string{}}
+func (manager *Manager) Status() (status Status, resultErr error) {
+	defer func() { status.finalizeInstallation() }()
+	status = Status{Version: Version, ExecutionManifest: usercommand.ManifestDigest(), Skills: []SkillStatus{}, LauncherPath: manager.launcherPath(), Profile: manager.config.Profile, ConfigDir: manager.config.ConfigDir, Problems: []string{}}
 	status.TaskLauncherPath = filepath.Join(manager.config.StateDir, "bin", "ksf-assistant-task"+suffix())
 	status.Brand = "feishu"
 	manifest, err := manager.manifest()
 	if err != nil {
 		status.Problems = append(status.Problems, err.Error())
 		return status, nil
+	}
+	if manifest.Adaptation != nil {
+		status.SkillsAdapterRevision = manifest.Adaptation.Revision
+		status.SkillsAdapterDigest = manifest.Adaptation.Digest
 	}
 	if _, err := manager.binary(); err != nil {
 		status.Problems = append(status.Problems, err.Error())
@@ -109,8 +119,27 @@ func (manager *Manager) Status() (Status, error) {
 		for _, skill := range owned.Skills {
 			managed[skill.Name] = skill
 		}
-		if manager.verifyState(owned) != nil {
-			status.Problems = append(status.Problems, "launcher_edited")
+		state, details := manager.inspectState(owned)
+		if state != "managed" {
+			status.Problems = append(status.Problems, "launcher_"+state)
+			status.InstallationDetails = append(status.InstallationDetails, details...)
+		}
+		for _, previous := range owned.Skills {
+			current := false
+			for _, desired := range manifest.Skills {
+				if desired.Name == previous.Name {
+					current = true
+					break
+				}
+			}
+			if current {
+				continue
+			}
+			state, details := inspectOwned(filepath.Join(manager.skillRoot(), previous.Name), previous.Files)
+			if state != "managed" {
+				status.Skills = append(status.Skills, SkillStatus{Name: previous.Name, State: state, Details: details})
+				status.Problems = append(status.Problems, "skill_"+state)
+			}
 		}
 		if err := manager.currentLauncher(owned); err != nil {
 			status.Problems = append(status.Problems, err.Error())
@@ -124,19 +153,35 @@ func (manager *Manager) Status() (Status, error) {
 		if !sameSkills(owned.Skills, manifest.Skills) {
 			status.Problems = append(status.Problems, "skills_manifest_changed")
 		}
+		if !sameAdaptation(owned.Adaptation, manifest.Adaptation) {
+			status.Problems = append(status.Problems, "skills_adapter_changed")
+		}
 	}
 	for _, skill := range manifest.Skills {
 		state := "absent"
+		var details []string
 		root := filepath.Join(manager.skillRoot(), skill.Name)
 		if previous, exists := managed[skill.Name]; exists {
 			state = "managed"
-			if verifyTree(root, previous.Files) != nil {
-				state = "edited"
-			}
+			state, details = inspectOwned(root, previous.Files)
 		} else if _, err := os.Lstat(root); !errors.Is(err, fs.ErrNotExist) {
-			state = "collision"
+			if err != nil {
+				state = "check_failed"
+			} else {
+				state = "collision"
+			}
+			details = []string{state + ": ."}
 		}
-		status.Skills = append(status.Skills, SkillStatus{Name: skill.Name, State: state})
+		if strings.HasPrefix(skill.Name, "ksf-lark-") {
+			legacy := strings.TrimPrefix(skill.Name, "ksf-")
+			if _, ownedLegacy := managed[legacy]; !ownedLegacy {
+				if _, err := os.Lstat(filepath.Join(manager.skillRoot(), legacy)); !errors.Is(err, fs.ErrNotExist) {
+					state = "collision"
+					details = append(details, "旧版未受管："+legacy)
+				}
+			}
+		}
+		status.Skills = append(status.Skills, SkillStatus{Name: skill.Name, State: state, Details: details})
 		if state != "managed" {
 			status.Problems = append(status.Problems, "skill_"+state)
 		}
@@ -176,14 +221,22 @@ func (manager *Manager) Uninstall() (Status, error) {
 }
 
 type replacement struct {
-	Target   string            `json:"target"`
-	Stage    string            `json:"stage"`
-	Backup   string            `json:"backup"`
-	Original bool              `json:"original"`
-	OldMoved bool              `json:"oldMoved"`
-	NewMoved bool              `json:"newMoved"`
-	OldFiles map[string]string `json:"oldFiles,omitempty"`
-	NewFiles map[string]string `json:"newFiles,omitempty"`
+	OldDirectories []string          `json:"oldDirectories,omitempty"`
+	Target         string            `json:"target"`
+	Stage          string            `json:"stage"`
+	Backup         string            `json:"backup"`
+	Original       bool              `json:"original"`
+	OldMoved       bool              `json:"oldMoved"`
+	NewMoved       bool              `json:"newMoved"`
+	OldFiles       map[string]string `json:"oldFiles,omitempty"`
+	NewFiles       map[string]string `json:"newFiles,omitempty"`
+}
+
+func sameAdaptation(left, right *Adaptation) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
 }
 
 func sameSkills(left, right []Skill) bool {
@@ -299,11 +352,13 @@ func (manager *Manager) change(install bool) error {
 		return err
 	}
 	if owned != nil {
-		if err := manager.verifyState(owned); err != nil {
-			return errors.New("launcher_edited")
+		state, _ := manager.inspectState(owned)
+		if state != "managed" && !(install && state == "missing") {
+			return errors.New("launcher_" + state)
 		}
 		for _, skill := range owned.Skills {
-			if err := verifyTree(filepath.Join(manager.skillRoot(), skill.Name), skill.Files); err != nil {
+			state, _ := inspectOwned(filepath.Join(manager.skillRoot(), skill.Name), skill.Files)
+			if state != "managed" && !(install && state == "missing") {
 				return errors.New("owned_skill_edited")
 			}
 		}
@@ -347,6 +402,14 @@ func (manager *Manager) change(install bool) error {
 	}
 	sort.Strings(ordered)
 	for _, name := range ordered {
+		if strings.HasPrefix(name, "ksf-lark-") {
+			legacy := strings.TrimPrefix(name, "ksf-")
+			if _, wasOwned := oldSkills[legacy]; !wasOwned {
+				if _, err := os.Lstat(filepath.Join(manager.skillRoot(), legacy)); !errors.Is(err, fs.ErrNotExist) {
+					return errors.New("legacy_skill_collision")
+				}
+			}
+		}
 		if _, wasOwned := oldSkills[name]; !wasOwned {
 			if _, err := os.Lstat(filepath.Join(manager.skillRoot(), name)); !errors.Is(err, fs.ErrNotExist) {
 				return errors.New("skill_collision")
@@ -377,6 +440,10 @@ func (manager *Manager) change(install bool) error {
 	}
 	for _, name := range ordered {
 		_, exists := oldSkills[name]
+		if exists {
+			_, e := os.Lstat(filepath.Join(manager.skillRoot(), name))
+			exists = !errors.Is(e, fs.ErrNotExist)
+		}
 		change, err := stage(filepath.Join(manager.skillRoot(), name), exists)
 		if err != nil {
 			return err
@@ -408,6 +475,7 @@ func (manager *Manager) change(install bool) error {
 			return err
 		}
 		record := receipt{SchemaVersion: 1, Version: Version, ResourcesDir: manager.config.ResourcesDir, Profile: manager.config.Profile, ConfigDir: manager.config.ConfigDir, DataRoot: manager.config.DataRoot, Skills: manifest.Skills, Files: map[string]string{}, ExecutionManifest: usercommand.ManifestDigest()}
+		record.Adaptation = manifest.Adaptation
 		for _, name := range []string{"bin/ksfas-lark" + suffix(), "bin/lark-cli" + suffix(), "bin/ksf-assistant-task" + suffix(), "launcher.json"} {
 			hash, err := fileHash(filepath.Join(stateChange.Stage, filepath.FromSlash(name)))
 			if err != nil {
@@ -422,6 +490,7 @@ func (manager *Manager) change(install bool) error {
 	for _, change := range changes {
 		if change.Original {
 			change.OldFiles, err = treeHashes(change.Target)
+			change.OldDirectories = treeDirectories(change.Target)
 			if err != nil {
 				return err
 			}
@@ -433,13 +502,18 @@ func (manager *Manager) change(install bool) error {
 			}
 		}
 	}
+	if install {
+		if err := manager.backupInstallation(changes); err != nil {
+			return err
+		}
+	}
 	if err := writeJSON(filepath.Join(lock, "journal.json"), changes); err != nil {
 		return err
 	}
 	rollback := func() error {
 		for index := len(changes) - 1; index >= 0; index-- {
 			change := changes[index]
-			if change.OldMoved && verifyTree(change.Backup, change.OldFiles) != nil {
+			if change.OldMoved && !sameTreeSnapshot(change.Backup, change.OldFiles, change.OldDirectories) {
 				return errors.New("rollback_backup_edited")
 			}
 			if change.NewMoved {
@@ -475,13 +549,19 @@ func (manager *Manager) change(install bool) error {
 			return fail()
 		}
 		if change.Original {
+			var state string
 			if change.Target == manager.config.StateDir {
-				if manager.verifyState(owned) != nil {
-					return fail()
-				}
-			} else if verifyTree(change.Target, oldSkills[filepath.Base(change.Target)].Files) != nil {
+				state, _ = manager.inspectState(owned)
+			} else {
+				state, _ = inspectOwned(change.Target, oldSkills[filepath.Base(change.Target)].Files)
+			}
+			if state != "managed" && !(install && state == "missing") {
 				return fail()
 			}
+			if !sameTreeSnapshot(change.Target, change.OldFiles, change.OldDirectories) {
+				return fail()
+			}
+
 			if err := os.Rename(change.Target, change.Backup); err != nil {
 				return fail()
 			}

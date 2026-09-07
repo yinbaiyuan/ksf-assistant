@@ -75,7 +75,7 @@ func RunLifecycleMaintenance(ctx context.Context, dataRoot string) {
 func CleanupDataAt(dataRoot string, now time.Time) (LifecycleSummary, error) {
 	var summary LifecycleSummary
 	var combined error
-	for _, kind := range []string{"actionbox", "docbox", "outbox"} {
+	for _, kind := range []string{"actionbox", "outbox"} {
 		count, err := cleanupWorkRepository(newWorkRepository(dataRoot, kind), now)
 		summary.WorkItems += count
 		combined = errors.Join(combined, err)

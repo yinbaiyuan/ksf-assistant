@@ -1,5 +1,37 @@
 # Supervisor connection generations
 
+## Managed message and card connection
+
+Feishu service owns the existing official CLI message/card inbound lifecycle;
+there is no configurable `primary`/`manual-only` event role or additional listener.
+The pinned CLI version/schema probe and official Feishu bot identity must pass
+before the message client is created. The existing inbound processor, authorized
+sender/operator checks, two managed consumers (`im.message.receive_v1` and
+`card.action.trigger`), readiness checks and process-tree cleanup remain intact.
+Removing an event role does not grant authorization, enable additional event
+subscriptions, activate outbound writes or bypass capability/approval policy.
+Legacy `manual-only` no longer suppresses the authorized inbound lifecycle.
+
+`feishu/profile/set`, `bridge/profile/set` and CLI `profile set` are retired;
+they cannot save settings or restart the service. Compatibility profile reads and
+catalogs expose fixed managed intent (`profile: managed`, `profileValid: true`,
+`desiredConnection: true`, `managedBy: feishu-service`, `configurable: false`).
+Catalogs have no selectable profiles. These fields do not claim a live connection
+or authorization; `inboundConnection`, `health.inbound`, readiness blockers and
+capability health still describe actual readiness. Snapshot field names/types are
+retained for old hosts. `auth.profile=default` is a separate official CLI identity
+configuration and is unchanged.
+
+Settings schema stays v1. The old string `profile` field is read-only migration
+data: Load does not rewrite it, Save retains the stored value regardless of the
+incoming value, and new settings keep an empty string for decoder compatibility.
+Safe legacy labels are not interpreted as runtime roles. Existing strict JSON
+unknown-field/trailing-data and private-file checks remain; unknown settings are
+rejected rather than silently dropped or overwritten. No installed settings,
+credentials or production data are migrated by a read or by this source change.
+
+## Connection generations
+
 ```go
 err := supervisor.SetOnConnect(func(ctx context.Context, generation uint64) error {
     return initializeAndReadSnapshot(ctx, generation)

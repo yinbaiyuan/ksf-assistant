@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"ksfassistant/core/internal/capabilitypolicy"
 	"sort"
 	"strings"
 	"time"
@@ -12,6 +13,23 @@ import (
 type RuntimeHealth struct {
 	State  string `json:"state"`
 	Detail string `json:"detail,omitempty"`
+}
+
+// Historical card failures and unknown outcomes remain visible and are never
+// replayed. They do not disable a new, unrelated task. Storage/worker failures
+// still block new connections.
+func (runtime *Runtime) CanCreateTaskLink() bool {
+	if runtime.disconnecting.Load() || capabilitypolicy.CheckSession(runtime.dataRoot) != nil || runtime.watchCtx.Err() != nil {
+		return false
+	}
+	runtime.healthMu.Lock()
+	defer runtime.healthMu.Unlock()
+	for component := range runtime.healthIssues {
+		if component != "task card reconciliation failed" {
+			return false
+		}
+	}
+	return true
 }
 
 func (runtime *Runtime) setHealth(component string, err error) {
@@ -110,7 +128,10 @@ func (runtime *Runtime) reconcileTaskLinkCards(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return errors.Join(syncErrors, ctx.Err())
 		}
-		if TaskLinkCardSyncPending(link) {
+		var syncState CardSyncState
+		link.ExtraValue("cardSync", &syncState)
+		expiredSinceSync := syncState.State == "synced" && syncState.LinkState != "" && syncState.LinkState != effectiveTaskLinkState(link, time.Now())
+		if TaskLinkCardSyncPending(link) || expiredSinceSync {
 			syncErrors = errors.Join(syncErrors, SyncTaskLinkCard(ctx, runtime.links, runtime.messages, link, ""))
 		}
 		if effectiveTaskLinkState(link, time.Now()) != "active" || !runtime.desktopOwned(link) {

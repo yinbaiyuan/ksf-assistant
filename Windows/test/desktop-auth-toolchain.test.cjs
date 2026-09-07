@@ -22,7 +22,7 @@ function toolchainHarness(confirm = true) {
       installToolchain: async (confirmed) => { calls.push(['install', confirmed]); return { schemaVersion: 1, healthy: true, version: '1.0.93', skills: [] }; },
     },
   });
-  vm.runInContext(renderer.slice(renderer.indexOf('function renderToolchainSettings()'), renderer.indexOf('function renderFeishuActivation(')), context);
+  vm.runInContext(renderer.slice(renderer.indexOf('function renderToolchainSettings()'), renderer.indexOf('async function readFeishuConfiguration(')), context);
   return { context, calls };
 }
 
@@ -87,71 +87,11 @@ test('preload exposes narrow toolchain calls, not process or generic RPC access'
   assert.equal(api.request, undefined);
 });
 
-function authHarness(confirm = true) {
-  const calls = [];
-  const pending = { schemaVersion: 1, status: 'pending', identity: 'user', profile: 'default', profileValid: true, userCode: 'ABC-123', verificationUrl: 'https://accounts.feishu.cn/authorize' };
-  const context = vm.createContext({
-    state: { feishuAuth: null, feishuAuthBusy: false, feishuAuthError: '' },
-    window: { confirm: () => confirm }, render: () => {},
-    escapeHTML: (value) => String(value).replaceAll('<', '&lt;'),
-    api: {
-      feishuAuthStatus: async () => { calls.push('status'); return { ...pending, status: 'unauthorized' }; },
-      startFeishuAuth: async () => { calls.push('start'); return pending; },
-      finishFeishuAuth: async () => { calls.push('finish'); return pending; },
-      logoutFeishuAuth: async (confirmed) => { calls.push(['logout', confirmed]); return { ...pending, status: 'unauthorized' }; },
-      feishuOverview: async () => ({}), dashboard: async () => ({}),
-    },
-  });
-  vm.runInContext(renderer.slice(renderer.indexOf('function renderFeishuAuthorization()'), renderer.indexOf('function selectHomeProjects(')), context);
-  return { context, calls };
-}
-
-test('authorization exposes pending instructions and never claims a pending finish succeeded', async () => {
-  const { context, calls } = authHarness();
-  await context.updateFeishuAuthorization('start');
-  assert.match(context.renderFeishuAuthorization(), /ABC-123/);
-  assert.match(context.renderFeishuAuthorization(), /我已授权，检查/);
-  await context.updateFeishuAuthorization('finish');
-  assert.equal(context.state.feishuAuth.status, 'pending');
-  assert.deepEqual(calls, ['start', 'finish']);
-  context.state.feishuAuth = { schemaVersion: 1, status: 'authorized', identity: 'user', profile: 'default', identityValid: true, profileValid: true, missingCapabilities: ['应用功能权限'] };
-  assert.match(context.renderFeishuAuthorization(), /补充授权/);
-  assert.match(context.renderFeishuAuthorization(), /应用功能权限/);
-  assert.match(context.renderFeishuAuthorization(), /不代表所有功能权限齐备/);
-});
-
-test('logout is explicit; auth errors clear busy and allow reauthorization without raw errors', async () => {
-  const canceled = authHarness(false);
-  await canceled.context.updateFeishuAuthorization('logout');
-  assert.deepEqual(canceled.calls, []);
-  const { context, calls } = authHarness();
-  await context.updateFeishuAuthorization('logout');
-  assert.deepEqual(calls, [['logout', true]]);
-  context.api.finishFeishuAuth = async () => { throw new Error('access_token=private /config'); };
-  await context.updateFeishuAuthorization('finish');
-  assert.equal(context.state.feishuAuthBusy, false);
-  assert.equal(context.state.feishuAuth, null);
-  assert.match(context.renderFeishuAuthorization(), /重新授权/);
-  assert.doesNotMatch(context.renderFeishuAuthorization(), /private|access_token|\/config/);
-});
-
-test('host auth RPC never forwards raw scopes, profiles or device codes from renderer', async () => {
-  const handlers = new Map();
-  const calls = [];
-  const context = vm.createContext({
-    ipcMain: { handle: (name, handler) => handlers.set(name, handler), on: () => {} },
-    readDashboard: () => {}, core: { request: async (...args) => { calls.push(args); return {}; } },
-  });
-  vm.runInContext(main.slice(main.indexOf('function registerIPC()'), main.indexOf('function allowedFeishuURL(')), context);
-  context.registerIPC();
-  await handlers.get('feishu:auth-start')({}, { scope: 'all', profile: 'other' });
-  await handlers.get('feishu:auth-finish')({}, { deviceCode: 'private' });
-  await assert.rejects(handlers.get('feishu:auth-logout')({}, false), /确认/);
-  assert.equal(calls[0][0], 'feishu/auth/start');
-  assert.equal(calls[0][1].scope, 'required');
-  assert.equal(calls[0][1].profile, undefined);
-  assert.equal(calls[1][0], 'feishu/auth/finish');
-  assert.equal(calls[1].length, 1);
+test('legacy auth APIs are replaced by the authoritative lifecycle snapshot and desktop confirmation channel', () => {
+  assert.doesNotMatch(renderer, /updateFeishuAuthorization|api\.feishuAuthStatus|api\.startFeishuAuth|api\.logoutFeishuAuth/);
+  assert.match(preload, /readFeishuConfiguration/);
+  assert.match(preload, /actFeishuConfiguration/);
+  assert.doesNotMatch(preload, /feishu:auth-start|feishu:auth-finish|feishu:auth-logout/);
 });
 
 test('task runtime labels keep Agent reports, freshness and verified source separate', () => {

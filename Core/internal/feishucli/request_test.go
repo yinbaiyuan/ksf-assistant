@@ -16,6 +16,29 @@ import (
 	"ksfassistant/core/internal/privateipc"
 )
 
+func TestEventProfileWritesAreRetiredAndCatalogIsReadOnly(t *testing.T) {
+	for _, role := range []string{"primary", "manual-only", "managed"} {
+		if _, err := Parse([]string{"profile", "set", role}, strings.NewReader("")); err == nil {
+			t.Fatalf("legacy profile write parsed: %s", role)
+		}
+		if err := Validate(Request{Command: "profile", Action: "set", Positionals: []string{role}}); err == nil {
+			t.Fatalf("wire profile write accepted: %s", role)
+		}
+	}
+	result, local, err := Static(Request{Command: "profile", Action: "catalog"})
+	if err != nil || !local {
+		t.Fatalf("compatibility catalog: %v %v", local, err)
+	}
+	value := result.(map[string]any)
+	state := value["eventConsumer"].(map[string]any)
+	if len(value["profiles"].([]any)) != 0 || state["profile"] != "managed" || state["desiredConnection"] != true || state["configurable"] != false {
+		t.Fatalf("catalog offers event roles: %+v", value)
+	}
+	if _, exists := value["sharedAppRule"]; exists {
+		t.Fatal("retired primary arbitration rule still exposed")
+	}
+}
+
 func TestParseTransfersExplicitInputInsteadOfPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "private.json")
 	if err := os.WriteFile(path, []byte(`{"calendar-id":"primary","event-id":"event"}`), 0o600); err != nil {
@@ -239,3 +262,11 @@ func TestSerializedPayloadAlwaysFitsTransportFrame(t *testing.T) {
 type countingReader struct{ reads int }
 
 func (reader *countingReader) Read(buffer []byte) (int, error) { reader.reads++; return 0, io.EOF }
+
+func TestRetiredDocumentCommandsAreRejectedBeforeStateAccess(t *testing.T) {
+	for _, args := range [][]string{{"doc", "create", "--content-file", "/tmp/retired"}, {"doc", "update", "--target", "legacy", "--content-file", "/tmp/retired"}, {"result", "docbox", "DOC-retired"}, {"recent", "docbox"}} {
+		if _, err := Parse(args, strings.NewReader("")); err == nil {
+			t.Fatalf("retired command accepted: %v", args)
+		}
+	}
+}

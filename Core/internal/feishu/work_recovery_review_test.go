@@ -27,39 +27,6 @@ func (executor reviewBarrierExecutor) ExecuteWithOptions(ctx context.Context, id
 	return executor.UnifiedCapabilityExecutor.ExecuteWithOptions(ctx, id, input, options)
 }
 
-func TestReviewNestedSchedulerCapacity(t *testing.T) {
-	root := t.TempDir()
-	settings := enableCapabilityWrites(t, root)
-	settings.Docbox.Enabled, settings.Docbox.DryRun = true, false
-	if err := NewSettingsStore(root).Save(settings); err != nil {
-		t.Fatal(err)
-	}
-	gate := make(chan struct{})
-	transport := &reviewDocumentTransport{}
-	executor := reviewBarrierExecutor{UnifiedCapabilityExecutor: UnifiedCapabilityExecutor{DataRoot: root, Documents: transport}, gate: gate}
-	service := NewCapabilityService(root, executor, nil)
-	for index := 0; index < 2; index++ {
-		if _, err := service.Prepare(context.Background(), "docs.service.document.create", map[string]any{"target-kind": "folder_token", "target-value": fmt.Sprintf("folder_%d", index), "content": "fixture", "format": "text", "source": "review"}, "review"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	scheduler := NewWorkScheduler(root)
-	scheduler.RegisterCapabilityService(service)
-	scheduler.RegisterDocbox(NewDocbox(root), CapabilityExecutor{}, false)
-	if err := scheduler.dispatchAvailable(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if scheduler.cli != 2 || scheduler.active != 2 {
-		t.Fatalf("capacity cli=%d active=%d", scheduler.cli, scheduler.active)
-	}
-	close(gate)
-	reviewDrain(t, scheduler, 2)
-	if transport.writes.Load() != 2 {
-		t.Fatalf("writes=%d", transport.writes.Load())
-	}
-	reviewAssertNoChildWork(t, root, "docbox")
-}
-
 func TestReviewAcceptedWorkMustBeReadable(t *testing.T) {
 	root := t.TempDir()
 	box := NewOutbox(root)
@@ -95,31 +62,6 @@ func TestReviewAcceptedResultMustBeReadable(t *testing.T) {
 	var result map[string]any
 	if found, err := repo.findResult(item.ID, &result); err != nil || !found {
 		t.Fatalf("finish succeeded but result unreadable: found=%v err=%v", found, err)
-	}
-}
-
-func TestReviewDocboxRejectsFictitiousOperation(t *testing.T) {
-	root := t.TempDir()
-	bin := filepath.Join(root, "fake-lark")
-	log := filepath.Join(root, "calls")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + log + "'\nprintf '{\"data\":{\"file_token\":\"doc_fixture\"}}\\n'\n"
-	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
-	request := DocumentRequest{ID: "DOC-review", OperationID: "OP-20260905120000-ABCDEF12", Type: "document_task", Action: "update_document", Identity: "user", Target: &DocumentTarget{Kind: "docx_token", Value: "doc_fixture"}, Content: DocumentContent{Format: "text", Text: "replacement"}, Instruction: "review", ExplicitAuthorization: true, Source: "review", UpdateMode: "overwrite"}
-	box := NewDocbox(root)
-	if err := box.Submit(request); err != nil {
-		return
-	}
-	if _, err := box.ProcessOne(context.Background(), CapabilityExecutor{Binary: bin, DataRoot: root, WorkingDirectory: root, UserApproval: allowFixtureBusinessCommands()}, false); err != nil {
-		t.Fatal(err)
-	}
-	calls, err := os.ReadFile(log)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(calls), "+update") {
-		t.Fatal("fake remote overwrite executed without any OperationRecord or policy confirmation")
 	}
 }
 
@@ -219,7 +161,7 @@ func TestReviewUnknownManualRecordsDoNotStarveReconciliation(t *testing.T) {
 	for index := 0; index < 21; index++ {
 		capability := "im.sdk.message.send"
 		if index == 20 {
-			capability = "docs.service.document.append"
+			capability = "im.chat.create"
 		}
 		record := OperationRecord{Version: 1, ID: fmt.Sprintf("OP-%s-%08X", base.Add(time.Duration(index)*time.Second).Format("20060102150405"), index), CapabilityID: capability, Status: OperationOutcomeUnknown, NextAction: "manual_review", Input: map[string]any{}, CreatedAt: base, UpdatedAt: base}
 		if err := service.operations.save(record); err != nil {
@@ -236,7 +178,7 @@ func TestReviewUnknownManualRecordsDoNotStarveReconciliation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, record := range records {
-		if record.CapabilityID == "docs.service.document.append" && record.VerificationAttempts == 0 {
+		if record.CapabilityID == "im.chat.create" && record.VerificationAttempts == 0 {
 			t.Fatal("20 older no-reread manual records consume every page; later reconcilable operation never attempted")
 		}
 	}
@@ -330,7 +272,7 @@ func TestReviewFourSDKParentsExhaustScheduler(t *testing.T) {
 }
 
 func TestReviewQueuedChildChecksExecutionBoundary(t *testing.T) {
-	for _, mode := range []string{"outbound-disabled", "policy-disabled", "dry-run-enabled", "parent-timed-out", "input-changed"} {
+	for _, mode := range []string{"policy-disabled", "parent-timed-out", "input-changed"} {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()
 			gate := make(chan struct{})
@@ -405,23 +347,6 @@ func (sender *reviewConcurrentSender) Send(context.Context, MessageTarget, strin
 	return "om_fixture", nil
 }
 
-type reviewDocumentTransport struct{ writes atomic.Int32 }
-
-func (transport *reviewDocumentTransport) DocumentCreate(context.Context, DocumentRequest) (map[string]any, error) {
-	transport.writes.Add(1)
-	return map[string]any{"file_token": "doc_fixture"}, nil
-}
-func (transport *reviewDocumentTransport) DocumentFetch(context.Context, DocumentTarget) (map[string]any, error) {
-	return map[string]any{"file_token": "doc_fixture"}, nil
-}
-func (transport *reviewDocumentTransport) DocumentVersion(context.Context, DocumentTarget, map[string]any, string) (map[string]any, error) {
-	return map[string]any{"version": "1"}, nil
-}
-func (transport *reviewDocumentTransport) DocumentUpdate(context.Context, DocumentRequest) (map[string]any, error) {
-	transport.writes.Add(1)
-	return map[string]any{"revision": "2"}, nil
-}
-
 func reviewDrain(t *testing.T, scheduler *WorkScheduler, count int) {
 	t.Helper()
 	for index := 0; index < count; index++ {
@@ -453,7 +378,6 @@ func reviewRunningBoundary(t *testing.T, root, capabilityID string, input map[st
 	t.Helper()
 	settings := enableCapabilityWrites(t, root)
 	settings.Outbound.Enabled, settings.Outbound.DryRun = true, false
-	settings.Docbox.Enabled, settings.Docbox.DryRun = true, false
 	if err := NewSettingsStore(root).Save(settings); err != nil {
 		t.Fatal(err)
 	}

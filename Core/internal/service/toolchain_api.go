@@ -13,12 +13,16 @@ type ToolchainInstallRequest struct {
 }
 
 type ToolchainStatus struct {
-	SchemaVersion int                     `json:"schemaVersion"`
-	Version       string                  `json:"version"`
-	Installed     bool                    `json:"installed"`
-	Healthy       bool                    `json:"healthy"`
-	Skills        []toolchain.SkillStatus `json:"skills"`
-	ProblemCount  int                     `json:"problemCount"`
+	InstallationState   string                  `json:"installationState"`
+	InstallationTitle   string                  `json:"installationTitle"`
+	InstallationAction  string                  `json:"installationAction"`
+	InstallationDetails []string                `json:"installationDetails,omitempty"`
+	SchemaVersion       int                     `json:"schemaVersion"`
+	Version             string                  `json:"version"`
+	Installed           bool                    `json:"installed"`
+	Healthy             bool                    `json:"healthy"`
+	Skills              []toolchain.SkillStatus `json:"skills"`
+	ProblemCount        int                     `json:"problemCount"`
 }
 
 type desktopToolchain interface {
@@ -77,6 +81,7 @@ func readDesktopToolchain(manager desktopToolchain, install bool) (ToolchainStat
 	skills := append([]toolchain.SkillStatus{}, status.Skills...)
 	return ToolchainStatus{
 		SchemaVersion: 1, Version: status.Version, Installed: status.Installed,
+		InstallationState: status.InstallationState, InstallationTitle: status.InstallationTitle, InstallationAction: status.InstallationAction, InstallationDetails: status.InstallationDetails,
 		Healthy: status.Healthy, Skills: skills, ProblemCount: len(status.Problems),
 	}, nil
 }

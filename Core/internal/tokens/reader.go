@@ -42,7 +42,7 @@ func (reader Reader) ReadHistory(through time.Time, dayCount int) ([]domain.Dail
 	latest := startOfDay(through)
 	earliest := latest.AddDate(0, 0, -(dayCount - 1))
 	end := latest.AddDate(0, 0, 1)
-	files, foundRoot, err := reader.sessionFiles(earliest)
+	files, foundRoot, err := reader.sessionFiles()
 	if err != nil {
 		return nil, err
 	}
@@ -50,20 +50,18 @@ func (reader Reader) ReadHistory(through time.Time, dayCount int) ([]domain.Dail
 		return nil, os.ErrNotExist
 	}
 	byDate := map[string]*accumulator{}
-	records := make([]sessionRecord, 0, len(files))
+	sources := newTurnCatalog(files)
 	for _, path := range files {
-		samples, err := tokenSamples(path)
+		if info, err := os.Stat(path); err != nil || info.ModTime().Before(earliest) {
+			continue
+		}
+		samples, err := tokenSamples(path, sources)
 		if err != nil {
 			continue
 		}
-		records = append(records, sessionRecord{
-			identity: sessionIdentity(path),
-			metadata: sessionMetadataFor(path),
-			samples:  samples,
-		})
-	}
-	for _, group := range sessionLineages(records) {
-		for _, delta := range lineageDeltas(group) {
+		// A child agent has its own meter. Parentage is for project attribution,
+		// never evidence that two cumulative counters are the same meter.
+		for _, delta := range deltas(samples) {
 			if delta.At.Before(earliest) || !delta.At.Before(end) {
 				continue
 			}
@@ -89,7 +87,7 @@ func (reader Reader) ReadHistory(through time.Time, dayCount int) ([]domain.Dail
 	return result, nil
 }
 
-func (reader Reader) sessionFiles(earliest time.Time) ([]string, bool, error) {
+func (reader Reader) sessionFiles() ([]string, bool, error) {
 	type candidate struct {
 		path string
 		size int64
@@ -111,7 +109,7 @@ func (reader Reader) sessionFiles(earliest time.Time) ([]string, bool, error) {
 				return nil
 			}
 			info, err := entry.Info()
-			if err != nil || info.ModTime().Before(earliest) {
+			if err != nil {
 				return nil
 			}
 			current := candidate{path: path, size: info.Size(), at: info.ModTime()}
@@ -134,7 +132,9 @@ func (reader Reader) sessionFiles(earliest time.Time) ([]string, bool, error) {
 	return paths, foundRoot, nil
 }
 
-type cumulative struct {
+type usageSample struct {
+	Request      bool // An exact per-request usage amount, not a cumulative snapshot.
+	Inherited    bool // Copied history: baseline only, never new usage in this file.
 	At           time.Time
 	Total        int64
 	RegularInput *int64
@@ -142,21 +142,11 @@ type cumulative struct {
 	Output       *int64
 }
 
-type sessionMetadata struct {
-	ID       string
-	ParentID string
-}
-
-type sessionRecord struct {
-	identity string
-	metadata sessionMetadata
-	samples  []cumulative
-}
-
 type delta struct {
-	At        time.Time
-	Total     int64
-	Breakdown *domain.TokenUsageBreakdown
+	At          time.Time
+	Total       int64
+	Breakdown   *domain.TokenUsageBreakdown
+	HadBaseline bool
 }
 
 type accumulator struct {
@@ -192,19 +182,85 @@ func (value accumulator) bucket(date string) domain.DailyUsageBucket {
 	return result
 }
 
-func tokenSamples(path string) ([]cumulative, error) {
+func tokenSamples(path string, catalogs ...*turnCatalog) ([]usageSample, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 	reader := bufio.NewReaderSize(file, 64*1024)
-	result := []cumulative{}
+	result := []usageSample{}
+	var sessionID, ownerID, forkID string
+	seenRequests := map[string]bool{}
 	for {
 		line, readErr := reader.ReadBytes('\n')
-		if len(line) > 0 && strings.Contains(string(line), `"token_count"`) {
-			if sample, ok := parseSample(line); ok {
-				result = append(result, sample)
+		// Forks replay old events with NEW timestamps. The first session_meta
+		// identifies this file; embedded metadata identifies the copied segment.
+		// Modern per-request records also carry an explicit thread_id (session_id
+		// is shared across agents and must not be used as a meter identity).
+		if len(line) > 0 {
+			if strings.Contains(string(line), `"session_meta"`) || strings.Contains(string(line), `"token_usage_record"`) || strings.Contains(string(line), `"turn_context"`) || strings.Contains(string(line), `"task_started"`) {
+				var event struct {
+					Type      string `json:"type"`
+					Timestamp string `json:"timestamp"`
+					Payload   struct {
+						ID           string     `json:"id"`
+						ForkedFromID string     `json:"forked_from_id"`
+						TurnID       string     `json:"turn_id"`
+						Type         string     `json:"type"`
+						ThreadID     string     `json:"thread_id"`
+						ResponseID   string     `json:"response_id"`
+						Usage        tokenUsage `json:"usage"`
+					} `json:"payload"`
+				}
+				if json.Unmarshal(line, &event) == nil {
+					switch event.Type {
+					case "session_meta":
+						if event.Payload.ID != "" {
+							if sessionID == "" {
+								sessionID = event.Payload.ID
+								forkID = event.Payload.ForkedFromID
+								ownerID = sessionID
+								// A fork can start with copied counters BEFORE copied metadata.
+								if forkID != "" {
+									ownerID = forkID
+								}
+							} else {
+								ownerID = event.Payload.ID
+							}
+						}
+					case "turn_context", "event_msg":
+						if (event.Type == "turn_context" || event.Payload.Type == "task_started") && event.Payload.TurnID != "" && forkID != "" && len(catalogs) > 0 {
+							if turns := catalogs[0].turns(forkID); len(turns) > 0 {
+								if turns[event.Payload.TurnID] {
+									ownerID = forkID
+								} else {
+									ownerID = sessionID
+								}
+							}
+						}
+					case "token_usage_record":
+						if event.Payload.ThreadID != "" {
+							if sessionID == "" {
+								sessionID = sessionIdentity(path)
+							}
+							ownerID = event.Payload.ThreadID
+							key := ownerID + "\x00" + event.Payload.ResponseID
+							if sample, ok := sampleFromUsage(event.Timestamp, event.Payload.Usage); ok && event.Payload.ResponseID != "" && !seenRequests[key] {
+								seenRequests[key] = true
+								sample.Request = true
+								sample.Inherited = ownerID != sessionID
+								result = append(result, sample)
+							}
+						}
+					}
+				}
+			}
+			if strings.Contains(string(line), `"token_count"`) {
+				if sample, ok := parseSample(line); ok {
+					sample.Inherited = sessionID != "" && ownerID != "" && ownerID != sessionID
+					result = append(result, sample)
+				}
 			}
 		}
 		if errors.Is(readErr, io.EOF) {
@@ -214,169 +270,39 @@ func tokenSamples(path string) ([]cumulative, error) {
 			return result, readErr
 		}
 	}
+	// Preserve stream order for equal timestamps, including replay baselines.
 	sort.SliceStable(result, func(i, j int) bool { return result[i].At.Before(result[j].At) })
 	return result, nil
 }
 
-func sessionMetadataFor(path string) sessionMetadata {
-	file, err := os.Open(path)
-	if err != nil {
-		return sessionMetadata{}
-	}
-	defer file.Close()
-	reader := bufio.NewReaderSize(file, 16*1024)
-	for lineIndex := 0; lineIndex < 32; lineIndex++ {
-		line, readErr := reader.ReadBytes('\n')
-		if len(line) > 0 && strings.Contains(string(line), `"session_meta"`) {
-			if value, ok := parseSessionMetadata(line); ok {
-				return value
-			}
-		}
-		if readErr != nil {
-			break
-		}
-	}
-	return sessionMetadata{}
+type tokenUsage struct {
+	InputTokens       *int64 `json:"input_tokens"`
+	CachedInputTokens *int64 `json:"cached_input_tokens"`
+	OutputTokens      *int64 `json:"output_tokens"`
+	TotalTokens       *int64 `json:"total_tokens"`
 }
 
-func parseSessionMetadata(line []byte) (sessionMetadata, bool) {
-	var envelope struct {
-		Type    string `json:"type"`
-		Payload struct {
-			ID             string          `json:"id"`
-			ParentThreadID string          `json:"parent_thread_id"`
-			ForkedFromID   string          `json:"forked_from_id"`
-			Source         json.RawMessage `json:"source"`
-		} `json:"payload"`
-	}
-	if json.Unmarshal(line, &envelope) != nil || envelope.Type != "session_meta" || envelope.Payload.ID == "" {
-		return sessionMetadata{}, false
-	}
-	parentID := envelope.Payload.ParentThreadID
-	if parentID == "" {
-		parentID = envelope.Payload.ForkedFromID
-	}
-	if parentID == "" {
-		var source struct {
-			Subagent struct {
-				ThreadSpawn struct {
-					ParentThreadID string `json:"parent_thread_id"`
-				} `json:"thread_spawn"`
-			} `json:"subagent"`
-		}
-		if json.Unmarshal(envelope.Payload.Source, &source) == nil {
-			parentID = source.Subagent.ThreadSpawn.ParentThreadID
-		}
-	}
-	return sessionMetadata{ID: envelope.Payload.ID, ParentID: parentID}, true
-}
-
-func sessionLineages(records []sessionRecord) [][]sessionRecord {
-	metadataByID := make(map[string]sessionMetadata, len(records))
-	for _, record := range records {
-		if record.metadata.ID != "" {
-			metadataByID[record.metadata.ID] = record.metadata
-		}
-	}
-	groups := map[string][]sessionRecord{}
-	keys := []string{}
-	for _, record := range records {
-		key := record.identity
-		if record.metadata.ID != "" {
-			key = lineageRoot(record.metadata.ID, metadataByID)
-		}
-		if _, exists := groups[key]; !exists {
-			keys = append(keys, key)
-		}
-		groups[key] = append(groups[key], record)
-	}
-	sort.Strings(keys)
-	result := make([][]sessionRecord, 0, len(keys))
-	for _, key := range keys {
-		result = append(result, groups[key])
-	}
-	return result
-}
-
-func lineageRoot(id string, metadataByID map[string]sessionMetadata) string {
-	current := id
-	seen := map[string]bool{}
-	for current != "" && !seen[current] {
-		seen[current] = true
-		metadata, exists := metadataByID[current]
-		if !exists || metadata.ParentID == "" {
-			return current
-		}
-		current = metadata.ParentID
-	}
-	return id
-}
-
-func lineageDeltas(records []sessionRecord) []delta {
-	if len(records) == 1 {
-		return deltas(records[0].samples)
-	}
-	merged := []cumulative{}
-	for _, record := range records {
-		merged = append(merged, record.samples...)
-	}
-	sort.SliceStable(merged, func(left, right int) bool {
-		if merged[left].At.Equal(merged[right].At) {
-			return merged[left].Total < merged[right].Total
-		}
-		return merged[left].At.Before(merged[right].At)
-	})
-	envelope := make([]cumulative, 0, len(merged))
-	var maximum int64 = -1
-	for _, sample := range merged {
-		if sample.Total < maximum {
-			continue
-		}
-		if sample.Total == maximum && len(envelope) > 0 && sameCumulative(envelope[len(envelope)-1], sample) {
-			continue
-		}
-		envelope = append(envelope, sample)
-		if sample.Total > maximum {
-			maximum = sample.Total
-		}
-	}
-	return deltas(envelope)
-}
-
-func sameCumulative(left, right cumulative) bool {
-	return left.Total == right.Total && sameOptionalInt64(left.RegularInput, right.RegularInput) && sameOptionalInt64(left.CachedInput, right.CachedInput) && sameOptionalInt64(left.Output, right.Output)
-}
-
-func sameOptionalInt64(left, right *int64) bool {
-	if left == nil || right == nil {
-		return left == nil && right == nil
-	}
-	return *left == *right
-}
-
-func parseSample(line []byte) (cumulative, bool) {
+func parseSample(line []byte) (usageSample, bool) {
 	var envelope struct {
 		Timestamp string `json:"timestamp"`
 		Payload   struct {
 			Type string `json:"type"`
 			Info struct {
-				TotalTokenUsage struct {
-					InputTokens       *int64 `json:"input_tokens"`
-					CachedInputTokens *int64 `json:"cached_input_tokens"`
-					OutputTokens      *int64 `json:"output_tokens"`
-					TotalTokens       *int64 `json:"total_tokens"`
-				} `json:"total_token_usage"`
+				TotalTokenUsage tokenUsage `json:"total_token_usage"`
 			} `json:"info"`
 		} `json:"payload"`
 	}
-	if json.Unmarshal(line, &envelope) != nil || envelope.Payload.Type != "token_count" || envelope.Payload.Info.TotalTokenUsage.TotalTokens == nil {
-		return cumulative{}, false
+	if json.Unmarshal(line, &envelope) != nil || envelope.Payload.Type != "token_count" {
+		return usageSample{}, false
 	}
-	at, err := time.Parse(time.RFC3339Nano, envelope.Timestamp)
-	if err != nil {
-		return cumulative{}, false
+	return sampleFromUsage(envelope.Timestamp, envelope.Payload.Info.TotalTokenUsage)
+}
+
+func sampleFromUsage(timestamp string, usage tokenUsage) (usageSample, bool) {
+	at, err := time.Parse(time.RFC3339Nano, timestamp)
+	if err != nil || usage.TotalTokens == nil || *usage.TotalTokens < 0 {
+		return usageSample{}, false
 	}
-	usage := envelope.Payload.Info.TotalTokenUsage
 	var regular *int64
 	if usage.InputTokens != nil && usage.CachedInputTokens != nil {
 		value := *usage.InputTokens - *usage.CachedInputTokens
@@ -384,13 +310,36 @@ func parseSample(line []byte) (cumulative, bool) {
 			regular = &value
 		}
 	}
-	return cumulative{At: at, Total: *usage.TotalTokens, RegularInput: regular, CachedInput: usage.CachedInputTokens, Output: usage.OutputTokens}, true
+	return usageSample{At: at, Total: *usage.TotalTokens, RegularInput: regular, CachedInput: usage.CachedInputTokens, Output: usage.OutputTokens}, true
 }
 
-func deltas(samples []cumulative) []delta {
+func deltas(samples []usageSample) []delta {
 	result := make([]delta, 0, len(samples))
-	var previous *cumulative
+	var previous *usageSample
+	usingRequests := false
 	for _, sample := range samples {
+		if sample.Request {
+			if sample.Inherited {
+				continue
+			}
+			usingRequests = true
+			var breakdown *domain.TokenUsageBreakdown
+			if sample.RegularInput != nil && sample.CachedInput != nil && sample.Output != nil {
+				value := domain.TokenUsageBreakdown{RegularInputTokens: *sample.RegularInput, CachedInputTokens: *sample.CachedInput, OutputTokens: *sample.Output}
+				if value.TotalTokens() == sample.Total {
+					breakdown = &value
+				}
+			}
+			result = append(result, delta{At: sample.At, Total: sample.Total, Breakdown: breakdown, HadBaseline: true})
+			continue
+		}
+		// On upgrade, preserve earlier legacy deltas. From the first own request
+		// record onward, snapshots are a second view of requests and can undercount;
+		// never add them to request amounts or use them to cap request usage.
+		if usingRequests {
+			continue
+		}
+
 		total := sample.Total
 		reset := previous != nil && sample.Total < previous.Total
 		if previous != nil && !reset {
@@ -409,8 +358,8 @@ func deltas(samples []cumulative) []delta {
 				breakdown = &candidate
 			}
 		}
-		if total >= 0 {
-			result = append(result, delta{At: sample.At, Total: total, Breakdown: breakdown})
+		if total >= 0 && !sample.Inherited {
+			result = append(result, delta{At: sample.At, Total: total, Breakdown: breakdown, HadBaseline: previous != nil})
 		}
 		copy := sample
 		previous = &copy

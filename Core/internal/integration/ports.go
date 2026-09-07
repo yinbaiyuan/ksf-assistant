@@ -46,3 +46,8 @@ type CreateTaskLinkRequest struct {
 	TargetAlias string `json:"targetAlias"`
 	CWD         string `json:"cwd"`
 }
+
+// ObservationPort returns a display-only snapshot and a connection-scoped revision.
+type ObservationPort interface {
+	ObserveThread(context.Context, string, string, string) (map[string]any, string, error)
+}

@@ -14,6 +14,17 @@ import (
 	"ksfassistant/core/internal/service"
 )
 
+func TestEventProfileWriteRPCIsRetired(t *testing.T) {
+	input := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"feishu/profile/set","params":{"profile":"manual-only"}}` + "\n")
+	var output bytes.Buffer
+	if err := New(&service.Service{}, input, &output).Serve(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "unknown method") || strings.Contains(output.String(), `"result"`) {
+		t.Fatalf("retired setter reached service: %s", output.String())
+	}
+}
+
 func TestServerPublishesVersionedInitializeContract(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("FEISHU_BRIDGE_DATA_DIR", root)
@@ -151,8 +162,8 @@ func TestServerSettingsRequireFeishuServiceAndNeverWriteOffline(t *testing.T) {
 	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Error == nil || !strings.Contains(response.Error.Message, "unavailable") {
-		t.Fatalf("expected explicit unavailable response: %s", output.String())
+	if response.Error == nil || !strings.Contains(response.Error.Message, "configuration_legacy_mutation_disabled") {
+		t.Fatalf("expected retired mutation response: %s", output.String())
 	}
 	entries, err := os.ReadDir(root)
 	if err != nil || len(entries) != 0 {

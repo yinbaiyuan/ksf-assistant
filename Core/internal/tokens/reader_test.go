@@ -51,7 +51,7 @@ func TestReaderDeduplicatesActiveAndArchivedCopies(t *testing.T) {
 	}
 }
 
-func TestReaderCountsMirroredSubagentLineageOnce(t *testing.T) {
+func TestReaderCountsIndependentSubagentsEvenWithMatchingCounters(t *testing.T) {
 	root := t.TempDir()
 	rootID := "12345678-1234-1234-1234-123456789abc"
 	childID := "22345678-1234-1234-1234-123456789abc"
@@ -78,15 +78,15 @@ func TestReaderCountsMirroredSubagentLineageOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if values[0].Tokens != 400 || values[0].Breakdown == nil {
+	if values[0].Tokens != 700 || values[0].Breakdown == nil {
 		t.Fatalf("unexpected lineage-aware bucket: %#v", values[0])
 	}
-	if values[0].Breakdown.RegularInputTokens != 200 || values[0].Breakdown.CachedInputTokens != 120 || values[0].Breakdown.OutputTokens != 80 {
+	if values[0].Breakdown.RegularInputTokens != 350 || values[0].Breakdown.CachedInputTokens != 210 || values[0].Breakdown.OutputTokens != 140 {
 		t.Fatalf("unexpected lineage-aware breakdown: %#v", values[0].Breakdown)
 	}
 }
 
-func TestReaderUsesLineageBaselineAcrossNaturalDays(t *testing.T) {
+func TestReaderUsesSeparateBaselinesAcrossNaturalDays(t *testing.T) {
 	root := t.TempDir()
 	rootID := "42345678-1234-1234-1234-123456789abc"
 	childID := "52345678-1234-1234-1234-123456789abc"
@@ -107,7 +107,7 @@ func TestReaderUsesLineageBaselineAcrossNaturalDays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if values[0].Tokens != 80 || values[0].Breakdown == nil || values[0].Breakdown.TotalTokens() != 80 {
+	if values[0].Tokens != 130 || values[0].Breakdown == nil || values[0].Breakdown.TotalTokens() != 130 {
 		t.Fatalf("unexpected cross-day lineage bucket: %#v", values[0])
 	}
 }
@@ -150,19 +150,11 @@ func TestReaderRestartsBreakdownAtCounterReset(t *testing.T) {
 	}
 }
 
-func TestSessionMetadataAcceptsTopLevelStringSource(t *testing.T) {
-	id := "72345678-1234-1234-1234-123456789abc"
-	metadata, ok := parseSessionMetadata([]byte(sessionMetaLine(id, "")))
-	if !ok || metadata.ID != id || metadata.ParentID != "" {
-		t.Fatalf("unexpected metadata: %#v, ok=%t", metadata, ok)
-	}
-}
-
 func sessionMetaLine(id, parentID string) string {
 	if parentID == "" {
 		return fmt.Sprintf(`{"type":"session_meta","payload":{"id":"%s","source":"vscode"}}`, id)
 	}
-	return fmt.Sprintf(`{"type":"session_meta","payload":{"id":"%s","parent_thread_id":"%s","forked_from_id":"%s","source":{"subagent":{"thread_spawn":{"parent_thread_id":"%s"}}}}}`, id, parentID, parentID, parentID)
+	return fmt.Sprintf(`{"type":"session_meta","payload":{"id":"%s","parent_thread_id":"%s","source":{"subagent":{"thread_spawn":{"parent_thread_id":"%s"}}}}}`, id, parentID, parentID)
 }
 
 func tokenLine(timestamp string, total, input, cached, output int64) string {

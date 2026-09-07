@@ -9,7 +9,7 @@ Source: [larksuite/cli](https://github.com/larksuite/cli)
 Bundled version: 1.0.93
 License: MIT
 
-Platform binaries are downloaded only during packaging from the upstream release and verified against the SHA-256 values in `runtime/lark-cli-runtime.json`. The 28 official Skills and their MIT license come from the same v1.0.93 source tag, with per-file provenance in `runtime/lark-skills.json`. The app does not independently update these components.
+Platform binaries are downloaded only during packaging from the upstream release and verified against the SHA-256 values in `runtime/lark-cli-runtime.json`. The 28 upstream Skills and their MIT license come from the same v1.0.93 source tag, with original per-file provenance in `runtime/lark-skills.json`. KSFAssistant distributes entry-adapted versions, preserving the upstream license and domain guidance; the packaged adaptation report records original/final hashes and adapter sources. The app does not independently update these components.
 
 Core no longer directly links the Lark Go SDK. The official CLI embeds its own Go dependencies (including its SDK); the generated SBOM records those as CLI supply-chain contents, not Core dependencies. Post-signing binary hashes are recorded separately from upstream download hashes.
 

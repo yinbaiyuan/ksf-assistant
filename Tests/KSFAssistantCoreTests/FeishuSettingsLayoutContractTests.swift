@@ -2,51 +2,128 @@ import Foundation
 import XCTest
 
 final class FeishuSettingsLayoutContractTests: XCTestCase {
-    func testAuthAndToolchainControlsStayExplicitAndUseSanitizedCoreContract() throws {
+    private func source(_ name: String) throws -> String {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let view = try String(contentsOf: root.appendingPathComponent("Sources/KSFAssistant/UsagePopoverView.swift"))
-        let client = try String(contentsOf: root.appendingPathComponent("Sources/KSFAssistant/CoreServiceProcessClient.swift"))
-        let model = try String(contentsOf: root.appendingPathComponent("Sources/KSFAssistant/UsageViewModel.swift"))
-        for label in ["CLI 用户授权", "补充授权", "退出当前飞书用户授权？", "我已授权，检查", "官方工具链与 Skills", "安装官方工具链？"] {
-            XCTAssertTrue(view.contains(label), label)
-        }
-        for method in ["feishu/auth/status", "feishu/auth/start", "feishu/auth/finish", "feishu/auth/logout", "toolchain/status", "toolchain/install"] {
+        return try String(contentsOf: root.appendingPathComponent("Sources/KSFAssistant/\(name).swift"))
+    }
+
+    func testConfigurationUsesOnlyCoordinatorAndNoRetiredMutationEndpoints() throws {
+        let client = try source("CoreServiceProcessClient")
+        let model = try source("UsageViewModel")
+        for method in ["feishu/configuration/read", "feishu/configuration/action", "toolchain/status", "toolchain/install"] {
             XCTAssertTrue(client.contains(method), method)
         }
-        XCTAssertTrue(client.contains("params: [\"scope\": \"required\"]"))
+        for retired in ["feishu/setup/", "feishu/auth/", "feishu/features/update", "feishu/service/control", "feishu/test\""] {
+            XCTAssertFalse(client.contains(retired), retired)
+        }
+        XCTAssertTrue(model.contains("await refreshFeishuConfiguration()"))
+        XCTAssertTrue(model.contains("session.onChange = { [weak self] state in self?.feishuConfiguration = state }"))
+        XCTAssertTrue(model.contains("expectedContext: expectedContext"))
+        XCTAssertFalse(model.contains("FeishuSetupState.notStarted"))
+        XCTAssertFalse(model.contains("applyFeishuSetup"))
+    }
+
+    func testCoreTitlesFactsAndActionsReplaceHostReadinessInference() throws {
+        let view = try source("UsagePopoverView")
+        XCTAssertTrue(view.contains("value: fact.value"))
+        XCTAssertTrue(view.contains("Button(action.title)"))
+        XCTAssertTrue(view.contains("configuration.snapshot?.action(\"create_app\")?.enabled == true"))
+        XCTAssertTrue(view.contains("configuration.snapshot?.action(\"connect_app\")?.enabled == true"))
+        XCTAssertTrue(view.contains("Text(viewModel.feishuConfiguration.summaryTitle)"))
+        for retired in ["FeishuConfigurationPresentation(", "switch viewModel.feishuSetup.stage",
+                        "feishuAuthStatus?.profileValid == true", "samePendingStep", "23 类事件",
+                        "单聊收发、卡片回调与 Codex 控制均已就绪"] {
+            XCTAssertFalse(view.contains(retired), retired)
+        }
+        XCTAssertTrue(view.contains("[\"robot\", \"authorizedUser\", \"taskConnection\"].compactMap { snapshot.fact($0) }"))
+        XCTAssertFalse(view.contains("[\"application\", \"user\", \"bot\", \"connection\"]"))
+        XCTAssertFalse(view.contains("[\"user\", \"bot\", \"operator\"]"))
+        XCTAssertTrue(view.contains("\"desktop\""))
+        XCTAssertFalse(view.contains("snapshot.setup.stage"))
+    }
+
+    func testApplicationOwnsPollingUntilShutdown() throws {
+        let view = try source("UsagePopoverView")
+        let model = try source("UsageViewModel")
+        let start = try XCTUnwrap(view.range(of: "private var feishuPage:"))
+        let end = try XCTUnwrap(view.range(of: "private func feishuPageLayout"))
+        let page = view[start.lowerBound..<end.lowerBound]
+        XCTAssertTrue(page.contains(".onAppear"))
+        XCTAssertFalse(page.contains("startFeishuConfigurationPolling()"))
+        XCTAssertTrue(model.contains("feishuConfigurationSession.startPolling()"))
+        XCTAssertFalse(page.contains(".onDisappear"))
+        XCTAssertFalse(page.contains("stopFeishuConfigurationPolling()"))
+        let closeStart = try XCTUnwrap(model.range(of: "func popoverDidClose()"))
+        let closeEnd = try XCTUnwrap(model.range(of: "func completeOnboarding()"))
+        XCTAssertFalse(model[closeStart.lowerBound..<closeEnd.lowerBound].contains("stopFeishuConfigurationPolling()"))
+        let shutdown = try XCTUnwrap(model.range(of: "func shutdown()"))
+        let quit = try XCTUnwrap(model.range(of: "func quit()"))
+        XCTAssertTrue(model[shutdown.lowerBound..<quit.lowerBound].contains("feishuConfigurationSession.shutdown()"))
+        XCTAssertTrue(view.contains("refreshFeishuConfiguration(refresh: true)"))
+    }
+
+    func testLayoutKeepsFullWidthSurfacesSingleDisclosureAndHeightFallback() throws {
+        let view = try source("UsagePopoverView")
+        let start = try XCTUnwrap(view.range(of: "private var feishuPageContent:"))
+        let end = try XCTUnwrap(view.range(of: "private var feishuConfigurationOverview:"))
+        let page = view[start.lowerBound..<end.lowerBound]
+        let overview = try XCTUnwrap(page.range(of: "feishuConfigurationOverview"))
+        XCTAssertFalse(page.contains("feishuSurface { feishuSetupContent }"))
+        XCTAssertTrue(view.contains("feishuSetupContent.frame(maxWidth: .infinity)"))
+        let diagnostics = try XCTUnwrap(page.range(of: "feishuDiagnostics"))
+        XCTAssertLessThan(overview.lowerBound, diagnostics.lowerBound)
+        for label in ["诊断详情", "飞书接入状态"] {
+            XCTAssertTrue(view.contains("Text(\"\(label)\")"), label)
+        }
+        XCTAssertTrue(view.contains("feishuExpandedSection = $0 ? section : nil"))
+        XCTAssertTrue(view.contains("ViewThatFits(in: .vertical)"))
+        XCTAssertTrue(view.contains("ScrollView { feishuPageContent }"))
+        XCTAssertTrue(view.contains("showExistingFeishuApp = false"))
+        XCTAssertFalse(view.contains("feishuAdvancedPage"))
+    }
+
+    func testFlowAndConfirmationUseCapturedContextNotLegacyQR() throws {
+        let view = try source("UsagePopoverView")
+        let model = try source("UsageViewModel")
+        XCTAssertTrue(view.contains("let dataURL = flow.qrDataURL"))
+        XCTAssertTrue(view.contains("if let flow = configuration.actionFlow"))
+        XCTAssertTrue(view.contains(".id(flow.id)"))
+        XCTAssertTrue(view.contains("flowID: flow.id"))
+        XCTAssertTrue(view.contains("expectedContext: intent.context"))
+        XCTAssertTrue(view.contains(".confirmationDialog(pendingFeishuAction"))
+        XCTAssertTrue(view.contains("action.requiresConfirmation"))
+        XCTAssertTrue(view.contains("\"test_message\""))
+        XCTAssertTrue(view.contains("configuration.pendingSetupActions"))
+        XCTAssertFalse(view.contains("不会随着启用出站自动发送"))
+        XCTAssertTrue(view.contains("取消本次登录，不撤销已有授权"))
+        XCTAssertFalse(view.contains("auth?.qrDataURL"))
+        XCTAssertFalse(view.contains("feishuSetupQRCode"))
+        XCTAssertTrue(model.contains("flow.id == flowID"))
+        XCTAssertTrue(model.contains("url.scheme?.lowercased() == \"https\""))
+    }
+
+    func testToolchainInstallationStillRequiresNativeConfirmation() throws {
+        let view = try source("UsagePopoverView")
+        let client = try source("CoreServiceProcessClient")
+        XCTAssertTrue(view.contains(".confirmationDialog(\"安装 Codex 飞书技能？\""))
         XCTAssertTrue(client.contains("params: [\"confirm\": true]"))
         XCTAssertFalse(client.contains("deviceCode"))
-        XCTAssertFalse(model.contains("feishuAuthQRCode"))
-        XCTAssertTrue(model.contains("!feishuActionInProgress"))
-        XCTAssertTrue(model.contains("!toolchainActionInProgress"))
-        XCTAssertTrue(view.contains("用户授权不代表所有功能权限齐备"))
+        for retired in ["主设备", "仅手动能力", "feishuProfileText", "setFeishuProfile"] {
+            XCTAssertFalse(view.contains(retired), retired)
+        }
     }
 
-    func testPermissionOverviewAcceptsNullMissingForUpgradeCompatibility() throws {
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(contentsOf: root.appendingPathComponent("Sources/KSFAssistant/CoreServiceProcessClient.swift"))
-        XCTAssertTrue(source.contains("decodeIfPresent([String].self, forKey: .missing) ?? []"))
-    }
-
-    func testReadySettingsExposePermissionFeatureAndDiagnosticsInline() throws {
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(contentsOf: root.appendingPathComponent("Sources/KSFAssistant/UsagePopoverView.swift"))
-        XCTAssertFalse(source.contains("feishuPermissionsPage"))
-        XCTAssertFalse(source.contains("feishuAdvancedPage"))
-        XCTAssertFalse(source.contains("feishuDiagnosticsPage"))
-        XCTAssertTrue(source.contains("允许真实执行？"))
-        XCTAssertTrue(source.contains("基础单聊、卡片回调和 Codex 任务控制已授权"))
-        let ready = try XCTUnwrap(source.range(of: "private var feishuReadySettings"))
-        let next = try XCTUnwrap(source.range(of: "private func feishuFeatureControl"))
-        let section = source[ready.lowerBound..<next.lowerBound]
-        XCTAssertTrue(section.contains("Text(\"权限\")"))
-        XCTAssertTrue(section.contains("Text(\"接收与高级功能\")"))
-        XCTAssertTrue(section.contains("Text(\"诊断\")"))
-        XCTAssertTrue(section.contains("Text(\"连接测试\")"))
-        XCTAssertFalse(section.contains("Text(\"运行组件\")"))
-        XCTAssertFalse(section.contains("feishuNavigationRow"))
+    func testConfigurationSubmissionReusesExistingDesktopApprovalAvailability() throws {
+        let controller = try source("UserApprovalController")
+        let model = try source("UsageViewModel")
+        let view = try source("UsagePopoverView")
+        XCTAssertTrue(controller.contains("interactive && panel == nil && active == nil"))
+        XCTAssertTrue(controller.contains("CGSSessionScreenIsLocked"))
+        XCTAssertTrue(model.contains("!self.quitRequested && !self.shutdownStarted && self.popoverIsOpen"))
+        XCTAssertTrue(model.contains("self.userApprovalController.allowsConfigurationSubmission"))
+        XCTAssertTrue(model.contains("FeishuConfigurationSession(canSubmit:"))
+        XCTAssertTrue(view.contains(".help(fact.evidenceHelp)"))
+        XCTAssertTrue(view.contains("configuration.priorityAction"))
     }
 }

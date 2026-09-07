@@ -152,6 +152,15 @@ func TestEditedSkillsAndAddedFilesRefuse(t *testing.T) {
 			if status.Healthy {
 				t.Fatal("edited installation marked healthy")
 			}
+			if mode == "missing" {
+				if status.InstallationState != "incomplete" {
+					t.Fatal(status.InstallationTitle)
+				}
+				if repaired, err := manager.Install(); err != nil || !repaired.Healthy {
+					t.Fatal("missing-file repair failed", err)
+				}
+				return
+			}
 			if _, err := manager.Install(); err == nil {
 				t.Fatal("install accepted edits")
 			}

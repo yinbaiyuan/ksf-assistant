@@ -118,7 +118,7 @@ private final class StatusItemController: NSObject, NSPopoverDelegate {
             runningText: viewModel.runningTaskText,
             waitingText: viewModel.waitingTaskText,
             accessibilityLabel: viewModel.menuTitle,
-            feishuConnected: viewModel.feishuService.availability == .ready
+            feishuConnected: viewModel.feishuConnectionIndicatorVisible
         )
         guard presentation != lastPresentation else { return }
 

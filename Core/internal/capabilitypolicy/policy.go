@@ -83,7 +83,44 @@ func (policy *Policy) Normalize() error {
 	return nil
 }
 
+// Retired queue identifiers are read-only policy compatibility, never executable
+// capabilities. Existing restrictions remain effective until explicitly migrated.
 func (policy Policy) Decision(identifier, risk string) Permission {
+	result := policy.decision(identifier, risk)
+	switch identifier {
+	case "docs.shortcut.create", "docs.shortcut.update":
+		legacy := "docs.service.document.create"
+		if identifier == "docs.shortcut.update" {
+			legacy = "docs.service.document.append"
+		}
+		// These were separate effects of the same command; both decisions applied.
+		return stricterPermission(result, policy.decision(legacy, "write"))
+	case "docs.shortcut.overwrite", "drive.file.version.create":
+		legacy := "docs.service.document.overwrite"
+		if identifier == "drive.file.version.create" {
+			legacy = "docbox.version"
+		}
+		if previous, ok := policy.CapabilityOverrides[legacy]; ok {
+			if _, current := policy.CapabilityOverrides[identifier]; current {
+				return stricterPermission(result, previous)
+			}
+			return previous
+		}
+	}
+	return result
+}
+
+func stricterPermission(left, right Permission) Permission {
+	if left == Disabled || right == Disabled {
+		return Disabled
+	}
+	if left == ConfirmEach || right == ConfirmEach {
+		return ConfirmEach
+	}
+	return Allowed
+}
+
+func (policy Policy) decision(identifier, risk string) Permission {
 	if value := policy.CapabilityOverrides[identifier]; ValidPermission(value) {
 		return value
 	}

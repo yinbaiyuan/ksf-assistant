@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"ksfassistant/core/internal/capabilitypolicy"
 	"math"
 	"net/url"
 	"os"
@@ -182,6 +183,9 @@ func (runner CapabilityExecutor) ReadVerification(ctx context.Context, id string
 }
 
 func (runner CapabilityExecutor) ExecuteWithOptions(ctx context.Context, id string, input map[string]any, options CapabilityExecutionOptions) (map[string]any, error) {
+	if err := capabilitypolicy.CheckSession(runner.DataRoot); err != nil {
+		return nil, err
+	}
 	definition, ok := CapabilityByID(id)
 	if !ok {
 		return nil, errors.New("unknown_capability")
@@ -463,15 +467,6 @@ func capabilityInvocation(definition CapabilityDefinition, input map[string]any)
 	definition, err = CanonicalCapabilityContract(definition)
 	if err != nil {
 		return nil, nil, nil, err
-	}
-	if definition.Transform == "doc-whiteboard" {
-		xml, err := docWhiteboardXML(input)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		input = cloneInput(input)
-		input["content"] = xml
-		input["doc-format"] = "xml"
 	}
 	args := append(append([]string{}, definition.Command...), definition.FixedArgs...)
 	files := map[string][]byte{}
@@ -914,24 +909,6 @@ func validateSpecialCapabilityInput(definition CapabilityDefinition, input map[s
 			return err
 		}
 	}
-	if strings.HasPrefix(definition.ID, "docs.service.document.") {
-		_, hasKind := input["target-kind"]
-		_, hasValue := input["target-value"]
-		if hasKind != hasValue {
-			return errors.New("document_target_pair_required")
-		}
-		if definition.ID == "docs.service.document.create" && hasKind && fmt.Sprint(input["target-kind"]) != "folder_token" {
-			return errors.New("document_create_target_invalid")
-		}
-		if definition.ID != "docs.service.document.create" && fmt.Sprint(input["target-kind"]) == "folder_token" {
-			return errors.New("document_update_target_invalid")
-		}
-		_, hasSelection := input["selection-pattern"]
-		if definition.ID != "docs.service.document.overwrite" && hasSelection {
-			return errors.New("document_selection_not_supported")
-		}
-		return nil
-	}
 	if definition.ID == "im.sdk.message.send" {
 		format := fmt.Sprint(input["format"])
 		_, hasText := input["text"]
@@ -950,10 +927,6 @@ func validateSpecialCapabilityInput(definition CapabilityDefinition, input map[s
 			}
 		}
 		return nil
-	}
-	if definition.ID == "docs.whiteboard.insert" {
-		_, err := docWhiteboardXML(input)
-		return err
 	}
 	if definition.ID != "mindnotes.node.create" && definition.ID != "mindnotes.node.update" {
 		return nil
@@ -1095,29 +1068,6 @@ func approvalAnyList(value any) ([]any, bool) {
 		return nil, false
 	}
 }
-
-func docWhiteboardXML(input map[string]any) (string, error) {
-	format := fmt.Sprint(input["doc-format"])
-	content := strings.TrimSpace(fmt.Sprint(input["content"]))
-	if !contains([]string{"mermaid", "plantuml", "svg"}, format) {
-		return "", errors.New("invalid_doc_whiteboard_format")
-	}
-	if content == "" || regexp.MustCompile(`(?i)</whiteboard\s*>`).MatchString(content) {
-		return "", errors.New("invalid_doc_whiteboard_content")
-	}
-	if format == "svg" {
-		if !regexp.MustCompile(`(?is)^<svg(?:\s|>).*?</svg>$`).MatchString(content) {
-			return "", errors.New("invalid_doc_whiteboard_svg")
-		}
-		unsafe := regexp.MustCompile(`(?i)<(?:script|foreignObject|iframe|object|embed)\b|\bon[a-z]+\s*=|(?:href|src)\s*=\s*["'](?:https?:|data:|javascript:)`)
-		if unsafe.MatchString(content) {
-			return "", errors.New("unsafe_doc_whiteboard_svg")
-		}
-	}
-	return `<whiteboard type="` + format + `">\n` + content + `\n</whiteboard>`, nil
-}
-
-func DocWhiteboardXML(input map[string]any) (string, error) { return docWhiteboardXML(input) }
 
 func (runner CapabilityExecutor) run(parent context.Context, definition CapabilityDefinition, args []string, stdin []byte, files map[string][]byte, timeout time.Duration) (map[string]any, error) {
 	if runner.Binary == "" {

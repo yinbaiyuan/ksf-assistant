@@ -14,8 +14,8 @@ import (
 var capabilityContracts embed.FS
 
 const (
-	LegacyCapabilityCount     = 219
-	CapabilityRegistryV2Count = 816
+	LegacyCapabilityCount     = 218
+	CapabilityRegistryV2Count = 812
 )
 
 type CapabilityManifest struct {
@@ -240,38 +240,6 @@ func serviceCapabilityDefinitions() []CapabilityDefinition {
 		Scope:          CapabilityScope{Bounded: true, RequireAny: []string{"text", "file-path"}},
 		RequiredScopes: []string{"im:message"}, Redaction: map[string]any{"body": true, "identifiers": true},
 	}}
-	documentFields := func(targetRequired bool) map[string]CapabilityField {
-		return map[string]CapabilityField{
-			"target-kind":       {Type: "enum", Required: targetRequired, Values: []string{"url", "docx_token", "wiki_url", "wiki_token", "folder_token"}},
-			"target-value":      {Type: "string", Required: targetRequired, Private: true, Max: 4000},
-			"content":           {Type: "string", Required: true, Private: true, Max: 500_000},
-			"format":            {Type: "enum", Required: true, Values: []string{"markdown", "text"}},
-			"source":            {Type: "string", Required: true, Max: 100},
-			"selection-pattern": {Type: "string", Private: true, Max: 100_000},
-			"dry-run":           {Type: "boolean"},
-		}
-	}
-	guard := &CapabilityStep{ID: "docs.shortcut.fetch", Map: map[string]string{"doc": "target-value"}, Defaults: map[string]any{"scope": "full", "detail": "simple", "doc-format": "markdown"}}
-	definitions = append(definitions,
-		CapabilityDefinition{
-			ID: "docs.service.document.create", Domain: "docs", Risk: "write", Backend: "lark-cli", Effect: "create", Reversibility: "reversible",
-			Identity: "user", Queue: "docbox", Transport: "service", Command: []string{"docs", "+create"}, Flags: documentFields(false),
-			FlagOrder: []string{"target-kind", "target-value", "content", "format", "source", "selection-pattern", "dry-run"}, Scope: CapabilityScope{Bounded: true},
-			RequiredScopes: []string{"docx:document:create", "docx:document:write_only"}, Redaction: map[string]any{"body": true, "identifiers": true},
-		},
-		CapabilityDefinition{
-			ID: "docs.service.document.append", Domain: "docs", Risk: "write", Backend: "lark-cli", Effect: "update", Reversibility: "reversible",
-			Identity: "user", Queue: "docbox", Transport: "service", Command: []string{"docs", "+update"}, Flags: documentFields(true),
-			FlagOrder: []string{"target-kind", "target-value", "content", "format", "source", "selection-pattern", "dry-run"}, Scope: CapabilityScope{Bounded: true}, Preflight: guard, Reread: guard,
-			RequiredScopes: []string{"docx:document:readonly", "docx:document:write_only"}, Redaction: map[string]any{"body": true, "identifiers": true},
-		},
-		CapabilityDefinition{
-			ID: "docs.service.document.overwrite", Domain: "docs", Risk: "destructive", Backend: "lark-cli", Effect: "overwrite", Reversibility: "potentially-reversible",
-			Identity: "user", Queue: "docbox", Transport: "service", Command: []string{"docs", "+update"}, Flags: documentFields(true),
-			FlagOrder: []string{"target-kind", "target-value", "content", "format", "source", "selection-pattern", "dry-run"}, Scope: CapabilityScope{Bounded: true}, Preflight: guard, Reread: guard,
-			RequiredScopes: []string{"docx:document:readonly", "docx:document:write_only"}, Redaction: map[string]any{"body": true, "identifiers": true},
-		},
-	)
 	definitions = append(definitions, approvalEventSubscriptionDefinitions()...)
 	return definitions
 }

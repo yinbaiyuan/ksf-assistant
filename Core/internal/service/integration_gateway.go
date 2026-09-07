@@ -83,6 +83,37 @@ func (service *Service) handleLocalRPC(ctx context.Context, method string, param
 	if err != nil {
 		return nil, err
 	}
+	if request.Command == "auth" || request.Command == "profile" && request.Action == "set" {
+		return nil, errors.New("configuration_desktop_required: 请在 KSFAssistant 桌面管理应用、授权与远程操作者")
+	}
+	if request.Command == "events" && (request.Action == "review" || request.Action == "retry") {
+		box := feishu.NewInboundWorkbox(service.feishuDataRoot)
+		if request.Action == "review" {
+			items, err := box.Review()
+			return map[string]any{"items": items}, err
+		}
+		if service.integrationRuntime == nil {
+			return nil, errors.New("integration unavailable")
+		}
+		id := request.Options["id"]
+		event, err := box.ReviewEvent(id)
+		if err != nil {
+			return nil, err
+		}
+		state, err := service.integrationRuntime.EventReceiptState(event)
+		if err != nil {
+			return nil, err
+		}
+		switch state {
+		case "accepted":
+			err = box.Complete(id)
+		case "not_received":
+			err = box.RetryReviewed(id)
+		default:
+			return nil, errors.New("event outcome unknown; automatic replay prohibited")
+		}
+		return map[string]any{"state": state}, err
+	}
 	if request.Command == "task-link" {
 		return service.taskLinkCommand(ctx, request)
 	}
@@ -95,9 +126,6 @@ func (service *Service) handleLocalRPC(ctx context.Context, method string, param
 	}
 	ctx = feishu.WithEpoch(ctx, service.managedFeishuSupervisor.Generation())
 	err = feishucli.CallRequest(ctx, service.managedFeishuSupervisor.Call, feishuprotocol.ClientExecute, request, &result)
-	if err == nil && (request.Command == "profile" && request.Action == "set" || request.Command == "auth" && (request.Action == "configure-existing" || request.Action == "finish")) {
-		err = service.restartFeishuSupervisor(ctx)
-	}
 	return result, err
 }
 
@@ -109,15 +137,10 @@ func (service *Service) taskLinkCommand(ctx context.Context, request feishucli.R
 	store := runtime.Store()
 	switch request.Action {
 	case "protocol":
-		settings, err := (remoteSettingsStore{service}).Load()
+		_, err := (remoteSettingsStore{service}).Load()
 		blockers := []string{}
 		if err != nil {
 			blockers = append(blockers, "feishuServiceUnavailable")
-		} else if !settings.Outbound.Enabled {
-			blockers = append(blockers, "outbound")
-		}
-		if settings.Outbound.DryRun {
-			blockers = append(blockers, "dryRun")
 		}
 		return map[string]any{"status": "ok", "protocol": integration.TaskLinkProtocol, "version": 2, "schemaVersion": 2, "readiness": map[string]any{"ready": len(blockers) == 0, "blockers": blockers}}, nil
 	case "list":
@@ -126,6 +149,34 @@ func (service *Service) taskLinkCommand(ctx context.Context, request feishucli.R
 			return nil, err
 		}
 		return map[string]any{"status": "ok", "protocol": integration.TaskLinkProtocol, "version": 2, "links": integration.PublicLinks(file.Links)}, nil
+	case "sync-review":
+		file, err := store.Load()
+		if err != nil {
+			return nil, err
+		}
+		items := []map[string]any{}
+		for _, l := range file.Links {
+			var state integration.CardSyncState
+			l.ExtraValue("cardSync", &state)
+			if state.State == "needs_review" || state.State == "waiting_retry" {
+				items = append(items, map[string]any{"id": l.ID, "sync": state})
+			}
+		}
+		return map[string]any{"items": items}, nil
+	case "sync-retry":
+		err := integration.RetryTaskLinkCard(ctx, store, integrationFeishuPort{service}, request.Options["id"])
+		return map[string]any{"retried": err == nil}, err
+	case "diagnostics":
+		result := map[string]any{"cards": integration.CardSyncDiagnostics()}
+		if service.desktop != nil {
+			result["observations"] = service.desktop.ObservationDiagnostics()
+		}
+		items, err := feishu.NewInboundWorkbox(service.feishuDataRoot).Review()
+		if err != nil {
+			return nil, err
+		}
+		result["deliveries"] = items
+		return result, nil
 	case "create":
 		var input integration.CreateTaskLinkRequest
 		if err := privateipc.DecodeStrict(request.Payloads["payload-file"], &input, true); err != nil {

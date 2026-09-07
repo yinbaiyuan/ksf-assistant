@@ -22,27 +22,6 @@ func TestUnifiedExecutorRoutesSDKSendThroughOutboxOnce(t *testing.T) {
 	reviewAssertNoChildWork(t, root, "outbox")
 }
 
-func TestUnifiedExecutorRoutesGovernedWhiteboardThroughDocbox(t *testing.T) {
-	root := t.TempDir()
-	config := DefaultClientConfig()
-	config.DocumentTargets["design"] = DocumentTarget{Kind: "docx_token", Value: "docx_private"}
-	if err := NewClientConfigStore(root).Save(config); err != nil {
-		t.Fatal(err)
-	}
-	input := map[string]any{"doc": "design", "content": "graph TD; A-->B", "doc-format": "mermaid"}
-	ctx, operationID := reviewRunningBoundary(t, root, "docs.whiteboard.insert", input)
-	transport := &reviewDocumentTransport{}
-	executor := UnifiedCapabilityExecutor{DataRoot: root, Documents: transport}
-	result, err := executor.ExecuteWithOptions(ctx, "docs.whiteboard.insert", input, CapabilityExecutionOptions{OperationID: operationID, Timeout: 2 * time.Second})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result["capabilityId"] != "docs.whiteboard.insert" || transport.writes.Load() != 1 {
-		t.Fatalf("unexpected result: %#v", result)
-	}
-	reviewAssertNoChildWork(t, root, "docbox")
-}
-
 func TestUnifiedExecutorRejectsUnboundDirectWrite(t *testing.T) {
 	sender := &reviewConcurrentSender{}
 	executor := UnifiedCapabilityExecutor{DataRoot: t.TempDir(), Sender: sender}

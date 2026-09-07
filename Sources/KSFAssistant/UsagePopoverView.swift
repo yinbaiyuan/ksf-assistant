@@ -20,10 +20,10 @@ struct UsagePopoverView: View {
     @State private var pricingFormError: String?
     @State private var feishuAppID = ""
     @State private var feishuAppSecret = ""
-    @State private var showExistingFeishuApp = true
-    @State private var pendingFeishuWriteFeature: FeishuSettingsOverview.Feature?
+    @State private var showExistingFeishuApp = false
+    @State private var feishuExpandedSection: String?
+    @State private var pendingFeishuAction: FeishuActionIntent?
     @State private var confirmToolchainInstall = false
-    @State private var confirmFeishuLogout = false
 
     var body: some View {
         Group {
@@ -47,11 +47,14 @@ struct UsagePopoverView: View {
         .padding(12)
         .frame(width: 336)
         .fixedSize(horizontal: false, vertical: true)
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+        .onChange(of: viewModel.popoverPresentationID) { _ in
             page = .home
             showAllProjects = false
             selectedTaskID = nil
             selectedLocalHistoryDate = nil
+            pendingFeishuAction = nil
+        }
+        .onAppear {
             if refreshOnAppear { viewModel.popoverDidOpen() }
         }
         .onChange(of: viewModel.tokenHistoryComparison.days.map(\.startDate)) { dates in
@@ -334,10 +337,7 @@ struct UsagePopoverView: View {
                     ) {
                         viewModel.toggleFeishuTaskLink(task)
                     }
-                    .disabled(
-                        viewModel.feishuService.availability != .ready
-                            || viewModel.selectedFeishuTargetAlias.isEmpty
-                    )
+                    .help(viewModel.feishuTaskLinkUnavailableReason ?? "连接或解除此任务的飞书卡片")
                 }
             }
             if let error = viewModel.feishuTaskLinkError(for: task) {
@@ -630,11 +630,8 @@ struct UsagePopoverView: View {
                 }
                 .controlSize(.small)
                 .buttonStyle(.bordered)
-                .disabled(
-                    isUpdatingLink
-                        || viewModel.feishuService.availability != .ready
-                        || viewModel.selectedFeishuTargetAlias.isEmpty
-                )
+                .disabled(isUpdatingLink)
+                .help(viewModel.feishuTaskLinkUnavailableReason ?? "连接或解除此任务的飞书卡片")
             }
 
             if let link {
@@ -919,10 +916,11 @@ struct UsagePopoverView: View {
                     }
                     Divider()
                     HStack(spacing: 8) {
-                        VStack(alignment: .leading, spacing: 1) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Text("API 估算")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: true, vertical: false)
                             pricingPlanMenu
                         }
                         Spacer(minLength: 8)
@@ -1425,7 +1423,7 @@ struct UsagePopoverView: View {
                     HStack(spacing: 8) {
                         VStack(alignment: .leading, spacing: 1) {
                             Text("飞书服务").font(.caption)
-                            Text(viewModel.feishuStatusText)
+                            Text(viewModel.feishuConfiguration.summaryTitle)
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
                         }
@@ -1438,7 +1436,7 @@ struct UsagePopoverView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.vertical, 7)
-                .accessibilityLabel("飞书服务，\(viewModel.feishuStatusText)")
+                .accessibilityLabel("飞书服务，\(viewModel.feishuConfiguration.summaryTitle)")
             }
             .padding(.horizontal, 10)
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
@@ -1503,7 +1501,7 @@ struct UsagePopoverView: View {
                     }
 
                     if let feedback = pricingFormError ?? viewModel.pricingFeedback {
-                        compactStatus(feedback, color: .orange, symbol: "exclamationmark.triangle.fill")
+                        compactStatus(feedback, color: viewModel.feishuConfiguration.outcome == "completed" ? .green : .orange, symbol: viewModel.feishuConfiguration.outcome == "completed" ? "checkmark.circle" : "exclamationmark.triangle.fill")
                     }
 
                     HStack(spacing: 10) {
@@ -1661,344 +1659,362 @@ struct UsagePopoverView: View {
         return TokenCostFormatter.usd(microUSD: estimate.totalMicroUsd)
     }
 
+    #if FEISHU_LAYOUT_PREVIEW
+    func feishuFocusPreview() -> some View {
+        var preview = self
+        preview._page = State(initialValue: .feishu)
+        return preview
+    }
+
+    func feishuLayoutPreview(expandedSection: String? = nil, maximumHeight: CGFloat = 540) -> some View {
+        var preview = self
+        preview._feishuExpandedSection = State(initialValue: expandedSection)
+        return preview.feishuPageLayout(maximumHeight: maximumHeight)
+    }
+    #endif
+
     private var feishuPage: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            secondaryHeader(title: "飞书配置", backLabel: "返回设置") { page = .settings }
-
-            if viewModel.feishuSetup.stage != "ready" || viewModel.feishuService.processState == "degraded" {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("运行组件")
-                    .font(.caption.weight(.semibold))
-                componentStatusRow(name: "核心服务", status: viewModel.coreServiceStatusText, color: viewModel.coreServiceStatusText == "运行中" ? .green : .red)
-                componentStatusRow(name: "飞书服务", status: feishuProcessStatusText, color: viewModel.feishuService.processRunning ? .green : feishuStatusColor)
-                componentStatusRow(name: "本机事件", status: feishuProfileText, color: .secondary)
-                Text("\(feishuSetupStageText) · \(feishuStatusDetail)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Text("退出 KSFAssistant 将停止核心服务、飞书服务及其子进程。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-
-                if viewModel.feishuService.processState == "degraded" {
-                    Button("重新启动") { viewModel.restartFeishuSupervisor() }
-                        .controlSize(.small)
-                }
-
-                if viewModel.feishuActionInProgress {
-                    ProgressView().controlSize(.small)
-                }
+        let availableHeight = max(320, min(720, (NSScreen.main?.visibleFrame.height ?? 800) - 96))
+        return feishuPageLayout(maximumHeight: availableHeight)
+            .onAppear {
+                #if !FEISHU_LAYOUT_PREVIEW
+                Task { await viewModel.refreshToolchainStatus() }
+                #endif
             }
-            .padding(10)
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func feishuPageLayout(maximumHeight: CGFloat) -> some View {
+        ViewThatFits(in: .vertical) {
+            feishuPageContent
+            ScrollView { feishuPageContent }
+                .frame(height: maximumHeight)
+        }
+        .frame(maxHeight: maximumHeight)
+    }
+
+    private var feishuPageContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                secondaryHeader(title: "飞书配置", backLabel: "返回设置") { page = .settings }
+                ZStack {
+                    headerIconButton(systemName: "arrow.clockwise", label: "刷新接入状态",
+                        disabled: viewModel.feishuConfiguration.acting || viewModel.feishuConfiguration.reading) {
+                        Task { await viewModel.refreshFeishuConfiguration(refresh: true); await viewModel.refreshToolchainStatus() }
+                    }.opacity(viewModel.feishuConfiguration.reading ? 0 : 1)
+                    if viewModel.feishuConfiguration.reading { ProgressView().controlSize(.small).accessibilityLabel("正在刷新接入状态") }
+                }.frame(width: 28, height: 28)
             }
-
-            feishuSetupContent
-
-            toolchainSettings
-
-            if let feedback = viewModel.feishuFeedback {
-                compactStatus(feedback, color: .orange, symbol: "exclamationmark.triangle.fill")
+            feishuConfigurationOverview
+            feishuSurface { toolchainSettings }
+            feishuDiagnostics
+            Text(viewModel.feishuConfiguration.snapshot?.diagnostics?.versionSummary ?? "飞书服务 未知 · lark-cli 未知")
+                .font(.caption2).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center).frame(maxWidth: .infinity)
+            if viewModel.feishuConfiguration.snapshot?.auth?.isAuthorized == true {
+                HStack { Spacer(); feishuActionButton("logout"); Spacer() }.padding(.vertical, 8)
             }
         }
-        .task {
-            await viewModel.refreshFeishuSettingsOverview()
-            await viewModel.refreshFeishuAuthStatus()
-            await viewModel.refreshToolchainStatus()
+        .confirmationDialog(pendingFeishuAction?.title ?? "确认操作", isPresented: Binding(
+            get: { pendingFeishuAction != nil },
+            set: { if !$0 { pendingFeishuAction = nil } }
+        ), titleVisibility: .visible) {
+            if let intent = pendingFeishuAction {
+                Button("确认", role: .destructive) {
+                    pendingFeishuAction = nil
+                    submitFeishuAction(intent, confirm: true)
+                }
+            }
+            Button("取消", role: .cancel) { pendingFeishuAction = nil }
+        } message: {
+            Text(pendingFeishuAction?.confirmation ?? "")
+        }
+    }
+
+    private var feishuConfigurationOverview: some View {
+        feishuSurface {
+            let configuration = viewModel.feishuConfiguration
+            Text("飞书接入状态").font(.system(size: 13, weight: .semibold))
+            if let snapshot = configuration.snapshot {
+                Divider().padding(.vertical, 2)
+                ForEach(["robot", "authorizedUser", "taskConnection"].compactMap { snapshot.fact($0) }) { fact in
+                    feishuFactRow(fact)
+                }
+            }
+            if feishuHasSetupContent || (configuration.acting && configuration.lastAction != "test_message") {
+                Divider().padding(.vertical, 4)
+                feishuSetupContent.frame(maxWidth: .infinity)
+            }
+            if let error = configuration.refreshError {
+                Text(error).font(.caption2).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            } else if configuration.lastAction != "test_message", ["failed", "unknown"].contains(configuration.outcome ?? ""), let message = configuration.message {
+                Text(message).font(.caption2).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            } else if let issue = configuration.snapshot?.issues?.first(where: { !($0.component == "operation" && $0.code == "test_message") }) {
+                Text(issue.message).font(.caption2).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func feishuFactRow(_ fact: FeishuConfigurationSnapshot.Fact) -> some View {
+        feishuSummaryRow(fact.title, value: fact.value).help(fact.evidenceHelp)
+    }
+
+    private func feishuSummaryRow(_ title: String, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(title).foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            Text(value).multilineTextAlignment(.trailing)
+        }
+        .font(.caption)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func feishuSurface<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8, content: content)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var feishuDiagnostics: some View {
+        feishuSurface {
+            DisclosureGroup(isExpanded: feishuDisclosure("diagnostics")) {
+                VStack(alignment: .leading, spacing: 8) {
+                    if let snapshot = viewModel.feishuConfiguration.snapshot {
+                        ForEach(["application"].compactMap { snapshot.fact($0) }) { fact in feishuFactRow(fact) }
+                        if let diagnostics = snapshot.diagnostics {
+                            ForEach(diagnostics.missingApplicationScopes ?? [], id: \.self) { scope in
+                                Text("应用权限缺项：" + scope).font(.caption2).textSelection(.enabled)
+                            }
+                            ForEach(diagnostics.missingUserScopes ?? [], id: \.self) { scope in
+                                Text("用户授权缺项：" + scope).font(.caption2).textSelection(.enabled)
+                            }
+                            ForEach(diagnostics.recentOperations ?? []) { operation in
+                                Text("\(operation.title ?? operation.action) · \(operation.statusText ?? operation.outcome)\n\(operation.stageText ?? operation.stage) · \(operation.code ?? "") · \(operation.updatedAt)\n\(operation.message)").font(.caption2)
+                            }
+
+                        }
+                        if snapshot.action("restart")?.enabled == true { feishuActionButton("restart") }
+                    }
+
+                    if let target = viewModel.feishuConfiguration.snapshot?.diagnostics?.selfTarget, !target.isEmpty {
+                        Divider()
+                        VStack(spacing: 6) {
+                            if viewModel.feishuConfiguration.acting && viewModel.feishuConfiguration.lastAction == "test_message" {
+                                ProgressView("正在发送测试消息…").controlSize(.small).font(.caption)
+                            } else { feishuActionButton("test_message") }
+                            if viewModel.feishuConfiguration.lastAction == "test_message", let message = viewModel.feishuConfiguration.message {
+                                Text(message).font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                            }
+                        }.frame(maxWidth: .infinity)
+                    }
+                }.padding(.top, 8)
+            } label: {
+                Text("诊断详情").font(.caption.weight(.semibold))
+            }
         }
     }
 
     private var toolchainSettings: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("官方工具链与 Skills").font(.caption.weight(.semibold))
-            Text(viewModel.toolchainStatus?.summary ?? "尚未检查官方工具链。")
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Codex 飞书技能").font(.system(size: 13, weight: .semibold))
+            Text("让 Codex 使用当前飞书接入的消息、文档、日历等能力。")
                 .font(.caption2).foregroundStyle(.secondary)
+            Text(viewModel.toolchainStatus?.installationTitle ?? (viewModel.toolchainFeedback == nil ? "正在检查安装状态…" : "检查失败"))
+                .font(.caption).foregroundStyle(.secondary)
+            if let status = viewModel.toolchainStatus, status.isHealthy {
+                Text("\(status.skills.count) 项 · ksf-lark-*").font(.caption2).foregroundStyle(.secondary)
+            }
             HStack {
-                Button("重新检查") { Task { await viewModel.refreshToolchainStatus() } }
-                if viewModel.toolchainStatus?.isHealthy != true {
-                    Button("安装官方工具链") { confirmToolchainInstall = true }
+                Spacer()
+                if let action = viewModel.toolchainStatus?.installationAction, !action.isEmpty {
+                    Button(action) { confirmToolchainInstall = true }
+                } else if viewModel.toolchainStatus == nil {
+                    Button("检查安装") { Task { await viewModel.refreshToolchainStatus() } }
                 }
                 if viewModel.toolchainActionInProgress { ProgressView().controlSize(.small) }
+                Spacer()
+            }.controlSize(.small).disabled(viewModel.toolchainActionInProgress)
+            if let details = viewModel.toolchainStatus?.installationDetails, !details.isEmpty {
+                DisclosureGroup("查看具体文件") {
+                    ForEach(details, id: \.self) { Text($0).font(.caption2).textSelection(.enabled) }
+                }
             }
-            .controlSize(.small)
-            .disabled(viewModel.toolchainActionInProgress)
-            if let feedback = viewModel.toolchainFeedback {
-                Text(feedback).font(.caption2).foregroundStyle(.secondary)
-            }
+            if let feedback = viewModel.toolchainFeedback { Text(feedback).font(.caption2).foregroundStyle(.secondary) }
         }
-        .padding(10)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-        .confirmationDialog("安装官方工具链？", isPresented: $confirmToolchainInstall, titleVisibility: .visible) {
+        .confirmationDialog("安装 Codex 飞书技能？", isPresented: $confirmToolchainInstall, titleVisibility: .visible) {
             Button("确认安装") { viewModel.installToolchain() }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("安装此版本附带的官方 CLI、启动器与 Skills；不覆盖自行修改的文件，也不会自动授权或发送消息。")
+            Text("安装当前应用内置的 ksf-lark-* 技能及必要执行入口；迁移本应用管理且未修改的旧版。不会覆盖自行修改的文件，也不会自动授权或发送消息。")
         }
     }
 
     @ViewBuilder
     private var feishuSetupContent: some View {
-        switch viewModel.feishuSetup.stage {
-        case "not_started":
-            VStack(alignment: .leading, spacing: 8) {
-                Text("选择接入方式").font(.caption.weight(.semibold))
-                Text("此版本暂不支持自动创建专用飞书应用，请在飞书后台创建后接入已有应用。")
-                    .font(.caption2).foregroundStyle(.secondary)
-                Button("接入已有应用") { showExistingFeishuApp.toggle() }
-                    .controlSize(.small)
-                if showExistingFeishuApp {
-                    TextField("App ID", text: $feishuAppID).textFieldStyle(.roundedBorder)
-                    SecureField("App Secret", text: $feishuAppSecret).textFieldStyle(.roundedBorder)
-                    Button("安全保存并继续") {
-                        viewModel.beginFeishuSetup(mode: "existing", appID: feishuAppID, appSecret: feishuAppSecret)
-                        feishuAppSecret = ""
-                    }
-                    .buttonStyle(.borderedProminent)
+        let configuration = viewModel.feishuConfiguration
+        if let flow = configuration.snapshot?.flow, ["expired", "failed"].contains(flow.state) {
+            Text(flow.state == "expired" ? "登录二维码已过期，请重新登录。" : "本次登录未完成，请重新登录。")
+                .font(.caption2).foregroundStyle(.orange).multilineTextAlignment(.center)
+        }
+        if (configuration.acting || (configuration.lastAction == "start_auth" && configuration.outcome == "pending" && configuration.snapshot?.flow == nil)) && configuration.actionFlow == nil {
+            ProgressView(configuration.lastAction == "start_auth" ? "正在准备登录…" : configuration.lastAction == "logout" ? "正在注销…" : "正在处理…")
+                .controlSize(.small).font(.caption).frame(maxWidth: .infinity, minHeight: 36)
+        } else if configuration.phase == .loading {
+            ProgressView("正在读取配置…").controlSize(.small)
+        } else if configuration.phase == .unknown {
+            Text("当前结果尚未确认，不会自动重试配置操作。").font(.caption2).foregroundStyle(.secondary)
+        } else if let flow = configuration.actionFlow {
+            feishuPendingStep(flow)
+        } else if configuration.snapshot?.action("create_app")?.enabled == true
+                    || configuration.snapshot?.action("connect_app")?.enabled == true {
+            Text("应用接入").font(.caption.weight(.semibold))
+            Text("应用凭据由官方 CLI 保存；创建应用与用户授权是独立操作。")
+                .font(.caption2).foregroundStyle(.secondary)
+            if showExistingFeishuApp && configuration.snapshot?.action("connect_app")?.enabled == true {
+                TextField("App ID", text: $feishuAppID).textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("已有飞书应用 App ID")
+                SecureField("App Secret", text: $feishuAppSecret).textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("已有飞书应用 App Secret")
+                feishuActionButton("connect_app", primary: true)
                     .disabled(feishuAppID.isEmpty || feishuAppSecret.isEmpty)
+                Button("返回接入方式") { showExistingFeishuApp = false }.controlSize(.small)
+            } else {
+                if configuration.snapshot?.action("create_app")?.enabled == true {
+                    feishuActionButton("create_app", primary: true)
+                }
+                if let action = configuration.snapshot?.action("connect_app"), action.enabled {
+                    Button(action.title) { showExistingFeishuApp = true }
+                        .controlSize(.small).disabled(!configuration.allows(action.id))
                 }
             }
-            .padding(10)
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-        case "app_pending":
-            feishuPendingStep(title: "在飞书中创建应用", actionTitle: "我已完成，继续")
-        case "app_configured":
-            VStack(alignment: .leading, spacing: 8) {
-                Text("应用凭据已安全保存").font(.caption.weight(.semibold))
-                Text("下一步将申请固定能力注册表中的精确权限并发起 OAuth。")
-                    .font(.caption2).foregroundStyle(.secondary)
-                Button("开始授权") { viewModel.continueFeishuSetup() }.buttonStyle(.borderedProminent)
-            }
-        case "authorization_pending":
-            feishuPendingStep(title: "完成用户授权", actionTitle: "我已授权，继续")
-        case "platform_pending", "failed":
-            VStack(alignment: .leading, spacing: 8) {
-                if viewModel.feishuSetup.readyToActivate == true {
-                    Text("授权与后台检查已通过").font(.caption.weight(.semibold))
-                    Text("主动通道当前处于演练模式。确认后会启用真实发送，并向所选别名发送一条连接测试消息。")
-                        .font(.caption2).foregroundStyle(.secondary)
-                    feishuActivationTargetPicker
-                    Button("确认启用并发送测试消息") { viewModel.activateFeishuSetup() }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(viewModel.selectedFeishuTargetAlias.isEmpty || viewModel.feishuActionInProgress)
-                } else {
-                    Text("检查飞书后台设置").font(.caption.weight(.semibold))
-                    Text("请确认机器人、精确权限、23 类事件、长连接和应用版本发布。KSFAssistant 会自动核验结果。")
-                        .font(.caption2).foregroundStyle(.secondary)
-                    if viewModel.feishuSetup.verificationURL != nil {
-                        Button("在飞书中继续") { viewModel.openFeishuSetupURL() }.controlSize(.small)
-                    }
-                    HStack {
-                        Button("重新检查") { viewModel.verifyFeishuSetup() }.buttonStyle(.borderedProminent)
-                        Button("重新配置") { viewModel.cancelFeishuSetup() }.controlSize(.small)
-                    }
-                }
-            }
-        case "verifying":
-            ProgressView("正在核验飞书配置…").controlSize(.small)
-        default:
-            feishuReadySettings
+        } else if let action = configuration.priorityAction {
+            HStack { Spacer(); feishuActionButton(action, primary: true); Spacer() }.padding(.vertical, 4)
+            ForEach(configuration.pendingSetupActions) { action in feishuActionButton(action.id) }
+        } else {
+            ForEach(configuration.pendingSetupActions) { action in feishuActionButton(action.id) }
         }
     }
 
-    private func feishuPendingStep(title: String, actionTitle: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.caption.weight(.semibold))
-            if let dataURL = viewModel.feishuSetupQRCode, let image = feishuQRCode(dataURL) {
+    private var feishuHasSetupContent: Bool {
+        let configuration = viewModel.feishuConfiguration
+        return configuration.phase != .current || configuration.snapshot?.flow != nil
+            || (configuration.lastAction == "start_auth" && configuration.outcome == "pending" && configuration.snapshot?.flow == nil)
+            || configuration.priorityAction != nil || !configuration.pendingSetupActions.isEmpty
+            || configuration.snapshot?.action("connect_app")?.enabled == true
+            || configuration.snapshot?.action("create_app")?.enabled == true
+    }
+
+    private func feishuPendingStep(_ flow: FeishuConfigurationSnapshot.Flow) -> some View {
+        VStack(spacing: 8) {
+            if let dataURL = flow.qrDataURL, let image = feishuQRCode(dataURL) {
                 Image(nsImage: image).interpolation(.none).resizable().frame(width: 180, height: 180)
-                    .frame(maxWidth: .infinity)
+                    .accessibilityLabel("飞书当前流程二维码")
+            } else if flow.state == "completed" {
+                Color.clear.frame(width: 180, height: 180).accessibilityHidden(true)
             }
-            if let code = viewModel.feishuSetup.userCode { Text("验证码 \(code)").font(.caption2) }
-            HStack {
-                if viewModel.feishuSetup.verificationURL != nil {
-                    Button("在飞书中继续") { viewModel.openFeishuSetupURL() }.controlSize(.small)
+            if let code = flow.userCode { Text("验证码 \(code)").font(.caption2) }
+            HStack(spacing: 6) {
+                if viewModel.feishuConfiguration.acting || flow.state == "completed" {
+                    ProgressView().controlSize(.small)
+                    Text(viewModel.feishuConfiguration.lastAction == "cancel_flow" ? "正在取消登录…" : "正在确认登录…")
+                } else { Text(flow.kind == "user" ? "请用飞书扫码授权" : "请用飞书扫码创建应用") }
+            }.font(.caption2).foregroundStyle(.secondary).frame(height: 20)
+            HStack(spacing: 12) {
+                if flow.verificationURL != nil {
+                    Button("在浏览器中授权") { viewModel.openFeishuFlowURL(flowID: flow.id) }.buttonStyle(.link)
                 }
-                Button(actionTitle) { viewModel.continueFeishuSetup() }.buttonStyle(.borderedProminent)
-                Button("取消") { viewModel.cancelFeishuSetup() }.controlSize(.small)
+                if viewModel.feishuConfiguration.snapshot?.action("cancel_flow")?.enabled == true {
+                    Button(flow.kind == "user" ? "取消登录" : "取消创建") { requestFeishuAction("cancel_flow", flowID: flow.id) }.buttonStyle(.link)
+                }
+            }.controlSize(.small)
+            if flow.kind == "app", viewModel.feishuConfiguration.snapshot?.action("finish_app")?.enabled == true {
+                feishuActionButton("finish_app", flowID: flow.id)
             }
+            Text(flow.kind == "user" ? "取消本次登录，不撤销已有授权" : "取消本次等待，不删除已创建的应用")
+                .font(.caption2).foregroundStyle(.secondary)
         }
-        .padding(10)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+        .frame(maxWidth: .infinity).padding(.vertical, 6)
+        .id(flow.id)
+        .disabled(viewModel.feishuConfiguration.acting)
     }
 
-    private var feishuReadySettings: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("飞书服务").font(.headline)
-                Spacer()
-                Text(viewModel.feishuService.processState == "degraded" ? "需要处理" : "已就绪")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(viewModel.feishuService.processState == "degraded" ? .orange : .green)
-            }
-            Text(viewModel.feishuSettingsOverview?.summary ?? "正在读取可用范围…")
-                .font(.caption2).foregroundStyle(.secondary)
-
-            Divider()
-            Text("权限").font(.caption.weight(.semibold))
-            feishuAuthorizationControls
-            let permissions = viewModel.feishuSettingsOverview?.permissions
-            feishuStatusRow("应用权限", state: permissionStateText(permissions?.application), healthy: permissions?.application == "verified")
-            feishuStatusRow("当前用户授权", state: permissionStateText(permissions?.user), healthy: permissions?.user == "verified")
-            if let missing = permissions?.missing, !missing.isEmpty {
-                Text("仍需处理：\(missing.joined(separator: "、"))")
-                    .font(.caption2).foregroundStyle(.orange)
-                Button("重新检查") { Task { await viewModel.refreshFeishuSettingsOverview() } }
-                    .controlSize(.small)
-            } else if permissions?.application == "verified" && permissions?.user == "verified" {
-                Text("基础单聊、卡片回调和 Codex 任务控制已授权。")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
-
-            Divider()
-            Text("接收与高级功能").font(.caption.weight(.semibold))
-            Picker("本机事件角色", selection: Binding(
-                get: { viewModel.feishuService.profile.isEmpty ? "manual-only" : viewModel.feishuService.profile },
-                set: { viewModel.setFeishuProfile($0) }
-            )) {
-                Text("主设备").tag("primary")
-                Text("仅手动能力").tag("manual-only")
-            }
-            .controlSize(.small)
-            Text("主设备接收入站事件；仅手动能力仍可主动发送和处理队列。")
-                .font(.caption2).foregroundStyle(.secondary)
-            ForEach(viewModel.feishuSettingsOverview?.features ?? []) { feature in
-                feishuFeatureControl(feature)
-            }
-
-            Divider()
-            Text("诊断").font(.caption.weight(.semibold))
-            let health = viewModel.feishuSettingsOverview?.health
-            feishuStatusRow("核心服务", state: health?.core == "running" ? "运行中" : "需要处理", healthy: health?.core == "running")
-            feishuStatusRow("飞书服务", state: health?.bridge == "running" ? "运行中" : (health?.bridge ?? "未知"), healthy: health?.bridge == "running")
-            feishuStatusRow("本机事件", state: health?.inbound == "connected" ? "已连接" : (health?.inbound == "manual_only" ? "仅手动能力" : "未连接"), healthy: health?.inbound == "connected" || health?.inbound == "manual_only")
-            if let detail = health?.detail, !detail.isEmpty {
-                Text(detail).font(.caption2).foregroundStyle(.secondary)
-            }
-            if viewModel.feishuService.processState == "degraded" {
-                Button("重新启动") { viewModel.restartFeishuSupervisor() }
-                    .controlSize(.small)
-            }
-
-            Divider()
-            Text("连接测试").font(.caption.weight(.semibold))
-            if !viewModel.feishuService.targetAliases.isEmpty {
-                Picker("测试目标", selection: Binding(
-                    get: { viewModel.selectedFeishuTargetAlias },
-                    set: { viewModel.setFeishuTargetAlias($0) }
-                )) {
-                    Text("请选择").tag("")
-                    ForEach(viewModel.feishuService.targetAliases, id: \.self) { Text($0).tag($0) }
-                }
-            }
-            Button("确认发送测试消息") { viewModel.sendFeishuTestMessage() }
-                .disabled(viewModel.selectedFeishuTargetAlias.isEmpty)
-        }
-        .padding(10)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-        .confirmationDialog("允许真实执行？", isPresented: Binding(
-            get: { pendingFeishuWriteFeature != nil }, set: { if !$0 { pendingFeishuWriteFeature = nil } }
-        ), titleVisibility: .visible) {
-            Button("允许真实执行", role: .destructive) {
-                if let feature = pendingFeishuWriteFeature { viewModel.updateFeishuFeature(feature.id, mode: "live", confirmRealWrite: true) }
-                pendingFeishuWriteFeature = nil
-            }
-            Button("保持演练", role: .cancel) { pendingFeishuWriteFeature = nil }
-        } message: { Text("这会允许“\(pendingFeishuWriteFeature?.title ?? "该功能")”处理真实写入操作。") }
+    private func feishuDisclosure(_ section: String) -> Binding<Bool> {
+        Binding(
+            get: { feishuExpandedSection == section },
+            set: { feishuExpandedSection = $0 ? section : nil }
+        )
     }
 
-    private var feishuAuthorizationControls: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            let auth = viewModel.feishuAuthStatus
-            feishuStatusRow("CLI 用户授权", state: auth?.statusText ?? "尚未验证", healthy: auth?.isAuthorized == true)
-            Text("身份：\(auth?.identity == "user" ? "用户" : "未验证") · 配置：default\(auth?.profileValid == true && auth?.profile == "default" ? "（已验证）" : "（待验证）")")
-                .font(.caption2).foregroundStyle(.secondary)
-            Text("用户授权不代表所有功能权限齐备；补充授权仅申请当前功能所需范围。")
-                .font(.caption2).foregroundStyle(.secondary)
-            if let auth, auth.grantedScopeCount > 0 {
-                Text("已授予 \(auth.grantedScopeCount) 项用户权限").font(.caption2).foregroundStyle(.secondary)
-            }
-            if let missing = auth?.missingCapabilities, !missing.isEmpty {
-                Text("待处理：\(missing.joined(separator: "、"))").font(.caption2).foregroundStyle(.orange)
-            }
-            if auth?.isPending == true {
-                if let dataURL = auth?.qrDataURL, let image = feishuQRCode(dataURL) {
-                    Image(nsImage: image).interpolation(.none).resizable().frame(width: 160, height: 160)
-                        .accessibilityLabel("飞书用户授权二维码")
-                }
-                if let code = auth?.userCode { Text("验证码 \(code)").font(.caption2) }
-                HStack {
-                    if auth?.verificationUrl != nil {
-                        Button("在飞书中授权") { viewModel.openFeishuAuthURL() }
-                    }
-                    Button("我已授权，检查") { viewModel.finishFeishuAuth() }
-                }
-                .controlSize(.small)
-                .disabled(viewModel.feishuActionInProgress)
-            }
-            HStack {
-                Button("验证授权") { Task { await viewModel.refreshFeishuAuthStatus() } }
-                if auth?.isPending != true {
-                    Button(auth?.isAuthorized == true ? "补充授权" : "重新授权") { viewModel.startFeishuAuth() }
-                }
-                Button("退出授权", role: .destructive) { confirmFeishuLogout = true }
-            }
-            .controlSize(.small)
-            .disabled(viewModel.feishuActionInProgress)
-            if viewModel.feishuActionInProgress { ProgressView().controlSize(.small) }
-        }
-        .confirmationDialog("退出当前飞书用户授权？", isPresented: $confirmFeishuLogout, titleVisibility: .visible) {
-            Button("退出授权", role: .destructive) { viewModel.logoutFeishuAuth() }
-            Button("取消", role: .cancel) {}
-        } message: { Text("终止等待中的授权，并退出 default 配置的用户身份；依赖此授权的工具将无法继续使用。保留应用配置。") }
-    }
-
-    private func feishuFeatureControl(_ feature: FeishuSettingsOverview.Feature) -> some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(feature.title).font(.caption)
-                Text(feature.description)
-                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-            }
-            Spacer(minLength: 4)
-            Picker(feature.title, selection: Binding(
-                get: { feature.state },
-                set: { value in
-                    if feature.writable && value == "live" { pendingFeishuWriteFeature = feature }
-                    else { viewModel.updateFeishuFeature(feature.id, mode: value) }
-                }
-            )) {
-                Text("关闭").tag("off")
-                if feature.writable {
-                    Text("演练").tag("dry_run")
-                    Text("真实执行").tag("live")
+    @ViewBuilder
+    private func feishuActionButton(_ id: String, primary: Bool = false, flowID: String? = nil) -> some View {
+        if let action = viewModel.feishuConfiguration.snapshot?.action(id) {
+            VStack(alignment: .leading, spacing: 3) {
+                if primary {
+                    Button(action.title) { requestFeishuAction(id, flowID: flowID) }.buttonStyle(.borderedProminent)
+                } else if id == "logout" {
+                    Button(action.title, role: .destructive) { requestFeishuAction(id, flowID: flowID) }
+                        .buttonStyle(.plain).foregroundStyle(.red).font(.caption)
                 } else {
-                    Text("启用").tag("enabled")
+                    Button(action.title) { requestFeishuAction(id, flowID: flowID) }.controlSize(.small)
                 }
             }
-            .labelsHidden()
-            .controlSize(.small)
-            .frame(width: feature.writable ? 88 : 68)
+            .disabled(!viewModel.feishuConfiguration.allows(id))
+            .help(action.reason ?? action.title)
         }
     }
 
-    private func feishuStatusRow(_ title: String, state: String, healthy: Bool) -> some View {
-        HStack(spacing: 7) {
-            Circle().fill(healthy ? Color.green : Color.orange).frame(width: 7, height: 7)
-            Text(title).font(.caption)
-            Spacer()
-            Text(state).font(.caption.weight(.medium)).foregroundStyle(.secondary)
-        }
+    private struct FeishuActionIntent {
+        let id: String
+        let title: String
+        let confirmation: String
+        let context: FeishuConfigurationContext
+        let flowID: String?
+        let feature: String?
+        let mode: String?
+        let targetAlias: String?
+        let appID: String?
     }
 
-    private func permissionStateText(_ value: String?) -> String { value == "verified" ? "已验证" : (value == "missing" ? "缺少授权" : "暂不可用") }
+    private func requestFeishuAction(_ id: String, feature: String? = nil, mode: String? = nil, flowID: String? = nil) {
+        guard viewModel.feishuConfiguration.allows(id),
+              let snapshot = viewModel.feishuConfiguration.snapshot,
+              let action = snapshot.action(id) else { return }
+        let appID = id == "connect_app" ? feishuAppID.trimmingCharacters(in: .whitespacesAndNewlines) : nil
+        let featureTitle = snapshot.overview?.features.first { $0.id == feature }?.title
+        let selfTarget = snapshot.diagnostics?.selfTarget ?? viewModel.selectedFeishuTargetAlias
+        let confirmation = action.confirmationText(targetAlias: selfTarget, mode: mode, featureTitle: featureTitle, appID: appID)
+        guard !action.requiresConfirmation || confirmation != nil else {
+            viewModel.reportFeishuConfigurationIssue("缺少有效的操作确认内容，请检查配置后重试。")
+            return
+        }
+        let intent = FeishuActionIntent(id: id, title: action.title, confirmation: confirmation ?? "",
+            context: snapshot.context,
+            flowID: flowID, feature: feature, mode: mode,
+            targetAlias: id == "test_message" ? selfTarget : nil, appID: appID)
+        if confirmation == nil { submitFeishuAction(intent, confirm: false) }
+        else { pendingFeishuAction = intent }
+    }
+
+    private func submitFeishuAction(_ intent: FeishuActionIntent, confirm: Bool) {
+        viewModel.performFeishuConfigurationAction(intent.id, confirm: confirm,
+            appID: intent.appID,
+            appSecret: intent.id == "connect_app" ? feishuAppSecret : nil,
+            targetAlias: intent.targetAlias, feature: intent.feature, mode: intent.mode, flowID: intent.flowID,
+            expectedContext: intent.context)
+        if intent.id == "connect_app" { feishuAppSecret = "" }
+    }
 
     private var feishuActivationTargetPicker: some View {
-        Picker("测试目标", selection: Binding(
+        let targets = viewModel.feishuConfiguration.snapshot?.overview?.targets
+            ?? viewModel.feishuConfiguration.snapshot?.connection.targetAliases ?? []
+        return Picker("测试目标", selection: Binding(
             get: { viewModel.selectedFeishuTargetAlias },
             set: { viewModel.setFeishuTargetAlias($0) }
         )) {
             Text("请选择").tag("")
-            ForEach(viewModel.feishuService.targetAliases, id: \.self) { Text($0).tag($0) }
+            ForEach(targets, id: \.self) { Text($0).tag($0) }
         }
-        .disabled(viewModel.feishuService.targetAliases.isEmpty)
+        .disabled(targets.isEmpty || viewModel.feishuActionInProgress)
     }
 
     private func feishuQRCode(_ dataURL: String) -> NSImage? {
@@ -2021,64 +2037,6 @@ struct UsagePopoverView: View {
         }
     }
 
-    private var feishuProfileText: String {
-        switch viewModel.feishuService.profile {
-        case "primary": return "主设备"
-        case "manual-only": return "仅手动能力"
-        default: return "未配置"
-        }
-    }
-
-    private var feishuSetupStageText: String {
-        switch viewModel.feishuSetup.stage {
-        case "app_pending": return "等待创建应用"
-        case "app_configured": return "应用已配置"
-        case "authorization_pending": return "等待用户授权"
-        case "platform_pending": return "等待后台确认"
-        case "verifying": return "正在核验"
-        case "ready": return "已就绪"
-        case "failed": return "需要处理"
-        default: return "尚未配置"
-        }
-    }
-
-    private var feishuProcessStatusText: String {
-        if viewModel.feishuService.processRunning { return "运行中" }
-        switch viewModel.feishuService.availability {
-        case .stopped: return "已停止"
-        case .notConfigured: return "不可用"
-        case .unavailable: return "受限"
-        default: return "未运行"
-        }
-    }
-
-    private var feishuStatusSymbol: String {
-        switch viewModel.feishuService.availability {
-        case .ready: return "checkmark.circle.fill"
-        case .dryRun: return "testtube.2"
-        case .unavailable: return "exclamationmark.triangle.fill"
-        case .stopped: return "pause.circle"
-        case .notConfigured: return "link.badge.plus"
-        }
-    }
-
-    private var feishuStatusColor: Color {
-        switch viewModel.feishuService.availability {
-        case .ready: return .green
-        case .dryRun, .unavailable: return .orange
-        default: return .secondary
-        }
-    }
-
-    private var feishuStatusDetail: String {
-        switch viewModel.feishuService.availability {
-        case .notConfigured: return "安装包内飞书服务不可用"
-        case let .unavailable(message): return message
-        case .stopped: return "产品托管的飞书服务尚未启动"
-        case .dryRun: return "主动出站仍处于 dry-run"
-        case .ready: return "单聊收发、卡片回调与 Codex 控制均已就绪"
-        }
-    }
 
     private func secondaryHeader(title: String, backLabel: String, action: @escaping () -> Void) -> some View {
         HStack(spacing: 7) {

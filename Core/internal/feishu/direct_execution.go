@@ -4,22 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"time"
 )
 
-type DocumentExecutionTransport interface {
-	DocumentCreate(context.Context, DocumentRequest) (map[string]any, error)
-	DocumentFetch(context.Context, DocumentTarget) (map[string]any, error)
-	DocumentVersion(context.Context, DocumentTarget, map[string]any, string) (map[string]any, error)
-	DocumentUpdate(context.Context, DocumentRequest) (map[string]any, error)
-}
-
 type DirectExecutionAdapter struct {
-	DataRoot  string
-	Sender    MessageSender
-	Documents DocumentExecutionTransport
+	DataRoot string
+	Sender   MessageSender
 }
 
 type executionBoundaryKey struct{}
@@ -82,39 +73,6 @@ func validateDirectBinding(ctx context.Context, capabilityID string, input map[s
 		return ErrOperationRequestMismatch
 	}
 	return checkExecutionBoundary(ctx)
-}
-
-func validateDocumentExecution(ctx context.Context, request DocumentRequest) error {
-	boundary, ok := ctx.Value(executionBoundaryKey{}).(executionBoundary)
-	if !ok {
-		return errors.New("operation_execution_boundary_required")
-	}
-	if request.NewTitle != "" {
-		return ErrOperationRequestMismatch
-	}
-	if boundary.capabilityID == "docs.whiteboard.insert" {
-		config, err := NewClientConfigStore(filepath.Dir(boundary.operations.root)).Load()
-		if err != nil {
-			return err
-		}
-		target, err := config.ResolveDocumentTarget(fmt.Sprint(boundary.input["doc"]))
-		if err != nil {
-			return err
-		}
-		content, err := DocWhiteboardXML(boundary.input)
-		if err != nil {
-			return err
-		}
-		if request.Action != "update_document" || request.UpdateMode != "append" || request.Target == nil || *request.Target != target || request.Content.Format != "text" || request.Content.Text != content {
-			return ErrOperationRequestMismatch
-		}
-		return validateDirectBinding(ctx, boundary.capabilityID, boundary.input, request.OperationID)
-	}
-	id, input := documentCapabilityInput(request)
-	if value, exists := boundary.input["dry-run"]; exists {
-		input["dry-run"] = value
-	}
-	return validateDirectBinding(ctx, id, input, request.OperationID)
 }
 
 type boundMessageExecutor func(context.Context) (map[string]any, error)
@@ -209,27 +167,6 @@ func (adapter DirectExecutionAdapter) Send(ctx context.Context, request OutboxRe
 	return NewOutbox(adapter.DataRoot).processRequest(ctx, sender, request, false)
 }
 
-func (adapter DirectExecutionAdapter) ExecuteDocument(ctx context.Context, fallback CapabilityExecutor, request DocumentRequest) DocumentResult {
-	transport := adapter.Documents
-	if transport == nil {
-		transport = fallback
-	}
-	return executeDocumentTransport(ctx, transport, request, false)
-}
-
-func (executor CapabilityExecutor) DocumentCreate(ctx context.Context, request DocumentRequest) (map[string]any, error) {
-	return executor.documentCreate(ctx, request)
-}
-func (executor CapabilityExecutor) DocumentFetch(ctx context.Context, target DocumentTarget) (map[string]any, error) {
-	return executor.documentFetch(ctx, target)
-}
-func (executor CapabilityExecutor) DocumentVersion(ctx context.Context, target DocumentTarget, preflight map[string]any, id string) (map[string]any, error) {
-	return executor.documentVersion(ctx, target, preflight, id)
-}
-func (executor CapabilityExecutor) DocumentUpdate(ctx context.Context, request DocumentRequest) (map[string]any, error) {
-	return executor.documentUpdate(ctx, request)
-}
-
 func outboxCapabilityInput(dataRoot string, request OutboxRequest) map[string]any {
 	input := map[string]any{"request-id": request.ID, "target-type": request.Target.Type, "target-id": request.Target.ID, "format": request.Type, "source": request.Source}
 	if request.Text != "" {
@@ -242,24 +179,6 @@ func outboxCapabilityInput(dataRoot string, request OutboxRequest) map[string]an
 		}
 	}
 	return input
-}
-
-func documentCapabilityInput(request DocumentRequest) (string, map[string]any) {
-	id := "docs.service.document.create"
-	input := map[string]any{"content": request.Content.Text, "format": request.Content.Format, "source": request.Source}
-	if request.Target != nil {
-		input["target-kind"], input["target-value"] = request.Target.Kind, request.Target.Value
-	}
-	if request.Action == "update_document" {
-		id = "docs.service.document.append"
-		if request.UpdateMode == "overwrite" || request.UpdateMode == "str_replace" {
-			id = "docs.service.document.overwrite"
-		}
-		if request.UpdateMode == "str_replace" {
-			input["selection-pattern"] = request.Selection["withEllipsis"]
-		}
-	}
-	return id, input
 }
 
 func boundQueueInput(operations *OperationService, operationID, capabilityID string, input map[string]any) (map[string]any, error) {
@@ -299,41 +218,6 @@ func (box *Outbox) executeGoverned(ctx context.Context, sender MessageSender, re
 	}
 	if action.Status == "dry_run" {
 		result.DryRun = true
-	}
-	return result
-}
-
-func (box *Docbox) executeGoverned(ctx context.Context, executor CapabilityExecutor, request DocumentRequest, dryRun bool) DocumentResult {
-	result := DocumentResult{ID: request.ID, OperationID: request.OperationID, Action: request.Action, CompletedAt: time.Now().UTC()}
-	if err := validateDocumentRequest(request); err != nil {
-		result.Status, result.Error = "invalid", err.Error()
-		return result
-	}
-	if request.NewTitle != "" {
-		result.Status, result.Error = "failed", "unbound_document_title"
-		return result
-	}
-	if dryRun || request.DryRun {
-		result.Status = "dry_run"
-		return result
-	}
-	operations := NewOperationService(box.dataRoot, NewCapabilityPolicyStore(box.dataRoot), nil)
-	id, input := documentCapabilityInput(request)
-	input, err := boundQueueInput(operations, request.OperationID, id, input)
-	if err != nil {
-		result.Status, result.Error = "failed", err.Error()
-		return result
-	}
-	action := NewGovernedActionbox(box.dataRoot, operations).executeRequest(ctx, UnifiedCapabilityExecutor{DataRoot: box.dataRoot, LongTail: executor}, queueActionRequest(request.ID, request.OperationID, id, input))
-	if response, ok := action.Result["response"]; ok {
-		data, _ := json.Marshal(response)
-		_ = json.Unmarshal(data, &result)
-	} else {
-		result.Status, result.Error = action.Status, action.Error
-	}
-	result.ID = request.ID
-	if action.Status != string(OperationSucceeded) {
-		result.Status, result.Error = action.Status, action.Error
 	}
 	return result
 }

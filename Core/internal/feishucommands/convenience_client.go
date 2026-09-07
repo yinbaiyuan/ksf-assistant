@@ -157,9 +157,6 @@ func (call *invocation) runConvenienceClient(dataRoot string, settings feishu.Se
 	if err := applyCompatibilityTarget(dataRoot, family, input, flagArguments); err != nil {
 		return err
 	}
-	if definition.Risk != "read" && !settings.Actionbox.Enabled {
-		return errors.New("actionbox is disabled")
-	}
 	if len(spec.Additional) > 0 {
 		results := map[string]any{}
 		primary, prepareErr := call.prepare(service, call.ctx, spec.CapabilityID, input, "codex")

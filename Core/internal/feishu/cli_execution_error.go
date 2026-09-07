@@ -68,6 +68,12 @@ func commandExecutionError(code string, exitCode int, started bool, cause error,
 				break
 			}
 		}
+		if seconds, ok := envelope.Error["retry_after"].(float64); ok && seconds > 0 && seconds <= 86400 {
+			if result.Structured == nil {
+				result.Structured = map[string]any{}
+			}
+			result.Structured["retry_after"] = seconds
+		}
 		category, _ := envelope.Error["type"].(string)
 		subtype, _ := envelope.Error["subtype"].(string)
 		if !contains([]string{"validation", "authentication", "authorization", "config", "network", "api", "policy", "internal", "confirmation"}, category) || !cliErrorToken.MatchString(subtype) {

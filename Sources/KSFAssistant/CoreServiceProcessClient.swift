@@ -32,95 +32,6 @@ struct CoreServiceCreatedTask: Decodable {
     let submission: String
 }
 
-struct CoreServiceFeishuAuth: Decodable {
-    let schemaVersion: Int
-    let status: String
-    let identity: String
-    let profile: String
-    let identityValid: Bool
-    let profileValid: Bool
-    let grantedScopeCount: Int
-    let missingCapabilities: [String]?
-    let verificationUrl: String?
-    let userCode: String?
-    let qrDataURL: String?
-
-    var isAuthorized: Bool { schemaVersion == 1 && status == "authorized" && identity == "user" && profile == "default" && identityValid && profileValid }
-    var isPending: Bool { schemaVersion == 1 && status == "pending" }
-    var statusText: String {
-        guard schemaVersion == 1 else { return "状态不兼容" }
-        if isAuthorized { return "已授权" }
-        if isPending { return "等待飞书确认" }
-        return status == "failed" ? "需要重新授权" : "未验证用户授权"
-    }
-}
-
-struct FeishuSetupState: Codable, Equatable {
-    let version: Int
-    let stage: String
-    let mode: String?
-    let verificationURL: String?
-    let userCode: String?
-    let lastError: String?
-    let readyToActivate: Bool?
-
-    static let notStarted = FeishuSetupState(
-        version: 1, stage: "not_started", mode: nil,
-        verificationURL: nil, userCode: nil, lastError: nil, readyToActivate: nil
-    )
-}
-
-struct CoreServiceFeishuSetupResult: Decodable {
-    let setup: FeishuSetupState
-    let qrDataURL: String?
-    let verificationUrl: String?
-    let userCode: String?
-}
-
-struct CoreServiceFeishuPermissions: Decodable {
-    struct PermissionSet: Decodable {
-        let missing: [String]
-    }
-    struct UserIdentity: Decodable {
-        let ready: Bool
-        let application: PermissionSet?
-        let oauth: PermissionSet
-    }
-    struct Identities: Decodable {
-        let user: UserIdentity
-    }
-    struct Permissions: Decodable {
-        let verified: Bool
-        let identities: Identities
-    }
-    let permissions: Permissions
-}
-
-struct FeishuSettingsOverview: Decodable {
-    struct Health: Decodable { let core: String; let bridge: String; let inbound: String; let detail: String? }
-    struct Permissions: Decodable {
-        let application: String
-        let user: String
-        let missing: [String]
-
-        private enum CodingKeys: String, CodingKey { case application, user, missing }
-
-        init(from decoder: Decoder) throws {
-            let values = try decoder.container(keyedBy: CodingKeys.self)
-            application = try values.decode(String.self, forKey: .application)
-            user = try values.decode(String.self, forKey: .user)
-            missing = try values.decodeIfPresent([String].self, forKey: .missing) ?? []
-        }
-    }
-    struct Feature: Decodable, Identifiable { let id: String; let title: String; let description: String; let state: String; let writable: Bool }
-    let state: String
-    let summary: String
-    let profile: String
-    let health: Health
-    let permissions: Permissions
-    let features: [Feature]
-    let targets: [String]
-}
 
 struct CoreServiceDashboard {
     let coreVersion: String
@@ -289,6 +200,15 @@ actor CoreServiceProcessClient {
         ])
     }
 
+    func confirmTaskCard(_ authorization: FeishuTaskCardAuthorization) async throws {
+        _ = try await requestData(method: "feishu/operation/confirm", params: ["operationId": authorization.operation.id, "challenge": authorization.challenge])
+    }
+
+    func cancelTaskCard(_ authorization: FeishuTaskCardAuthorization, threadID: String) async throws {
+        _ = try await requestData(method: "feishu/operation/cancel", params: ["operationId": authorization.operation.id])
+        _ = try await releaseTaskLink(threadID: threadID)
+    }
+
     func releaseTaskLink(threadID: String) async throws -> FeishuTaskLinkSnapshot {
         try await decode(method: "feishu/taskLink/release", params: [
             "threadId": threadID,
@@ -301,11 +221,7 @@ actor CoreServiceProcessClient {
         ])
     }
 
-    func sendFeishuTest(targetAlias: String) async throws {
-        _ = try await requestData(method: "feishu/test", params: [
-            "targetAlias": targetAlias,
-        ])
-    }
+
 
     func stop() async {
         guard !stopping else { return }
@@ -336,7 +252,7 @@ actor CoreServiceProcessClient {
         guard let process, process.isRunning, let connection, !stopping else {
             throw CoreServiceError.processStopped
         }
-        let duration = timeout ?? (["feishu/setup/activate", "feishu/setup/verify", "feishu/setup/continue"].contains(method) ? 125 : 45)
+        let duration = timeout ?? 45
         return try await connection.request(method: method, params: params, timeout: duration)
     }
 
@@ -376,39 +292,11 @@ actor CoreServiceProcessClient {
         return candidates.first { fileManager.isExecutableFile(atPath: $0.path) }
     }
 
-    func setFeishuProfile(_ profile: String) async throws {
-        _ = try await requestData(method: "feishu/profile/set", params: ["profile": profile])
-    }
-
-    func controlFeishuService(_ action: String) async throws {
-        _ = try await requestData(method: "feishu/service/control", params: ["action": action])
-    }
-
-    func configureFeishu(appID: String, appSecret: String) async throws {
-        _ = try await requestData(method: "feishu/auth/configure", params: [
-            "appId": appID,
-            "appSecret": appSecret,
-        ])
-    }
-
-    func startFeishuAuth() async throws -> CoreServiceFeishuAuth {
-        try await decode(method: "feishu/auth/start", params: ["scope": "required"])
-    }
-
-    func finishFeishuAuth() async throws -> CoreServiceFeishuAuth {
-        try await decode(method: "feishu/auth/finish", params: [:])
-    }
-
-    func feishuAuthStatus() async throws -> CoreServiceFeishuAuth {
-        try await decode(method: "feishu/auth/status", params: [:])
-    }
-
-    func logoutFeishuAuth() async throws -> CoreServiceFeishuAuth {
-        try await decode(method: "feishu/auth/logout", params: [:])
-    }
-
-    func feishuPermissions() async throws -> CoreServiceFeishuPermissions {
-        try await decode(method: "feishu/permissions/read", params: [:])
+    func feishuConfigurationRequest(method: String, payload: Data) async throws -> Data {
+        guard ["feishu/configuration/read", "feishu/configuration/action", "feishu/configuration/result"].contains(method),
+              let params = try JSONSerialization.jsonObject(with: payload) as? [String: Any]
+        else { throw CoreServiceError.invalidResponse }
+        return try await requestData(method: method, params: params, timeout: 125)
     }
 
     func toolchainStatus() async throws -> ToolchainStatus {
@@ -419,43 +307,7 @@ actor CoreServiceProcessClient {
         try await decode(method: "toolchain/install", params: ["confirm": true])
     }
 
-    func feishuSettingsOverview() async throws -> FeishuSettingsOverview {
-        try await decode(method: "feishu/settings/overview/read", params: [:])
-    }
 
-    func updateFeishuFeature(_ feature: String, mode: String, confirmRealWrite: Bool = false) async throws -> FeishuSettingsOverview {
-        try await decode(method: "feishu/features/update", params: ["feature": feature, "mode": mode, "confirmRealWrite": confirmRealWrite])
-    }
-
-    func feishuSetup() async throws -> FeishuSetupState {
-        try await decode(method: "feishu/setup/read", params: [:])
-    }
-
-    func beginFeishuSetup(mode: String, appID: String = "", appSecret: String = "") async throws -> CoreServiceFeishuSetupResult {
-        try await decode(method: "feishu/setup/begin", params: [
-            "mode": mode, "appId": appID, "appSecret": appSecret,
-        ])
-    }
-
-    func continueFeishuSetup() async throws -> CoreServiceFeishuSetupResult {
-        try await decode(method: "feishu/setup/continue", params: [:])
-    }
-
-    func verifyFeishuSetup() async throws -> CoreServiceFeishuSetupResult {
-        try await decode(method: "feishu/setup/verify", params: [:])
-    }
-
-    func activateFeishuSetup(targetAlias: String) async throws -> CoreServiceFeishuSetupResult {
-        try await decode(method: "feishu/setup/activate", params: ["targetAlias": targetAlias])
-    }
-
-    func cancelFeishuSetup() async throws -> FeishuSetupState {
-        try await decode(method: "feishu/setup/cancel", params: [:])
-    }
-
-    func restartFeishuSupervisor() async throws {
-        _ = try await requestData(method: "feishu/supervisor/restart", params: [:])
-    }
 
     private static func locateFeishuRuntime() -> (bridge: URL, larkCLI: URL)? {
         let fileManager = FileManager.default

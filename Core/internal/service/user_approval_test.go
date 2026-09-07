@@ -49,6 +49,32 @@ func TestUserApprovalNativeOnlySingleConnection(t *testing.T) {
 	if err := client.Call(ctx, "userApproval/request", command, &requested); err != nil {
 		t.Fatal(err)
 	}
+	encoded, err := json.Marshal(core.UserApprovalPoll(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Request struct {
+			Action  string
+			Target  string
+			Content string
+			Source  string
+			Preview struct {
+				Content      string
+				ConfirmLabel string
+				Destructive  bool
+			}
+		}
+	}
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire.Request.Action != "发送飞书消息" || wire.Request.Preview.ConfirmLabel != "发送" || wire.Request.Preview.Destructive || wire.Request.Source != "来源未验证" {
+		t.Fatalf("native preview changed action/source: %+v", wire.Request)
+	}
+	if !strings.Contains(wire.Request.Preview.Content, "private body sentinel") || !strings.Contains(wire.Request.Content, "private body sentinel") || !strings.Contains(wire.Request.Target, "chat_fixture") {
+		t.Fatal("native preview lost frozen body or target")
+	}
 	for _, method := range []string{"userApproval/decide", "userApproval/poll"} {
 		var result any
 		if client.Call(ctx, method, map[string]any{"id": requested.ID, "approve": true}, &result) == nil {

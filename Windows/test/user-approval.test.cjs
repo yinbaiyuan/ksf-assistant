@@ -150,3 +150,14 @@ test('renderer and preload expose no approval decision API', () => {
   assert.match(main, /userApproval\.start\(\)/);
   assert.match(main, /userApproval\?\.stop\(\)/);
 });
+
+
+test('optional compact preview validates without changing complete native review', () => {
+  const preview = { content: '修改正文', confirmLabel: '更新', destructive: true };
+  const value = parsePoll({ schemaVersion: 1, request: request({ preview }) });
+  assert.deepEqual(value.preview, preview);
+  assert.ok(detailPages(value).join('').includes(value.content));
+  for (const bad of [null, { ...preview, destructive: 1 }, { ...preview, confirmLabel: '更\n新' }, { ...preview, approved: true }]) {
+    assert.throws(() => parsePoll({ schemaVersion: 1, request: request({ preview: bad }) }));
+  }
+});

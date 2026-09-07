@@ -150,7 +150,12 @@ test('staged runtime binaries and every Skill match the bundled hash manifests',
     }
   }
   const skills = JSON.parse(fs.readFileSync(path.join(runtime, 'lark-skills/manifest.json')));
-  assert.equal(skills.skills.length, 29);
+  const upstream = JSON.parse(fs.readFileSync(path.join(repoRoot, 'runtime/lark-skills.json')));
+  assert.deepEqual(skills.skills.map(skill => skill.name), upstream.skills.map(skill => `ksf-${skill.name}`));
+  assert.ok(!skills.skills.some(skill => skill.name === 'ksfas'));
+  assert.equal(skills.adaptation.revision, 'ksf-names-v2');
+  assert.equal(skills.adaptation.upstreamManifestSha256, hash(path.join(repoRoot, 'runtime/lark-skills.json')));
+  assert.equal(skills.adaptation.digest, hash(path.join(runtime, 'lark-skills/adaptation-report.json')));
   assert.equal(hash(path.join(runtime, 'lark-skills/LICENSE')), skills.licenseSha256);
   for (const skill of skills.skills) {
     for (const [name, digest] of Object.entries(skill.files)) {

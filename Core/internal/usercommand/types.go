@@ -37,17 +37,26 @@ type Command struct {
 	ArtifactPlan *ArtifactPlan `json:"artifactPlan,omitempty"`
 }
 
+// ApprovalPreview is display-only; Details and the frozen command remain complete.
+type ApprovalPreview struct {
+	Title        string `json:"-"`
+	Content      string `json:"content"`
+	ConfirmLabel string `json:"confirmLabel"`
+	Destructive  bool   `json:"destructive"`
+}
+
 type Review struct {
-	Effects       []Effect `json:"effects,omitempty"`
-	CapabilityID  string   `json:"capabilityId,omitempty"`
-	CapabilityIDs []string `json:"capabilityIds,omitempty"`
-	Identity      string   `json:"identity"`
-	Risk          string   `json:"risk"`
-	Action        string   `json:"action"`
-	Target        string   `json:"target"`
-	Details       string   `json:"details"`
-	Digest        string   `json:"digest"`
-	NeedsApproval bool     `json:"needsApproval"`
+	Preview       *ApprovalPreview `json:"-"`
+	Effects       []Effect         `json:"effects,omitempty"`
+	CapabilityID  string           `json:"capabilityId,omitempty"`
+	CapabilityIDs []string         `json:"capabilityIds,omitempty"`
+	Identity      string           `json:"identity"`
+	Risk          string           `json:"risk"`
+	Action        string           `json:"action"`
+	Target        string           `json:"target"`
+	Details       string           `json:"details"`
+	Digest        string           `json:"digest"`
+	NeedsApproval bool             `json:"needsApproval"`
 }
 
 type Effect struct {

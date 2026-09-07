@@ -1,11 +1,41 @@
 package codex
 
 import (
+	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"ksfassistant/core/internal/domain"
 )
+
+func TestLocateExecutablePrefersDesktopBundleOverStaleCLI(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS bundle discovery")
+	}
+	home := t.TempDir()
+	cli := filepath.Join(home, ".local", "bin", "codex")
+	bundled := filepath.Join(home, "Applications", "Codex.app", "Contents", "Resources", "codex")
+	for _, path := range []string{cli, bundled} {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("fixture"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", filepath.Dir(cli))
+	t.Setenv("CODEX_BIN", "")
+	got, err := LocateExecutable(home)
+	if err != nil || got != bundled {
+		t.Fatalf("selected %q, %v; want desktop runtime %q", got, err, bundled)
+	}
+	t.Setenv("CODEX_BIN", cli)
+	got, err = LocateExecutable(home)
+	if err != nil || got != cli {
+		t.Fatalf("explicit override ignored: %q, %v", got, err)
+	}
+}
 
 func TestObservationsExcludePresentationAndPreserveWaitingFlags(t *testing.T) {
 	name := "task"

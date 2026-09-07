@@ -63,24 +63,32 @@ func LocateExecutable(home string) (string, error) {
 	if value := strings.TrimSpace(os.Getenv("CODEX_BIN")); value != "" {
 		candidates = append(candidates, value)
 	}
+	// Match the installed Desktop runtime before falling back to standalone
+	// CLIs. A stale PATH shim can accept turns but reject Desktop's newer model.
+	if runtime.GOOS == "windows" {
+		candidates = appendUnder(candidates, os.Getenv("LOCALAPPDATA"),
+			filepath.Join("Programs", "Codex", "resources", "codex.exe"),
+			filepath.Join("Programs", "Codex", "codex.exe"),
+			filepath.Join("Codex", "codex.exe"),
+		)
+		candidates = appendUnder(candidates, os.Getenv("ProgramFiles"), filepath.Join("Codex", "resources", "codex.exe"), filepath.Join("Codex", "codex.exe"))
+	} else if runtime.GOOS == "darwin" {
+		for _, root := range []string{filepath.Join(home, "Applications"), "/Applications"} {
+			for _, app := range []string{"Codex.app", "ChatGPT.app"} {
+				candidates = append(candidates, filepath.Join(root, app, "Contents", "Resources", "codex"))
+			}
+		}
+	}
 	if found, err := exec.LookPath(name); err == nil {
 		candidates = append(candidates, found)
 	}
+	candidates = append(candidates, filepath.Join(home, ".local", "bin", name))
 	if runtime.GOOS == "windows" {
-		candidates = append(candidates, filepath.Join(home, ".local", "bin", "codex.exe"))
-		candidates = appendUnder(candidates, os.Getenv("LOCALAPPDATA"),
-			filepath.Join("Programs", "Codex", "codex.exe"),
-			filepath.Join("Programs", "Codex", "resources", "codex.exe"),
-			filepath.Join("Codex", "codex.exe"),
-			filepath.Join("Microsoft", "WindowsApps", "codex.exe"),
-		)
-		candidates = appendUnder(candidates, os.Getenv("ProgramFiles"), filepath.Join("Codex", "codex.exe"))
+		candidates = appendUnder(candidates, os.Getenv("LOCALAPPDATA"), filepath.Join("Microsoft", "WindowsApps", "codex.exe"))
 	} else {
 		candidates = append(candidates,
-			filepath.Join(home, ".local", "bin", "codex"),
 			"/opt/homebrew/bin/codex",
 			"/usr/local/bin/codex",
-			"/Applications/ChatGPT.app/Contents/Resources/codex",
 		)
 	}
 	seen := map[string]bool{}
@@ -152,7 +160,7 @@ func (client *Client) Start(ctx context.Context) error {
 	go io.Copy(io.Discard, stderr)
 	go client.readLoop(stdout, command)
 	client.stateMu.Unlock()
-	_, initErr := client.callStarted(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "ksf_assistant_core", "title": "KSFAssistant Core", "version": "0.11.0-preview.3"}})
+	_, initErr := client.callStarted(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "ksf_assistant_core", "title": "KSFAssistant Core", "version": "0.11.0-preview.4"}})
 	if initErr == nil {
 		initErr = client.notify("initialized", map[string]any{})
 	}

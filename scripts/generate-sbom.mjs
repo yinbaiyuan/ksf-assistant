@@ -33,8 +33,9 @@ packages.push({
   sourceInfo: `Official source tag ${skills.source.tag}; ${skills.skills.length} Skills; LICENSE SHA256 ${skills.licenseSha256}`,
 });
 packages.push({
-  SPDXID: 'SPDXRef-Ksfas-Integration', name: 'ksfas-integration-skill', versionInfo: lock.version,
+  SPDXID: 'SPDXRef-Ksfas-Skills-Adapter', name: 'ksfassistant-skills-entry-adapter', versionInfo: lock.version,
   downloadLocation: 'NOASSERTION', filesAnalyzed: false, licenseConcluded: 'MIT', licenseDeclared: 'MIT',
+  sourceInfo: 'Official Skills are transformed at packaging time by the reproducible KSFAssistant entry adapter. Final per-file hashes and upstream provenance are in runtime/lark-skills/adaptation-report.json; no standalone ksfas Skill is shipped.',
 });
 packages.push({
   SPDXID: 'SPDXRef-Execution-Manifest', name: 'ksfassistant-feishu-execution-contract', versionInfo: lock.version,

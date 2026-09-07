@@ -22,14 +22,21 @@ const state = {
   selectedHistoryDate: null,
   pricingCatalog: { defaultPlanId: 'openai:gpt-5.6-sol', plans: [] },
   pricingDraft: null,
-  feishuSetup: { stage: 'not_started' },
-  feishuSetupPayload: null,
-  feishuSetupMode: 'existing',
-  feishuPermissions: '',
-  feishuOverview: null,
-  feishuAuth: null,
-  feishuAuthBusy: false,
-  feishuAuthError: '',
+  feishuConfiguration: null,
+  feishuConfigurationGeneration: 0,
+  feishuConfigurationLoading: false,
+  feishuManualRefresh: false,
+  feishuReadError: '',
+  feishuLastAction: '',
+  feishuActionFeedback: '',
+  feishuActionOutcome: '',
+  feishuRetiredEpochs: new Set(),
+  feishuFlowTimer: null,
+  feishuPollTimer: null,
+  feishuSetupMode: 'new',
+  feishuSetupBusy: false,
+  feishuSetupError: '',
+  feishuSections: {},
   toolchain: null,
   toolchainBusy: false,
   toolchainError: '',
@@ -63,16 +70,16 @@ function escapeHTML(value) {
   return String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character]);
 }
 
-function buttonIcon(action, name, label, extra = '') {
-  return `<button class="icon-button ${extra}" type="button" data-action="${action}" title="${escapeHTML(label)}" aria-label="${escapeHTML(label)}">${icon(name)}</button>`;
+function buttonIcon(action, name, label, extra = '', disabled = false) {
+  return `<button class="icon-button ${extra}" ${disabled ? 'disabled' : ''} type="button" data-action="${action}" title="${escapeHTML(label)}" aria-label="${escapeHTML(label)}">${icon(name)}</button>`;
 }
 
-function header(title) {
+function header(title, extraActions = '') {
   const secondary = state.page !== 'home';
   return `<header class="app-header">
     ${secondary ? buttonIcon('back', 'back', '返回') : ''}
     <h1 class="app-title">${escapeHTML(title)}</h1>
-    <div class="header-actions">
+    <div class="header-actions">${extraActions}
       ${state.page === 'home' ? buttonIcon('projects', 'grid', '项目列表') : ''}
       ${state.page === 'home' ? buttonIcon('settings', 'settings', '设置') : ''}
       ${buttonIcon('refresh', 'refresh', '刷新', state.refreshing ? 'spin' : '')}
@@ -92,7 +99,7 @@ function render() {
   else if (state.page === 'task') root.innerHTML = renderTaskPage();
   else if (state.page === 'history') root.innerHTML = renderHistoryPage();
   else if (state.page === 'pricing') root.innerHTML = renderPricingPage();
-  else if (state.page === 'feishu') root.innerHTML = renderFeishuPage();
+  else if (state.page === 'feishu') renderFeishuSurface();
   else root.innerHTML = renderHome();
   root.setAttribute('aria-busy', state.refreshing ? 'true' : 'false');
   reportHeight();
@@ -339,7 +346,7 @@ function renderTask(task, project) {
     <div class="task-actions">
       <button class="icon-button" type="button" data-action="task-detail" data-task="${escapeHTML(task.id)}" title="任务详情" aria-label="任务详情">${icon('info')}</button>
       ${link?.controls?.canInterrupt ? `<button class="icon-button" type="button" data-action="interrupt-link" data-thread="${escapeHTML(task.threadId)}" title="停止本轮" aria-label="停止本轮">${icon('stop')}</button>` : ''}
-      <button class="icon-button" type="button" data-action="toggle-link" data-thread="${escapeHTML(task.threadId)}" data-title="${escapeHTML(task.name || '未命名任务')}" data-project="${escapeHTML(project?.name || '')}" data-linked="${linkActive}" title="${linkActive ? '解除飞书连接' : '连接到飞书'}" aria-label="${linkActive ? '解除飞书连接' : '连接到飞书'}" ${!linkActive && !canCreateTaskLink() ? 'disabled' : ''}>${icon(linkActive ? 'close' : 'send')}</button>
+      <button class="icon-button" type="button" data-action="toggle-link" data-thread="${escapeHTML(task.threadId)}" data-title="${escapeHTML(task.name || '未命名任务')}" data-project="${escapeHTML(project?.name || '')}" data-linked="${linkActive}" title="${linkActive ? '解除飞书连接' : '连接到飞书'}" aria-label="${linkActive ? '解除飞书连接' : '连接到飞书'}" >${icon(linkActive ? 'close' : 'send')}</button>
       <button class="icon-button" type="button" data-action="open-task" data-thread="${escapeHTML(task.threadId)}" title="在 Codex 中打开" aria-label="在 Codex 中打开">${icon('open')}</button>
     </div>
   </div>`;
@@ -362,7 +369,7 @@ function renderTaskPage() {
       <div class="detail-status"><span class="status-chip ${escapeHTML(task.classification)}">${escapeHTML(taskClassificationText(task))}</span><span>${escapeHTML(project?.name || '无项目')}</span></div>
       <p class="detail-summary">${escapeHTML(taskDetail(task, link))}</p>
       ${renderTaskRuntimeDetails(task.taskRuntime)}
-      <div class="detail-actions"><button class="button primary" type="button" data-action="open-task" data-thread="${escapeHTML(task.threadId)}">打开 Codex</button><button class="button" type="button" data-action="toggle-link" data-thread="${escapeHTML(task.threadId)}" data-title="${escapeHTML(task.name || '未命名任务')}" data-project="${escapeHTML(project?.name || '')}" data-linked="${linkActive}" ${!linkActive && !canCreateTaskLink() ? 'disabled' : ''}>${linkActive ? '解除飞书' : '连接飞书'}</button>${link?.controls?.canInterrupt ? `<button class="button danger" type="button" data-action="interrupt-link" data-thread="${escapeHTML(task.threadId)}">停止本轮</button>` : ''}</div>
+      <div class="detail-actions"><button class="button primary" type="button" data-action="open-task" data-thread="${escapeHTML(task.threadId)}">打开 Codex</button><button class="button" type="button" data-action="toggle-link" data-thread="${escapeHTML(task.threadId)}" data-title="${escapeHTML(task.name || '未命名任务')}" data-project="${escapeHTML(project?.name || '')}" data-linked="${linkActive}" >${linkActive ? '解除飞书' : '连接飞书'}</button>${link?.controls?.canInterrupt ? `<button class="button danger" type="button" data-action="interrupt-link" data-thread="${escapeHTML(task.threadId)}">停止本轮</button>` : ''}</div>
     </section>
     <div class="section-header"><h2 class="section-title">KSF 路由</h2></div>
     <div class="setting-description">${escapeHTML(taskRouteSourceLabel(task.taskRuntime, Boolean(task.route)))}</div>
@@ -420,9 +427,9 @@ function renderSettingsPage() {
   const feishu = state.dashboard?.feishu || { availability: 'notConfigured', targetAliases: [] };
   return `${header('设置')}
     <section class="card settings-list">
-      <div class="setting"><div class="setting-title">运行组件</div><div class="component-status-list"><div class="component-status"><span>核心服务</span><strong>${state.dashboard?.coreVersion ? '运行中' : '不可用'}</strong></div><div class="component-status"><span>飞书服务</span><strong>${escapeHTML(feishuComponentStatusText(feishu))}</strong></div><div class="component-status"><span>本机事件</span><strong>${escapeHTML(feishuProfileText(feishu.profile))}</strong></div></div><div class="setting-description">退出 KSFAssistant 将停止核心服务、飞书服务及其子进程。</div></div>
+      <div class="setting"><div class="setting-title">运行组件</div><div class="component-status-list"><div class="component-status"><span>核心服务</span><strong>${state.dashboard?.coreVersion ? '运行中' : '不可用'}</strong></div><div class="component-status"><span>飞书服务</span><strong>${escapeHTML(feishuComponentStatusText(feishu))}</strong></div></div><div class="setting-description">退出 KSFAssistant 将停止核心服务、飞书服务及其子进程。</div></div>
       <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">KSF 知识库</div><div class="setting-description">KSF 是可选增强能力；未配置不影响额度、Token、任务状态和飞书。</div></div><button class="button" type="button" data-action="choose-ksf">${settings.ksfRoot ? '更换' : '选择目录'}</button></div><div class="setting-path">${escapeHTML(settings.ksfRoot || '未接入')}</div></div>
-      <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">飞书</div><div class="setting-description">${escapeHTML(feishuSetupStageText(state.feishuSetup))} · ${escapeHTML(feishuStatusText(feishu))}</div></div><button class="button" type="button" data-action="feishu-settings">配置</button></div></div>
+      <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">飞书</div><div class="setting-description">${escapeHTML(feishuConfigurationPresentation().title)}</div></div><button class="button" type="button" data-action="feishu-settings">配置</button></div></div>
       <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">API 估算价格</div><div class="setting-description">${escapeHTML(selectedPricingPlan()?.displayName || 'GPT-5.6 Sol')}</div></div><button class="button" type="button" data-action="pricing">管理价格方案</button></div></div>
       <div class="setting"><div class="setting-head"><div class="setting-copy"><label class="setting-title" for="launch-login">登录时启动</label><div class="setting-description">登录 Windows 后在系统托盘中启动。</div></div><input id="launch-login" class="switch" type="checkbox" data-field="launch-login" ${settings.launchAtLogin ? 'checked' : ''}></div></div>
       <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">版本</div><div class="setting-description">Windows 0.11.0-preview.1 · 核心服务 ${escapeHTML(state.dashboard?.coreVersion || '—')}</div></div></div></div>
@@ -430,52 +437,165 @@ function renderSettingsPage() {
     <div class="detail-actions"><button class="button danger" type="button" data-action="quit">退出 KSFAssistant</button></div>`;
 }
 
-function renderFeishuPage() {
-  const feishu = state.dashboard?.feishu || { availability: 'notConfigured', targetAliases: [] };
-  const setup = state.feishuSetup || { stage: 'not_started' };
-  const payload = state.feishuSetupPayload || {};
-  const verificationURL = payload.verificationUrl || setup.verificationURL || '';
-  const qrDataURL = payload.qrDataURL || '';
-  const isFaulted = feishu.processState === 'degraded';
-  const setupError = setup.lastError ? `<section class="card callout error"><strong>此步骤未完成</strong>${escapeHTML(setup.lastError)}</section>` : '';
-  let step = '';
-  if (setup.stage === 'not_started') {
-    step = `<section class="card settings-list"><div class="setting"><div class="setting-title">接入已有应用</div><div class="setting-description">此版本暂不支持自动创建专用飞书应用，请在飞书后台创建后接入已有应用。</div><div class="feishu-credentials"><input type="text" data-field="feishu-app-id" autocomplete="off" placeholder="App ID" aria-label="飞书 App ID"><input type="password" data-field="feishu-app-secret" autocomplete="new-password" placeholder="App Secret" aria-label="飞书 App Secret"></div><button class="button primary" type="button" data-action="feishu-begin-existing">安全保存并继续</button></div></section>`;
-  } else if (setup.stage === 'app_pending') {
-    step = renderFeishuQRStep('在飞书中创建应用', '完成飞书官方页面中的确认后返回。', qrDataURL, verificationURL, setup.userCode, 'feishu-continue', '我已完成，继续');
-  } else if (setup.stage === 'app_configured') {
-    step = `<section class="card setting"><div class="setting-title">应用凭据已安全保存</div><div class="setting-description">下一步将申请固定能力注册表中的精确权限并发起 OAuth。</div><button class="button primary" type="button" data-action="feishu-continue">开始授权</button></section>`;
-  } else if (setup.stage === 'authorization_pending') {
-    step = renderFeishuQRStep('完成用户授权', '在飞书中确认授权，然后返回继续。', qrDataURL, verificationURL, setup.userCode, 'feishu-continue', '我已授权，继续');
-  } else if (setup.stage === 'platform_pending' || setup.stage === 'failed') {
-    step = setup.readyToActivate
-      ? renderFeishuActivation(feishu)
-      : `<section class="card settings-list"><div class="setting"><div class="setting-title">检查飞书后台设置</div><div class="setting-description">请在已打开的飞书页面确认机器人、精确权限、23 类事件、长连接和应用版本发布。KSFAssistant 会自动核验结果。</div>${verificationURL ? `<button class="button" type="button" data-action="feishu-open-url" data-url="${escapeHTML(verificationURL)}">在飞书中继续</button>` : ''}<div class="detail-actions"><button class="button primary" type="button" data-action="feishu-verify">重新检查</button><button class="button" type="button" data-action="feishu-cancel">重新配置</button></div></div></section>`;
-  } else if (setup.stage === 'verifying') {
-    step = '<section class="card skeleton" aria-label="正在核验飞书配置"></section>';
-  } else {
-    step = renderFeishuReady(feishu);
+function feishuConfigurationPresentation(snapshot = state.feishuConfiguration) {
+  if (!snapshot) return { title: state.feishuSetupError ? '配置状态未知' : '正在读取配置', detail: '', tone: 'neutral' };
+  return snapshot.summary;
+}
+
+function renderFeishuSurface() {
+  const context = JSON.stringify([state.feishuConfiguration?.epoch, state.feishuConfiguration?.contextRevision]);
+  const sameContext = root.dataset.feishuContext === context;
+  const focused = document.activeElement;
+  const focusKey = focused && root.contains(focused) ? { id: focused.id, action: focused.dataset.action, field: focused.dataset.field, feature: focused.dataset.feature } : null;
+  const credentials = sameContext ? [...root.querySelectorAll('.feishu-credentials input')].map((field) => ({ id: field.id, value: field.value, start: field.selectionStart, end: field.selectionEnd })) : [];
+  const html = renderFeishuPage();
+  // Timestamp-only observations must not recreate controls, QR images or focus.
+  if (root.feishuHTML === html && sameContext && root.querySelector('.feishu-page')) return;
+  const scroll = document.scrollingElement?.scrollTop || 0;
+  root.innerHTML = html;
+  root.feishuHTML = html;
+  if (document.scrollingElement) document.scrollingElement.scrollTop = scroll;
+  root.dataset.feishuContext = context;
+  for (const value of credentials) {
+    const field = root.querySelector('#' + value.id);
+    if (field) { field.value = value.value; field.setSelectionRange(value.start, value.end); }
   }
-  const componentSummary = setup.stage !== 'ready' || isFaulted
-    ? `<section class="card setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">${escapeHTML(feishuSetupStageText(setup))}</div><div class="setting-description">桥进程 ${escapeHTML(feishuComponentStatusText(feishu))} · ${escapeHTML(feishuProfileText(feishu.profile))}</div></div>${isFaulted ? '<button class="button" type="button" data-action="feishu-restart">重新启动</button>' : ''}</div></section>`
-    : '';
-  return `${header('飞书配置')}
-    ${componentSummary}${setupError}${step}${renderToolchainSettings()}`;
+  if (focusKey) {
+    const replacement = [...root.querySelectorAll('button, input, select, summary')].find((element) =>
+      focusKey.id ? element.id === focusKey.id : focusKey.action ? element.dataset.action === focusKey.action
+        : focusKey.field && element.dataset.field === focusKey.field && element.dataset.feature === focusKey.feature);
+    replacement?.focus({ preventScroll: true });
+  }
+}
+
+function feishuDisclosure(name, title, content) {
+  return '<details class="feishu-disclosure" data-feishu-section="' + name + '" ' + (state.feishuSections?.[name] ? 'open' : '') + '><summary>' + title + '</summary><div class="feishu-disclosure-body">' + content + '</div></details>';
+}
+
+function feishuAction(id) {
+  return state.feishuConfiguration?.actions.find((action) => action.id === id);
+}
+
+function renderFeishuAction(id, primary = false) {
+  const action = feishuAction(id);
+  if (!action) return '';
+  const disabled = action.enabled !== true || state.feishuSetupBusy || state.feishuReadError || state.feishuSetupError
+    || (id === 'test_message' && !state.feishuConfiguration?.connection?.targetAliases?.includes(state.feishuConfiguration?.diagnostics?.selfTarget));
+  return '<button class="button ' + (primary ? 'primary feishu-primary' : id === 'logout' ? 'danger' : '') + '" type="button" data-action="feishu-config-' + escapeHTML(id) + '" ' + (disabled ? 'disabled' : '') + '>' + escapeHTML(action.title) + '</button>';
+}
+
+function renderFeishuFacts(ids) {
+  const facts = (state.feishuConfiguration?.facts || []).filter((fact) => ids.includes(fact.id));
+  const labels = { unknown: '未知', present: '已确认', missing: '缺少', failed: '检查失败', stale: '已过期' };
+  return '<dl class="feishu-facts">' + facts.map((fact) => {
+    const help = ['来源：' + (fact.source || '未知'), '状态：' + (labels[fact.state] || '未知'), fact.stale ? '此前观测，待复核' : ''].filter(Boolean).join('；');
+    const value = fact.value || labels[fact.state] || '未知';
+    const stale = fact.stale && fact.state !== 'stale' && !/过期|此前|待复核/.test(value) ? '（此前观测，待复核）' : '';
+    return '<div><dt>' + escapeHTML(fact.title) + '</dt><dd title="' + escapeHTML(help) + '" aria-label="' + escapeHTML(value + stale + '；' + help) + '">' + escapeHTML(value) + '</dd></div>';
+  }).join('') + '</dl>';
+}
+
+function feishuPrimaryAction() {
+  const snapshot = state.feishuConfiguration;
+  const enabled = (id) => feishuAction(id)?.enabled === true;
+  const flow = snapshot?.flow;
+  if (flow?.id && ['pending', 'completed'].includes(flow.state)) {
+    if (flow.expiresAt && (!Number.isFinite(Date.parse(flow.expiresAt)) || Date.parse(flow.expiresAt) <= Date.now())) return null;
+    const finish = { app: 'finish_app' }[flow.kind];
+    return finish && enabled(finish) ? finish : null;
+  }
+  if (state.feishuSetupMode === 'existing' && enabled('connect_app')) return 'connect_app';
+  if (enabled('create_app')) return 'create_app';
+  const missing = (id) => snapshot?.facts.some((fact) => fact.id === id && fact.state === 'missing' && !fact.stale);
+  if (enabled('start_auth') || (snapshot?.facts.some((f) => f.id === 'authorizedUser' && f.state === 'missing') && snapshot?.facts.some((f) => f.id === 'application' && f.state === 'present'))) return 'start_auth';
+  if (missing('operator') && enabled('bind_operator')) return 'bind_operator';
+  return null;
+}
+
+function renderFeishuOverview(step = '') {
+  const summary = feishuConfigurationPresentation();
+  const tone = ['success', 'warning', 'neutral'].includes(summary.tone) ? summary.tone : 'neutral';
+  return '<section class="feishu-overview" aria-label="飞书接入状态" title="' + escapeHTML(summary.title + '：' + summary.detail) + '"><h2 class="setting-title">飞书接入状态</h2>'
+    + renderFeishuFacts(['robot', 'authorizedUser', 'taskConnection']) + step + '</section>';
+}
+
+function renderFeishuDiagnostics() {
+  const snapshot = state.feishuConfiguration;
+  const d = snapshot?.diagnostics || {};
+  const missing = (d.missingApplicationScopes || []).map((scope) => '应用权限缺项：' + scope).concat((d.missingUserScopes || []).map((scope) => '用户授权缺项：' + scope));
+  const contents = renderFeishuFacts(['application'])
+    + missing.map((text) => '<p class="setting-description">' + escapeHTML(text) + '</p>').join('')
+    + (d.recentOperations || []).map((op) => '<p class="setting-description">' + escapeHTML((op.title || op.action) + ' · ' + (op.statusText || op.outcome) + ' · ' + (op.stageText || op.stage) + ' · ' + (op.code || '') + ' · ' + op.updatedAt + '：' + op.message) + '</p>').join('')
+    + (feishuAction('restart')?.enabled ? renderFeishuAction('restart') : '')
+    + (d.selfTarget ? '<div class="feishu-self-test">' + (state.feishuSetupBusy && state.feishuLastAction === 'test_message' ? '<p role="status">正在发送测试消息…</p>' : renderFeishuAction('test_message'))
+      + (state.feishuLastAction === 'test_message' && state.feishuActionFeedback ? '<p class="setting-description" role="status">' + escapeHTML(state.feishuActionFeedback) + '</p>' : '') + '</div>' : '');
+  return '<section class="feishu-diagnostics">' + feishuDisclosure('diagnostics', '诊断详情', contents) + '</section>';
+}
+
+function renderFeishuVersions() {
+  const d = state.feishuConfiguration?.diagnostics || {};
+  const summary = '飞书服务 ' + (d.serviceVersion ? 'v' + d.serviceVersion : '未知') + ' · lark-cli ' + (d.cliVersion ? 'v' + d.cliVersion : '未知');
+  return '<p class="feishu-versions setting-description">' + escapeHTML(summary) + '</p>';
+}
+
+function activeFeishuFlow() {
+  const flow = state.feishuConfiguration?.flow;
+  if (!flow?.id || flow.state !== 'pending') return null;
+  if (flow.expiresAt && (!Number.isFinite(Date.parse(flow.expiresAt)) || Date.parse(flow.expiresAt) <= Date.now())) return null;
+  return flow;
+}
+
+function renderFeishuFlow() {
+  const flow = activeFeishuFlow();
+  if (!flow) return '';
+  const qr = typeof flow.qrDataURL === 'string' && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(flow.qrDataURL) ? flow.qrDataURL : '';
+  return '<div class="feishu-flow" data-flow-id="' + escapeHTML(flow.id) + '">'
+    + (qr ? '<div class="feishu-auth"><img src="' + escapeHTML(qr) + '" alt="当前飞书会话二维码"></div>' : '')
+    + (flow.userCode ? '<p class="setting-description">验证码 ' + escapeHTML(flow.userCode) + '</p>' : '')
+    + '<p class="setting-description feishu-wait" role="status">' + (state.feishuSetupBusy ? (state.feishuLastAction === 'cancel_flow' ? '正在取消登录…' : '正在确认登录…') : flow.kind === 'user' ? '请用飞书扫码授权' : '请用飞书扫码创建应用') + '</p>'
+    + '<div class="feishu-login-links">'
+    + (flow.verificationURL ? '<button class="button feishu-text" type="button" data-action="feishu-flow-open" ' + (state.feishuSetupBusy ? 'disabled' : '') + '>在浏览器中授权</button>' : '')
+    + (feishuAction('cancel_flow')?.enabled ? '<button class="button feishu-text" type="button" data-action="feishu-config-cancel_flow" ' + (state.feishuSetupBusy ? 'disabled' : '') + '>' + (flow.kind === 'user' ? '取消登录' : '取消创建') + '</button>' : '') + '</div>'
+    + '<p class="setting-description">' + (flow.kind === 'user' ? '取消本次登录，不撤销已有授权' : '取消本次等待，不删除已创建的应用') + '</p></div>';
+}
+
+function renderFeishuPage() {
+  const snapshot = state.feishuConfiguration;
+  const disabled = state.feishuSetupBusy ? 'disabled' : '';
+  const primaryID = feishuPrimaryAction();
+  let controls = primaryID && primaryID !== 'connect_app' ? renderFeishuAction(primaryID, true) : '';
+  if (feishuAction('connect_app')?.enabled === true) {
+    controls += state.feishuSetupMode === 'existing'
+      ? '<div class="feishu-credentials"><label for="feishu-app-id">App ID</label><input id="feishu-app-id" type="text" data-field="feishu-app-id" autocomplete="off" ' + disabled + '><label for="feishu-app-secret">App Secret</label><input id="feishu-app-secret" type="password" data-field="feishu-app-secret" autocomplete="new-password" ' + disabled + '></div>'
+        + renderFeishuAction('connect_app', primaryID === 'connect_app') + '<button class="button" type="button" data-action="feishu-show-new" ' + disabled + '>收起凭据输入</button>'
+      : '<button class="button" type="button" data-action="feishu-show-existing" ' + disabled + '>接入已有应用</button>';
+  }
+  const flow = renderFeishuFlow();
+  let step = flow + controls;
+  if ((state.feishuSetupBusy || (state.feishuLastAction === 'start_auth' && state.feishuActionOutcome === 'pending' && !snapshot?.flow)) && !flow && state.feishuLastAction !== 'test_message') {
+    step = '<p class="feishu-wait setting-description" role="status"><span class="feishu-spinner" aria-hidden="true"></span>' + (state.feishuLastAction === 'start_auth' ? '正在准备登录…' : state.feishuLastAction === 'logout' ? '正在注销…' : '正在处理…') + '</p>';
+  } else if (!snapshot) step = '<p class="setting-description" role="status">正在读取配置…</p>';
+  if (['expired', 'failed'].includes(snapshot?.flow?.state)) step = '<p class="feishu-step-error">登录未完成或二维码已过期，请重新登录。</p>' + step;
+  if (step) step = '<div class="feishu-step" aria-label="当前配置操作">' + step + '</div>';
+  const error = state.feishuReadError || (state.feishuLastAction !== 'test_message' ? state.feishuSetupError : '') || snapshot?.issues?.find((issue) => !(issue.component === 'operation' && issue.code === 'test_message'))?.message;
+  if (error) step += '<p class="feishu-step-error" role="alert">' + escapeHTML(error) + '</p>';
+  return header('飞书配置', buttonIcon('feishu-configuration-check', 'refresh', state.feishuManualRefresh ? '正在刷新接入状态' : '刷新接入状态', state.feishuManualRefresh ? 'feishu-refreshing' : '', Boolean(disabled || state.feishuManualRefresh)))
+    + '<div class="feishu-page">' + renderFeishuOverview(step) + renderToolchainSettings() + renderFeishuDiagnostics() + renderFeishuVersions()
+    + (snapshot?.auth?.identityValid ? '<div class="feishu-logout">' + renderFeishuAction('logout') + '</div>' : '') + '</div>';
 }
 
 function renderToolchainSettings() {
   const toolchain = state.toolchain;
-  const compatible = toolchain?.schemaVersion === 1;
-  const healthy = compatible && toolchain.healthy;
-  const summary = healthy ? `官方 CLI ${toolchain.version} · ${(toolchain.skills || []).length} 项 Skills 已验证`
-    : compatible ? (toolchain.installed ? `Skills 已安装 ${(toolchain.skills || []).filter((skill) => skill.state === 'managed').length}/${(toolchain.skills || []).length} 项；工具链需要处理。` : '尚未安装官方 CLI 与 Skills。')
-      : '尚未检查官方工具链。';
-  return `<section class="card setting" aria-busy="${state.toolchainBusy}"><div class="setting-title">官方工具链与 Skills</div><div class="setting-description" role="status">${escapeHTML(summary)}</div>${state.toolchainError ? `<div class="setting-description warning" role="alert">${escapeHTML(state.toolchainError)}</div>` : ''}<div class="detail-actions"><button class="button" type="button" data-action="toolchain-status" ${state.toolchainBusy ? 'disabled' : ''}>${state.toolchainBusy ? '正在处理…' : '重新检查'}</button>${!healthy ? `<button class="button" type="button" data-action="toolchain-install" ${state.toolchainBusy ? 'disabled' : ''}>安装官方工具链</button>` : ''}</div></section>`;
+  const title = toolchain?.installationTitle || (state.toolchainError ? '检查失败' : '正在检查安装状态…');
+  const action = toolchain?.installationAction;
+  const details = toolchain?.installationDetails || [];
+  return `<section class="feishu-toolchain feishu-overview" aria-busy="${Boolean(state.toolchainBusy)}"><h3 class="setting-title">Codex 飞书技能</h3><p class="setting-description">让 Codex 使用当前飞书接入的消息、文档、日历等能力。</p><p role="status">${escapeHTML(title)}${toolchain?.healthy ? ` · ${toolchain.skills.length} 项 · ksf-lark-*` : ''}</p><div class="feishu-self-test">${action ? `<button class="button" data-action="toolchain-install" ${state.toolchainBusy ? 'disabled' : ''}>${escapeHTML(action)}</button>` : !toolchain ? `<button class="button" data-action="toolchain-status" ${state.toolchainBusy ? 'disabled' : ''}>检查安装</button>` : ''}</div>${details.length ? `<details><summary>查看具体文件</summary>${details.map(d => `<p class="setting-description">${escapeHTML(d)}</p>`).join('')}</details>` : ''}${state.toolchainError ? `<p role="alert">${escapeHTML(state.toolchainError)}</p>` : ''}</section>`;
+
 }
 
 async function updateToolchain(install = false) {
   if (state.toolchainBusy) return;
-  if (install && !window.confirm('安装此版本附带的官方 CLI、启动器与 Skills？不会覆盖自行修改的文件，也不会自动授权或发送消息。')) return;
+  if (install && !window.confirm('安装当前应用内置的 ksf-lark-* 技能及必要执行入口？迁移本应用管理且未修改的旧版，不覆盖自行修改的文件，不自动授权或发送消息。')) return;
   state.toolchainBusy = true;
   state.toolchainError = '';
   render();
@@ -491,74 +611,109 @@ async function updateToolchain(install = false) {
   }
 }
 
-function renderFeishuActivation(feishu) {
-  const aliases = feishu.targetAliases || [];
-  const selected = state.settings?.selectedFeishuTargetAlias || '';
-  return `<section class="card settings-list"><div class="setting"><div class="setting-title">授权与后台检查已通过</div><div class="setting-description">主动通道当前处于演练模式。确认后会启用真实发送，并向所选别名发送一条连接测试消息。</div><label class="setting-title" for="feishu-target">测试目标</label><select id="feishu-target" data-field="feishu-target" ${!aliases.length ? 'disabled' : ''}><option value="">请选择</option>${aliases.map((alias) => `<option value="${escapeHTML(alias)}" ${alias === selected ? 'selected' : ''}>${escapeHTML(alias)}</option>`).join('')}</select><div class="detail-actions"><button class="button primary" type="button" data-action="feishu-activate" ${!selected ? 'disabled' : ''}>确认启用并发送测试消息</button></div></div></section>`;
+function applyFeishuConfiguration(snapshot, generation) {
+  if (generation !== state.feishuConfigurationGeneration) return false;
+  if (snapshot?.schemaVersion !== 1 || !snapshot.summary || typeof snapshot.summary.title !== 'string'
+    || !Array.isArray(snapshot.facts) || !Array.isArray(snapshot.actions)
+    || typeof snapshot.epoch !== 'string' || !snapshot.epoch || typeof snapshot.contextRevision !== 'string'
+    || !Number.isSafeInteger(snapshot.revision) || snapshot.revision < 0) throw new Error('不支持的配置快照');
+  if (snapshot.facts.some((fact) => !fact || typeof fact.id !== 'string' || typeof fact.title !== 'string')
+    || snapshot.actions.some((action) => !action || typeof action.id !== 'string' || typeof action.title !== 'string' || typeof action.enabled !== 'boolean')
+    || (snapshot.overview?.features && !Array.isArray(snapshot.overview.features))
+    || (snapshot.connection?.targetAliases && !Array.isArray(snapshot.connection.targetAliases))) throw new Error('不支持的配置内容');
+  const previous = state.feishuConfiguration;
+  if (state.feishuRetiredEpochs.has(snapshot.epoch)) return false;
+  if (previous?.epoch === snapshot.epoch && snapshot.revision < previous.revision) return false;
+  if (previous && previous.epoch !== snapshot.epoch) state.feishuRetiredEpochs.add(previous.epoch);
+  state.feishuConfiguration = snapshot;
+  state.feishuReadError = '';
+  if (previous?.flow?.kind === 'user' && !snapshot.flow && snapshot.auth?.identityValid) { state.feishuSetupError = ''; state.feishuActionFeedback = ''; state.feishuActionOutcome = 'completed'; }
+  clearTimeout(state.feishuFlowTimer);
+  if (snapshot.flow?.expiresAt) {
+    const delay = Date.parse(snapshot.flow.expiresAt) - Date.now();
+    if (Number.isFinite(delay) && delay > 0) state.feishuFlowTimer = setTimeout(() => render(), Math.min(delay + 1, 2147483647));
+  }
+  return true;
 }
 
-function renderFeishuQRStep(title, description, qrDataURL, verificationURL, userCode, action, actionLabel) {
-  return `<section class="card setting"><div class="setting-title">${escapeHTML(title)}</div><div class="setting-description">${escapeHTML(description)}</div>${qrDataURL ? `<div class="feishu-auth"><img src="${escapeHTML(qrDataURL)}" alt="飞书授权二维码">${userCode ? `<div class="setting-description">验证码 ${escapeHTML(userCode)}</div>` : ''}</div>` : ''}<div class="detail-actions">${verificationURL ? `<button class="button" type="button" data-action="feishu-open-url" data-url="${escapeHTML(verificationURL)}">在飞书中继续</button>` : ''}<button class="button primary" type="button" data-action="${action}">${escapeHTML(actionLabel)}</button><button class="button" type="button" data-action="feishu-cancel">取消</button></div></section>`;
+async function readFeishuConfiguration(refresh = false, quiet = false) {
+  clearTimeout(state.feishuPollTimer);
+  const generation = ++state.feishuConfigurationGeneration;
+  state.feishuConfigurationLoading = true;
+  state.feishuManualRefresh = state.feishuManualRefresh || refresh;
+  if (!quiet) render();
+  try {
+    const snapshot = await api.readFeishuConfiguration({ refresh });
+    applyFeishuConfiguration(snapshot, generation);
+  } catch {
+    if (generation === state.feishuConfigurationGeneration) state.feishuReadError = '状态更新失败，请刷新重试。';
+  } finally {
+    if (generation === state.feishuConfigurationGeneration) {
+      state.feishuConfigurationLoading = false;
+      state.feishuManualRefresh = state.feishuManualRefresh && !state.feishuReadError && state.feishuConfiguration?.refreshing === true;
+      render();
+      scheduleFeishuConfigurationPoll();
+    }
+  }
 }
 
-function renderFeishuReady(feishu) {
-  const settings = state.settings || {};
-  const overview = state.feishuOverview;
-  const permissions = overview?.permissions || {};
-  const health = overview?.health || {};
-  const permissionState = (value) => value === 'verified' ? '已验证' : value === 'missing' ? '缺少授权' : '暂不可用';
-  const statusRow = (title, value, healthy) => `<div class="setting-head"><div class="setting-copy"><div class="setting-title">${escapeHTML(title)}</div></div><div class="inline-status ${healthy ? 'healthy' : 'warning'}"><span aria-hidden="true"></span>${escapeHTML(value)}</div></div>`;
-  const featureRows = (overview?.features || []).map((feature) => `<div class="setting-head feishu-feature-row"><div class="setting-copy"><label class="setting-title" for="feishu-feature-${escapeHTML(feature.id)}">${escapeHTML(feature.title)}</label><div class="setting-description">${escapeHTML(feature.description)}</div></div><select id="feishu-feature-${escapeHTML(feature.id)}" data-field="feishu-feature" data-feature="${escapeHTML(feature.id)}"><option value="off" ${feature.state === 'off' ? 'selected' : ''}>关闭</option>${feature.writable ? `<option value="dry_run" ${feature.state === 'dry_run' ? 'selected' : ''}>演练</option><option value="live" ${feature.state === 'live' ? 'selected' : ''}>真实执行</option>` : `<option value="enabled" ${feature.state === 'enabled' ? 'selected' : ''}>启用</option>`}</select></div>`).join('');
-  const missing = permissions.missing?.length
-    ? `<div class="setting-description warning">仍需处理：${escapeHTML(permissions.missing.join('、'))}</div><div class="detail-actions"><button class="button" type="button" data-action="feishu-refresh-overview">重新检查</button></div>`
-    : permissions.application === 'verified' && permissions.user === 'verified'
-      ? '<div class="setting-description">基础单聊、卡片回调和 Codex 任务控制已授权。</div>' : '';
-  const targets = feishu.targetAliases || [];
-  return `<section class="card settings-list">
-    <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">飞书服务</div><div class="setting-description">${escapeHTML(overview?.summary || '正在读取可用范围…')}</div></div><div class="inline-status ${feishu.processState === 'degraded' ? 'warning' : 'healthy'}"><span aria-hidden="true"></span>${feishu.processState === 'degraded' ? '需要处理' : '已就绪'}</div></div></div>
-    <div class="setting"><div class="setting-section-title">权限</div>${renderFeishuAuthorization()}${statusRow('应用权限', permissionState(permissions.application), permissions.application === 'verified')}${statusRow('当前用户授权', permissionState(permissions.user), permissions.user === 'verified')}${missing}</div>
-    <div class="setting"><div class="setting-section-title">接收与高级功能</div><div class="setting-head"><div class="setting-copy"><label class="setting-title" for="feishu-profile">本机事件角色</label><div class="setting-description">主设备接收入站事件；仅手动能力仍可主动发送和处理队列。</div></div><select id="feishu-profile" data-field="feishu-profile"><option value="primary" ${feishu.profile === 'primary' ? 'selected' : ''}>主设备</option><option value="manual-only" ${feishu.profile === 'manual-only' ? 'selected' : ''}>仅手动能力</option></select></div>${featureRows}</div>
-    <div class="setting"><div class="setting-section-title">诊断</div>${statusRow('核心服务', health.core === 'running' ? '运行中' : '需要处理', health.core === 'running')}${statusRow('飞书服务', health.bridge === 'running' ? '运行中' : health.bridge || '未知', health.bridge === 'running')}${statusRow('本机事件', health.inbound === 'connected' ? '已连接' : health.inbound === 'manual_only' ? '仅手动能力' : '未连接', health.inbound === 'connected' || health.inbound === 'manual_only')}${health.detail ? `<div class="setting-description">${escapeHTML(health.detail)}</div>` : ''}${feishu.processState === 'degraded' ? '<div class="detail-actions"><button class="button" type="button" data-action="feishu-restart">重新启动</button></div>' : ''}</div>
-    <div class="setting"><div class="setting-section-title">连接测试</div><div class="setting-description">只显示软件已自动授权的别名。</div><div class="setting-head"><select id="feishu-target" data-field="feishu-target" ${!targets.length ? 'disabled' : ''}><option value="">请选择</option>${targets.map((alias) => `<option value="${escapeHTML(alias)}" ${alias === settings.selectedFeishuTargetAlias ? 'selected' : ''}>${escapeHTML(alias)}</option>`).join('')}</select><button class="button" type="button" data-action="feishu-test" ${!settings.selectedFeishuTargetAlias ? 'disabled' : ''}>发送测试消息</button></div></div>
-  </section>`;
-}
-
-function renderFeishuAuthorization() {
-  const auth = state.feishuAuth;
-  const compatible = auth?.schemaVersion === 1;
-  const authorized = compatible && auth.status === 'authorized' && auth.identity === 'user' && auth.profile === 'default' && auth.identityValid && auth.profileValid;
-  const pending = compatible && auth.status === 'pending';
-  const disabled = state.feishuAuthBusy ? 'disabled' : '';
-  const status = authorized ? '已授权' : pending ? '等待飞书确认' : '未验证用户授权';
-  return `<div aria-busy="${state.feishuAuthBusy}"><div class="setting-title" role="status">CLI 用户授权 · ${status}</div><div class="setting-description">身份：${auth?.identity === 'user' ? '用户' : '未验证'} · 配置：default（${auth?.profileValid && auth?.profile === 'default' ? '已验证' : '待验证'}）</div><div class="setting-description">用户授权不代表所有功能权限齐备；补充授权仅申请当前功能所需范围。</div>${auth?.grantedScopeCount > 0 ? `<div class="setting-description">已授予 ${escapeHTML(auth.grantedScopeCount)} 项用户权限</div>` : ''}${auth?.missingCapabilities?.length ? `<div class="setting-description warning">待处理：${escapeHTML(auth.missingCapabilities.join('、'))}</div>` : ''}${pending ? `${auth.qrDataURL ? `<div class="feishu-auth"><img src="${escapeHTML(auth.qrDataURL)}" alt="飞书用户授权二维码"></div>` : ''}${auth.userCode ? `<div class="setting-description">验证码 ${escapeHTML(auth.userCode)}</div>` : ''}<div class="detail-actions">${auth.verificationUrl ? `<button class="button" type="button" data-action="feishu-auth-open" ${disabled}>在飞书中授权</button>` : ''}<button class="button" type="button" data-action="feishu-auth-finish" ${disabled}>我已授权，检查</button></div>` : ''}<div class="detail-actions"><button class="button" type="button" data-action="feishu-auth-status" ${disabled}>${state.feishuAuthBusy ? '正在验证…' : '验证授权'}</button>${!pending ? `<button class="button" type="button" data-action="feishu-auth-start" ${disabled}>${authorized ? '补充授权' : '重新授权'}</button>` : ''}<button class="button danger" type="button" data-action="feishu-auth-logout" ${disabled}>退出授权</button></div>${state.feishuAuthError ? `<div class="setting-description warning" role="alert">${escapeHTML(state.feishuAuthError)}</div>` : ''}</div>`;
-}
-
-async function updateFeishuAuthorization(action = 'status') {
-  if (state.feishuAuthBusy) return;
-  if (action === 'logout' && !window.confirm('退出 default 配置的飞书用户授权并终止等待中的授权？依赖此授权的工具将无法继续使用；应用配置会保留。')) return;
-  const operations = {
-    status: () => api.feishuAuthStatus(), start: () => api.startFeishuAuth(),
-    finish: () => api.finishFeishuAuth(), logout: () => api.logoutFeishuAuth(true),
-  };
-  if (!operations[action]) return;
-  state.feishuAuthBusy = true;
-  state.feishuAuthError = '';
+async function performFeishuConfigurationAction(action, options = {}) {
+  if (["set_feature", "enable_outbound"].includes(action)) return;
+  if (state.feishuSetupBusy || state.feishuReadError || state.feishuSetupError || feishuAction(action)?.enabled !== true) return;
+  const snapshot = state.feishuConfiguration;
+  const payload = { action, requestId: crypto.randomUUID(), epoch: snapshot.epoch, revision: snapshot.revision, contextRevision: snapshot.contextRevision, confirm: false };
+  if (['finish_auth', 'finish_app', 'cancel_flow'].includes(action)) {
+    if (!snapshot.flow?.id) return;
+    payload.flowId = snapshot.flow.id;
+  }
+  if (action === 'test_message') {
+    payload.targetAlias = snapshot.diagnostics?.selfTarget;
+    if (!payload.targetAlias || !snapshot.connection?.targetAliases?.includes(payload.targetAlias)) return;
+  }
+  if (action === 'connect_app') {
+    payload.appId = (root.querySelector('[data-field="feishu-app-id"]')?.value || '').trim();
+    const secretField = root.querySelector('[data-field="feishu-app-secret"]');
+    payload.appSecret = secretField?.value || '';
+    if (!payload.appId || !payload.appSecret) throw new Error('请填写 App ID 和 App Secret；已有配置不会回填凭据');
+    secretField.value = '';
+  }
+  const generation = ++state.feishuConfigurationGeneration;
+  clearTimeout(state.feishuPollTimer);
+  state.feishuLastAction = action;
+  state.feishuSetupError = '';
+  state.feishuActionFeedback = '';
+  state.feishuSetupBusy = true;
   render();
   try {
-    const result = await operations[action]();
-    if (result?.schemaVersion !== 1) throw new Error('unsupported schema');
-    state.feishuAuth = result;
-    if (action === 'finish' || action === 'logout') {
-      state.feishuOverview = await api.feishuOverview();
-      state.dashboard = await api.dashboard();
+    const result = await api.actFeishuConfiguration(payload);
+    if (generation !== state.feishuConfigurationGeneration) return;
+    if (!['completed', 'pending', 'failed', 'unknown'].includes(result?.outcome)) throw new Error('不支持的操作结果');
+    if (!applyFeishuConfiguration(result.snapshot, generation)) return;
+    if (result.outcome === 'failed' && result.cancelled === true) {
+      showToast(result.message || '已取消，未执行配置操作。');
+      return;
     }
+    if (result.outcome === 'unknown' || result.outcome === 'failed') {
+      state.feishuSetupError = (feishuAction(action)?.title || action) + '：' + (result.message || '结果待核实');
+    }
+    state.feishuActionFeedback = result.message || '';
+    state.feishuActionOutcome = result.outcome;
   } catch {
-    state.feishuAuth = null;
-    state.feishuAuthError = '授权操作尚未验证，请重新检查；会话过期后需重新发起授权。';
+    if (generation === state.feishuConfigurationGeneration) { state.feishuSetupError = '操作结果未知，请刷新查看诊断；不会重复执行。'; state.feishuActionFeedback = state.feishuSetupError; }
   } finally {
-    state.feishuAuthBusy = false;
+    payload.appSecret = undefined;
+    state.feishuSetupBusy = false;
     render();
+    scheduleFeishuConfigurationPoll();
   }
+}
+
+function scheduleFeishuConfigurationPoll() {
+  clearTimeout(state.feishuPollTimer);
+  if (state.feishuSetupBusy || state.feishuConfigurationLoading) return;
+  state.feishuPollTimer = setTimeout(() => {
+    if (!state.feishuSetupBusy) void readFeishuConfiguration(false, true);
+  }, 2500);
 }
 
 function selectHomeProjects(items = []) {
@@ -633,28 +788,26 @@ function feishuComponentStatusText(value) {
   if (value.processRunning) return '运行中';
   return ({ stopped: '已停止', notConfigured: '不可用', unavailable: '受限' })[value.availability] || '未运行';
 }
-function feishuProfileText(value) { return ({ primary: '主设备', 'manual-only': '仅手动能力' })[value] || '未配置'; }
-function feishuSetupStageText(value) { return ({ not_started: '尚未配置', app_pending: '等待创建应用', app_configured: '应用已配置', authorization_pending: '等待用户授权', platform_pending: '等待后台确认', verifying: '正在核验', ready: '已就绪', failed: '需要处理' })[value?.stage] || '尚未配置'; }
-function canCreateTaskLink() { return state.dashboard?.feishu?.taskLinkReady && state.settings?.selectedFeishuTargetAlias; }
+
+function taskLinkUnavailableReason() {
+  const blockers = state.dashboard?.feishu?.readinessBlockers || [];
+  if (blockers.includes('taskCardWriteDisabled')) return '飞书写操作已关闭，无法发送或更新任务卡片。请在飞书设置中检查写操作。';
+  if (blockers.includes('taskCardWriteDryRun')) return '飞书写操作处于演练模式，不会实际发送任务卡片。';
+  if (!state.dashboard?.feishu?.taskLinkReady) return '飞书消息或卡片服务未就绪，请在设置中检查飞书连接。';
+  if (!state.settings?.selectedFeishuTargetAlias) return '请先在飞书设置中选择接收人。';
+  return '';
+}
 
 async function refreshStaticData({ page = state.page, force = false } = {}) {
   const reads = [];
   if (!state.staticDataLoaded || force) {
     reads.push(api.settings().then((value) => { state.settings = value; }));
-    reads.push(api.readFeishuSetup().then((value) => { state.feishuSetup = value; }).catch(() => {
-      state.feishuSetup = { stage: 'not_started' };
-    }));
   }
+  if (!state.staticDataLoaded || page === 'feishu' || force) reads.push(readFeishuConfiguration(force));
   if (!state.staticDataLoaded || page === 'pricing' || force) {
     reads.push(api.pricingCatalog().then((value) => { state.pricingCatalog = value; }));
   }
-  if (page === 'feishu') {
-    reads.push(api.feishuOverview().then((value) => { state.feishuOverview = value; }).catch(() => {
-      state.feishuOverview = null;
-    }));
-    reads.push(updateToolchain());
-    reads.push(updateFeishuAuthorization());
-  }
+  if (page === 'feishu') reads.push(updateToolchain());
   await Promise.all(reads);
   state.staticDataLoaded = true;
 }
@@ -684,8 +837,16 @@ function scheduleRefresh() {
 }
 
 async function handleAction(action, element) {
-  if (action === 'feishu-auth-open') return api.openFeishuURL(state.feishuAuth?.verificationUrl);
-  if (action.startsWith('feishu-auth-')) return updateFeishuAuthorization(action.slice('feishu-auth-'.length));
+  if (action === 'feishu-configuration-check') return Promise.all([readFeishuConfiguration(true), updateToolchain()]);
+  if (action.startsWith('feishu-config-')) return performFeishuConfigurationAction(action.slice('feishu-config-'.length));
+  if (action === 'feishu-flow-open') {
+    const flow = activeFeishuFlow();
+    if (flow?.id === element.dataset.flowId && flow.verificationURL) {
+      const snapshot = state.feishuConfiguration;
+      return api.openFeishuFlow({ flowId: flow.id, epoch: snapshot.epoch, contextRevision: snapshot.contextRevision });
+    }
+    return;
+  }
   if (action === 'toolchain-status') return updateToolchain();
   if (action === 'toolchain-install') return updateToolchain(true);
   if (action === 'back') state.page = state.page === 'project' ? 'projects' : ['pricing', 'feishu'].includes(state.page) ? 'settings' : 'home';
@@ -722,47 +883,18 @@ async function handleAction(action, element) {
     state.pricingCatalog = await api.pricingCatalog();
     state.pricingDraft = null;
   }
-  else if (action === 'refresh') return refreshDashboard();
+  else if (action === 'refresh') return state.page === 'feishu' ? readFeishuConfiguration(true) : refreshDashboard();
   else if (action === 'quit') return api.quit();
   else if (action === 'project-detail') { state.selectedProjectId = element.dataset.id; state.page = 'project'; }
   else if (action === 'task-detail') { state.selectedTaskId = element.dataset.task; state.page = 'task'; }
   else if (action === 'pin') { await api.setPinned(element.dataset.id, element.dataset.pinned !== 'true'); return refreshDashboard({ quiet: true }); }
   else if (action === 'choose-ksf') { if (await api.chooseDirectory('ksfRoot')) return refreshDashboard(); }
-  else if (action === 'feishu-test') { await api.sendFeishuTest(state.settings.selectedFeishuTargetAlias); showToast('测试消息已发送'); }
-  else if (action === 'feishu-refresh-overview') { await refreshStaticData({ page: 'feishu', force: true }); render(); return; }
-  else if (action === 'feishu-restart') { await api.restartFeishu(); showToast('飞书服务重启请求已提交'); return refreshDashboard({ quiet: true }); }
-  else if (action === 'feishu-show-existing') state.feishuSetupMode = 'existing';
-  else if (action === 'feishu-begin-existing') {
-    const appId = root.querySelector('[data-field="feishu-app-id"]')?.value || '';
-    const appSecret = root.querySelector('[data-field="feishu-app-secret"]')?.value || '';
-    if (!appId.trim() || !appSecret) throw new Error('请在软件内填写 App ID 和 App Secret');
-    const result = await api.beginFeishuSetup({ mode: 'existing', appId: appId.trim(), appSecret });
-    state.feishuSetup = result.setup;
-    state.feishuSetupPayload = result;
-  }
-  else if (action === 'feishu-continue') {
-    const result = await api.continueFeishuSetup();
-    state.feishuSetup = result.setup;
-    state.feishuSetupPayload = result;
-  }
-  else if (action === 'feishu-verify') {
-    state.feishuSetup = { ...state.feishuSetup, stage: 'verifying' };
+  else if (action === 'feishu-show-existing' || action === 'feishu-show-new') {
+    if (state.feishuSetupBusy || state.feishuConfigurationLoading || feishuAction('connect_app')?.enabled !== true) return;
+    state.feishuSetupMode = action === 'feishu-show-existing' ? 'existing' : 'new';
     render();
-    const result = await api.verifyFeishuSetup();
-    state.feishuSetup = result.setup;
-    state.feishuSetupPayload = result;
+    return;
   }
-  else if (action === 'feishu-activate') {
-    const targetAlias = state.settings?.selectedFeishuTargetAlias || '';
-    if (!targetAlias) throw new Error('请选择软件内显示的测试目标');
-    const result = await api.activateFeishuSetup(targetAlias);
-    state.feishuSetup = result.setup;
-    state.feishuSetupPayload = result;
-    showToast(`飞书服务已启用，测试消息已发送到“${targetAlias}”`);
-    return refreshDashboard({ quiet: true });
-  }
-  else if (action === 'feishu-cancel') { state.feishuSetup = await api.cancelFeishuSetup(); state.feishuSetupPayload = null; state.feishuSetupMode = 'existing'; }
-  else if (action === 'feishu-open-url') return api.openFeishuURL(element.dataset.url);
   else if (action === 'open-task') return api.openTask(element.dataset.thread);
   else if (action.startsWith('open-folder:')) { const project = findProject(action.split(':').slice(1).join(':')); return api.openPath(project.projectDirectory); }
   else if (action.startsWith('launch-project:')) return api.launchProject(action.split(':').slice(1).join(':'));
@@ -775,6 +907,8 @@ async function handleAction(action, element) {
     showToast(result.warning || '任务已创建并在 Codex 中打开', Boolean(result.warning));
     return refreshDashboard({ quiet: true });
   } else if (action === 'toggle-link') {
+    const reason = taskLinkUnavailableReason();
+    if (element.dataset.linked !== 'true' && reason) { showToast(reason, true); return; }
     const payload = { threadId: element.dataset.thread, title: element.dataset.title, projectName: element.dataset.project, targetAlias: state.settings.selectedFeishuTargetAlias };
     if (element.dataset.linked === 'true') await api.releaseTaskLink(payload); else await api.createTaskLink(payload);
     return refreshDashboard({ quiet: true });
@@ -823,6 +957,21 @@ root.addEventListener('click', async (event) => {
   finally { target.disabled = false; }
 });
 
+root.addEventListener('toggle', (event) => {
+  const section = event.target.dataset.feishuSection;
+  if (!section) return;
+  state.feishuSections[section] = event.target.open;
+  if (event.target.open) {
+    for (const other of root.querySelectorAll('details[data-feishu-section]')) {
+      if (other !== event.target) {
+        other.open = false;
+        state.feishuSections[other.dataset.feishuSection] = false;
+      }
+    }
+  }
+  reportHeight();
+}, true);
+
 root.addEventListener('input', (event) => {
   if (event.target.dataset.draft && state.pricingDraft) {
     state.pricingDraft[event.target.dataset.draft] = event.target.value;
@@ -839,20 +988,10 @@ root.addEventListener('input', (event) => {
 root.addEventListener('change', async (event) => {
   try {
     if (event.target.dataset.field === 'feishu-target') {
+      if (state.feishuSetupBusy) return;
       state.settings = await api.updateSettings({ selectedFeishuTargetAlias: event.target.value });
     }
-    if (event.target.dataset.field === 'feishu-profile') {
-      await api.setFeishuProfile(event.target.value);
-      state.dashboard = await api.dashboard();
-    }
-    if (event.target.dataset.field === 'feishu-feature') {
-      const feature = event.target.dataset.feature;
-      const mode = event.target.value;
-      const confirmRealWrite = mode === 'live' && window.confirm('允许真实执行后，此功能可以处理真实写入操作。是否继续？');
-      if (mode === 'live' && !confirmRealWrite) { await refreshDashboard({ quiet: true }); return; }
-      state.feishuOverview = await api.updateFeishuFeature({ feature, mode, confirmRealWrite });
-      state.dashboard = await api.dashboard();
-    }
+
     if (event.target.dataset.field === 'launch-login') {
       state.settings = await api.updateSettings({ launchAtLogin: event.target.checked });
     }
@@ -892,6 +1031,12 @@ root.addEventListener('submit', async (event) => {
 });
 
 new ResizeObserver(reportHeight).observe(root);
+document.addEventListener('visibilitychange', () => {
+  // Visibility affects rendering, never the authorization observation lifecycle.
+  if (!document.hidden && !state.feishuSetupBusy && !state.feishuConfigurationLoading) {
+    void readFeishuConfiguration(false, true);
+  }
+});
 window.addEventListener('keydown', (event) => { if (event.key === 'Escape') state.page === 'home' ? api.hide() : handleAction('back', root); });
 window.addEventListener('focus', () => refreshDashboard({ quiet: true }));
 

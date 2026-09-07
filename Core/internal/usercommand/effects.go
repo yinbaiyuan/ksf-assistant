@@ -38,7 +38,7 @@ func commandEffects(command Command, parsed parsed) []Effect {
 	path := parsed.spec.path
 	if path == "docs +update" && includes("overwrite str_replace", parsed.flags["command"]) && parsed.flags["command"] != "" {
 		add("docs.shortcut.update", "destructive")
-		add("docs.service.document.overwrite", "destructive")
+		add("docs.shortcut.overwrite", "destructive")
 	}
 	if path == "im +messages-send" || path == "im +messages-reply" {
 		for _, name := range strings.Fields(parsed.spec.files) {

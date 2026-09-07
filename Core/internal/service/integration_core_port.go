@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"ksfassistant/core/internal/capabilitypolicy"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"ksfassistant/core/internal/corebridge"
+	"ksfassistant/core/internal/desktop"
 )
 
 type coreCapabilityClient struct {
@@ -102,6 +104,9 @@ func (client *coreCapabilityClient) AnswerInput(ctx context.Context, taskKey, ru
 }
 
 func (client *coreCapabilityClient) control(ctx context.Context, request corebridge.ControlRequest) (corebridge.ControlResult, error) {
+	if err := capabilitypolicy.CheckSession(client.service.feishuDataRoot); err != nil {
+		return corebridge.ControlResult{}, err
+	}
 	request.Protocol = corebridge.Protocol
 	request.RequestID = "bridge:" + strconv.FormatInt(time.Now().UnixMilli(), 10) + ":" + strconv.FormatUint(client.nextID.Add(1), 10)
 	if request.TaskKey == "" {
@@ -116,4 +121,22 @@ func pendingRequestID(raw json.RawMessage) string {
 		return value
 	}
 	return string(raw)
+}
+
+func (c *coreCapabilityClient) ObserveThread(ctx context.Context, owner, thread, turn string) (map[string]any, string, error) {
+	if owner == "bridge" {
+		s, e := c.ReadThread(ctx, owner, thread, turn)
+		return s, "", e
+	}
+	if c.service.desktop == nil {
+		return nil, "", fmt.Errorf("Desktop IPC unavailable")
+	}
+	t, e := c.service.desktop.ObserveConversationState(ctx, thread)
+	if e != nil {
+		return nil, "", e
+	}
+	c.mu.Lock()
+	c.owners[thread] = t.OwnerClientID
+	c.mu.Unlock()
+	return t.State, desktop.ObservationVersion(t), nil
 }

@@ -97,7 +97,7 @@ func (repo workRepository) migrationMarker() string {
 }
 
 func (repo workRepository) ensure() error {
-	if !contains([]string{"actionbox", "docbox", "outbox"}, repo.kind) {
+	if !contains([]string{"actionbox", "outbox"}, repo.kind) {
 		return errors.New("unsupported workbox kind")
 	}
 	for _, state := range []string{"pending", "running", "terminal"} {

@@ -3,12 +3,6 @@ import CoreGraphics
 import KSFAssistantCore
 
 @MainActor
-private final class UserApprovalPanel: NSPanel {
-    var cancelHandler: (() -> Void)?
-    override func cancelOperation(_ sender: Any?) { cancelHandler?() }
-}
-
-@MainActor
 final class UserApprovalController: NSObject, NSWindowDelegate {
     private let core: CoreServiceProcessClient
     private var polling: Task<Void, Never>?
@@ -54,6 +48,10 @@ final class UserApprovalController: NSObject, NSWindowDelegate {
         for (center, token) in observers { center.removeObserver(token) }
         observers.removeAll()
         _ = try? await core.pollUserApproval(interactive: false)
+    }
+
+    var allowsConfigurationSubmission: Bool {
+        interactive && panel == nil && active == nil
     }
 
     private var interactive: Bool {
@@ -113,60 +111,29 @@ final class UserApprovalController: NSObject, NSWindowDelegate {
 
     private func present(_ request: UserApprovalRequest) {
         guard panel == nil, interactive else { return }
-        let panel = UserApprovalPanel(contentRect: NSRect(x: 0, y: 0, width: 640, height: 530), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        let panel = UserApprovalPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 320), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         panel.cancelHandler = { [weak self] in self?.decide(false) }
-        panel.title = "KSFAssistant · 用户身份操作批准"
+        panel.title = "KSFAssistant · 飞书操作"
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
         panel.delegate = self
-        panel.minSize = NSSize(width: 480, height: 360)
-        guard let container = panel.contentView else { return }
-        let title = NSTextField(wrappingLabelWithString: "本机受管工具请求以你的身份操作飞书\n批准仅限本次操作；请完整查看以下内容。")
-        title.font = .boldSystemFont(ofSize: 13)
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
-        let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 596, height: 360))
-        text.isEditable = false
-        text.isSelectable = true
-        text.isRichText = false
-        text.isAutomaticLinkDetectionEnabled = false
-        text.font = .systemFont(ofSize: 12)
-        text.string = request.details
-        text.isVerticallyResizable = true
-        text.isHorizontallyResizable = false
-        text.autoresizingMask = [.width]
-        text.textContainer?.widthTracksTextView = true
-        text.textContainer?.containerSize = NSSize(width: 596, height: CGFloat.greatestFiniteMagnitude)
-        scroll.documentView = text
-        let reject = NSButton(title: "拒绝", target: self, action: #selector(rejectPressed))
-        reject.keyEquivalent = "\r"
-        let approve = NSButton(title: "批准本次操作", target: self, action: #selector(approvePressed))
-        approve.keyEquivalent = ""
-        for view in [title, scroll, reject, approve] {
-            view.translatesAutoresizingMaskIntoConstraints = false
-            container.addSubview(view)
+        let content = UserApprovalContentView(request: request) { [weak self] approve in self?.decide(approve) }
+        panel.contentView = content
+        let maximumHeight = max(240, (NSScreen.main?.visibleFrame.height ?? 800) - 100)
+        content.onSizeChange = { [weak panel, weak content] in
+            guard let panel, let content else { return }
+            let top = panel.frame.maxY
+            panel.setContentSize(content.preferredSize(maximumHeight: maximumHeight))
+            panel.setFrameOrigin(NSPoint(x: panel.frame.minX, y: top - panel.frame.height))
         }
-        NSLayoutConstraint.activate([
-            title.topAnchor.constraint(equalTo: container.topAnchor, constant: 16),
-            title.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            title.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
-            scroll.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 12),
-            scroll.leadingAnchor.constraint(equalTo: title.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: title.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: reject.topAnchor, constant: -16),
-            reject.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -16),
-            approve.centerYAnchor.constraint(equalTo: reject.centerYAnchor),
-            approve.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
-            reject.trailingAnchor.constraint(equalTo: approve.leadingAnchor, constant: -12)
-        ])
-        panel.defaultButtonCell = reject.cell as? NSButtonCell
+        panel.setContentSize(content.preferredSize(maximumHeight: maximumHeight))
+        panel.defaultButtonCell = nil
         self.panel = panel
         active = request
         panel.center()
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
-        panel.makeFirstResponder(reject)
+        panel.makeFirstResponder(content.cancelButton)
     }
 
     @objc private func rejectPressed() { decide(false) }

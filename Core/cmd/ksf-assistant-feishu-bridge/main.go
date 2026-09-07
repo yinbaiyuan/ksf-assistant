@@ -15,13 +15,14 @@ import (
 
 	"crypto/sha256"
 	"encoding/hex"
+	"ksfassistant/core/internal/capabilitypolicy"
 	"ksfassistant/core/internal/feishu"
 	"ksfassistant/core/internal/feishucli"
 	"ksfassistant/core/internal/feishuprotocol"
 	"ksfassistant/core/internal/privateipc"
 )
 
-const version = "0.11.0-preview.3"
+const version = "0.11.0-preview.4"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -74,25 +75,9 @@ func run(arguments []string) error {
 		executor.Profile = "default"
 	}
 	defer feishu.CancelUserAuthFlow(dataRoot)
+	defer feishu.CancelAppConfiguration(dataRoot)
 	var messageClient *feishu.OfficialMessageClient
-	if settings.Profile == feishu.ProfilePrimary || settings.Outbound.Enabled {
-		if probe := feishu.ProbeLarkCLI(ctx, executor.Binary); probe.State != "ready" {
-			err = errors.New("fixed_lark_cli_unavailable")
-		} else {
-			var identity map[string]any
-			identity, err = executor.RunAuthJSON(ctx, []string{"auth", "status", "--json"}, nil, 5*time.Second)
-			if err == nil {
-				identities, _ := identity["identities"].(map[string]any)
-				bot, _ := identities["bot"].(map[string]any)
-				appID, _ := identity["appId"].(string)
-				if bot["available"] != true || identity["brand"] != "feishu" {
-					err = errors.New("official_cli_bot_identity_unavailable")
-				} else {
-					messageClient, err = feishu.NewOfficialMessageClient(appID, executor)
-				}
-			}
-		}
-	}
+	messageClient, err = managedMessageClient(ctx, executor)
 	serviceExecutor := feishu.UnifiedCapabilityExecutor{LongTail: executor, DataRoot: dataRoot}
 	capabilityService := feishu.NewCapabilityService(dataRoot, serviceExecutor, nil)
 	rpcServer := newBridgeRPCServer(dataRoot, settings, capabilityService)
@@ -105,32 +90,21 @@ func run(arguments []string) error {
 	go func() { parentClosed <- peer.Serve(ctx) }()
 
 	go feishu.RunLifecycleMaintenance(ctx, dataRoot)
-	var docbox *feishu.Docbox
 	var outbox *feishu.Outbox
 	if err := capabilityService.RecoverInterrupted(1000); err != nil {
 		return err
 	}
-	if settings.Actionbox.Enabled {
-		go runOperationReconciliation(ctx, capabilityService)
-	}
-	if settings.Docbox.Enabled {
-		docbox = feishu.NewDocbox(dataRoot)
-	}
-	if settings.Outbound.Enabled && messageClient != nil {
+	go runOperationReconciliation(ctx, capabilityService)
+	if messageClient != nil {
 		outbox = feishu.NewOutbox(dataRoot)
 	}
 	scheduler := feishu.NewWorkScheduler(dataRoot)
 	rpcServer.mu.Lock()
 	rpcServer.scheduler = scheduler
 	rpcServer.mu.Unlock()
-	if settings.Actionbox.Enabled {
-		scheduler.RegisterCapabilityService(capabilityService)
-	}
-	if docbox != nil {
-		scheduler.RegisterDocbox(docbox, executor, settings.Docbox.DryRun)
-	}
+	scheduler.RegisterCapabilityService(capabilityService)
 	if outbox != nil {
-		scheduler.RegisterOutbox(outbox, rpcServer.transport, settings.Outbound.DryRun)
+		scheduler.RegisterOutbox(outbox, rpcServer.transport, false)
 	}
 	schedulerDone := make(chan struct{})
 	defer func() {
@@ -149,10 +123,10 @@ func run(arguments []string) error {
 		}
 	}()
 	var inbound *feishu.OfficialInbound
-	if settings.Profile == feishu.ProfilePrimary && messageClient != nil {
+	if messageClient != nil {
 		eventState := feishu.NewEventConsumerStateStore(dataRoot)
-		_ = eventState.UpdateConnection(settings.Profile, "starting")
-		defer eventState.UpdateConnection(settings.Profile, "disconnected")
+		_ = eventState.UpdateConnection("starting")
+		defer eventState.UpdateConnection("disconnected")
 		deliver := func(callCtx context.Context, kind, id string, value any) error {
 			payload, err := json.Marshal(value)
 			if err != nil {
@@ -176,13 +150,13 @@ func run(arguments []string) error {
 		processor, processorErr := feishu.NewInboundProcessor(dataRoot, settings,
 			func(callCtx context.Context, message feishu.InboundMessage) error {
 				if err := rpcServer.transport.BindInbound(message); err != nil {
-					return err
+					return &feishu.DeliveryError{Stage: "local_binding", Err: err}
 				}
 				return deliver(callCtx, "message", message.EventID, message)
 			},
 			func(callCtx context.Context, card feishu.InboundCardAction) error {
 				if err := rpcServer.transport.BindCard(card); err != nil {
-					return err
+					return &feishu.DeliveryError{Stage: "local_binding", Err: err}
 				}
 				return deliver(callCtx, "card", card.EventID, card)
 			})
@@ -203,7 +177,7 @@ func run(arguments []string) error {
 						return err
 					}
 					return eventState.MarkReceived(eventKey)
-				}, func(state string) { _ = eventState.UpdateConnection(settings.Profile, state) })
+				}, func(state string) { _ = eventState.UpdateConnection(state) })
 			if err != nil {
 				rpcServer.degrade(err)
 			} else {
@@ -223,6 +197,29 @@ func run(arguments []string) error {
 		}
 	}
 	return nil
+}
+
+func managedMessageClient(ctx context.Context, executor feishu.CapabilityExecutor) (*feishu.OfficialMessageClient, error) {
+	if probe := feishu.ProbeLarkCLI(ctx, executor.Binary); probe.State != "ready" {
+		return nil, errors.New("fixed_lark_cli_unavailable")
+	}
+	identity, err := executor.RunAuthJSON(ctx, []string{"auth", "status", "--json"}, nil, 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	identities, _ := identity["identities"].(map[string]any)
+	bot, _ := identities["bot"].(map[string]any)
+	user, _ := identities["user"].(map[string]any)
+	if user["available"] == false && user["status"] == "missing" && user["verified"] != true {
+		if err := capabilitypolicy.SignOut(executor.DataRoot); err != nil {
+			return nil, err
+		}
+	}
+	appID, _ := identity["appId"].(string)
+	if bot["available"] != true || identity["brand"] != "feishu" {
+		return nil, errors.New("official_cli_bot_identity_unavailable")
+	}
+	return feishu.NewOfficialMessageClient(appID, executor)
 }
 
 func runBridgeSnapshotPublisher(ctx context.Context, peer *privateipc.Peer, server *bridgeRPCServer) {
@@ -250,7 +247,7 @@ func runBridgeSnapshotPublisher(ctx context.Context, peer *privateipc.Peer, serv
 func runOperationReconciliation(ctx context.Context, service *feishu.CapabilityService) {
 	_ = service.ExpireAwaiting(100)
 	_ = service.ReconcileUnknown(ctx, 20)
-	ticker := time.NewTicker(time.Minute)
+	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
 		select {
@@ -264,15 +261,11 @@ func runOperationReconciliation(ctx context.Context, service *feishu.CapabilityS
 }
 
 func runInboundRecovery(ctx context.Context, processor *feishu.InboundProcessor) {
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
+	for ctx.Err() == nil {
+		if processor.WaitRecovery(ctx) != nil {
 			return
-		case <-ticker.C:
-			_ = processor.Recover(ctx)
 		}
+		_ = processor.Recover(ctx)
 	}
 }
 

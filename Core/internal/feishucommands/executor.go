@@ -28,6 +28,9 @@ func Execute(ctx context.Context, root string, capability *feishu.CapabilityServ
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if request.Command == "auth" {
+		return nil, errors.New("configuration_desktop_required: 请在 KSFAssistant 桌面管理应用、授权与远程操作者")
+	}
 	if request.Command == "task-link" {
 		return nil, errors.New("task-link commands require the Core integration gateway")
 	}

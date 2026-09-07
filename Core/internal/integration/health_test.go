@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,22 @@ func waitHealthDetail(t *testing.T, runtime *Runtime, wanted string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("missing health error %s: %#v", wanted, runtime.Health())
+}
+
+func TestHistoricalFailuresRemainVisibleWithoutBlockingNewTasks(t *testing.T) {
+	runtime := testRuntime(t, &fakeCorePort{}, &fakeFeishuPort{})
+	runtime.inbox.file.Events = []inboxEvent{{Event: feishuprotocol.Event{ID: "old-uncertain-action"}, State: "outcome_unknown", FinishedAt: time.Now()}}
+	runtime.setHealth("task card reconciliation failed", errors.New("old card is unavailable"))
+	if runtime.Health().State != "degraded" || !runtime.CanCreateTaskLink() {
+		t.Fatal("historical card warning disabled an unrelated new connection or disappeared")
+	}
+	runtime.setHealth("event acceptance persistence failed", errors.New("disk unavailable"))
+	if runtime.CanCreateTaskLink() {
+		t.Fatal("storage failure allowed new connections")
+	}
+	if runtime.inbox.file.Events[0].State != "outcome_unknown" {
+		t.Fatal("uncertain event was replayed or cleared")
+	}
 }
 
 func TestClaimPersistenceFailureIsVisibleAndDoesNotDispatch(t *testing.T) {

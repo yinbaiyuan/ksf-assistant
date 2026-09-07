@@ -33,6 +33,20 @@ formats staged asset references into the prompt.
 Neutral JSON contracts live in `internal/feishutypes`; private JSON, file locking
 and atomic replacement helpers live in `internal/privatestore`.
 
+## Codex runtime and turn outcome
+
+The Core resolves an explicit `CODEX_BIN` first, then installed Desktop bundle
+runtimes, then PATH and standalone CLI locations. This keeps bridge-owned turns
+on the Desktop runtime when an older standalone CLI cannot execute the model
+selected in the shared Codex configuration. No model or account settings change.
+
+A Codex `completed` status alone does not prove the request was handled. Both
+bridge observation and Desktop card reconciliation require a nonempty final
+agent reply and no turn error before displaying success. Legacy agent messages
+without a phase remain supported; commentary alone is not a final reply. Empty
+completion is displayed as failed with an explanation and can be retried by the
+user. It never triggers an automatic replay of the original request.
+
 ## Persistence and execution safety
 
 Task storage remains `task-links-v1.json`, protocol
@@ -72,3 +86,16 @@ Undelivered buffer overflow remains in the existing daemon workbox for recovery.
 Offline validation: `GOPROXY=off GOSUMDB=off go test -race ./internal/integration`
 and the Feishu `TestDelivery`, `TestInboundProcessor`, `TestNormalizeInbound`,
 `TestStageInboundMessage` tests. All new execution tests use fake ports.
+
+## Card delivery and readiness
+
+A durable task-link reservation is not a delivered card. Public projections use
+`pending` until Feishu returns the root message ID, then `active`. Failed sends
+retain their original link/idempotency identity for an explicit user retry;
+refreshing the dashboard must not turn a failed send into a connected UI.
+
+`Health()` includes historical unknown outcomes and old card reconciliation
+failures. `CanCreateTaskLink()` separately gates new tasks on current runtime and
+storage/worker health. Historical warnings remain visible and are never cleared
+or replayed merely to enable a new, unrelated task. Missing/corrupt stores still
+block task-link readiness in the host.

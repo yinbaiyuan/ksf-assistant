@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"ksfassistant/core/internal/capabilitypolicy"
 	"net/url"
 	"os"
 	"os/exec"
@@ -19,8 +20,12 @@ type CLICommandError struct {
 	ExitCode     int
 	HTTPStatus   int
 	Confirmation bool
+	retryAfter   time.Duration
+	errorClass   string
 	cause        error
 }
+
+func (failure *CLICommandError) RetryDelay() time.Duration { return failure.retryAfter }
 
 func (failure *CLICommandError) Unwrap() error { return failure.cause }
 
@@ -28,10 +33,13 @@ func (failure *CLICommandError) Error() string {
 	if failure.Confirmation {
 		return "lark_cli_confirmation_required"
 	}
-	return fmt.Sprintf("lark_cli_failed: exit=%d status=%d", failure.ExitCode, failure.HTTPStatus)
+	return fmt.Sprintf("lark_cli_failed: exit=%d status=%d class=%s", failure.ExitCode, failure.HTTPStatus, failure.errorClass)
 }
 
 func (runner CapabilityExecutor) CallMessage(ctx context.Context, request MessageCLIRequest) (map[string]any, error) {
+	if err := capabilitypolicy.CheckSession(runner.DataRoot); err != nil {
+		return nil, err
+	}
 	key := request.Resource + "." + request.Method
 	switch key {
 	case "messages.create", "messages.reply", "messages.patch", "messages.get", "images.create", "files.create":
@@ -141,6 +149,12 @@ func messageCLIError(err error) error {
 	failure := &CLICommandError{ExitCode: execution.ExitCode, Confirmation: execution.ExitCode == 10 || execution.Structured["type"] == "confirmation", cause: err}
 	if status, ok := execution.Structured["http_status"].(int); ok && status >= 100 && status <= 599 {
 		failure.HTTPStatus = status
+	}
+	if kind, ok := execution.Structured["type"].(string); ok && (kind == "authentication" || kind == "authorization") {
+		failure.errorClass = kind
+	}
+	if seconds, ok := execution.Structured["retry_after"].(float64); ok {
+		failure.retryAfter = time.Duration(seconds * float64(time.Second))
 	}
 	return failure
 }

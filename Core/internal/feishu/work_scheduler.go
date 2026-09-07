@@ -69,19 +69,6 @@ func (scheduler *WorkScheduler) RegisterCapabilityService(service *CapabilitySer
 	})
 }
 
-func (scheduler *WorkScheduler) RegisterDocbox(box *Docbox, executor CapabilityExecutor, dryRun bool) {
-	if box == nil {
-		return
-	}
-	scheduler.queues = append(scheduler.queues, &scheduledWorkQueue{
-		kind: "docbox", repo: box.repository,
-		migrate: func() error { return box.repository.migrateLegacy(box.queuePath(), box.resultPath(), box.statePath()) },
-		handle: func(ctx context.Context, item WorkItemV3) error {
-			return box.processClaimed(ctx, item, executor, dryRun)
-		},
-	})
-}
-
 func (scheduler *WorkScheduler) RegisterOutbox(box *Outbox, sender MessageSender, dryRun bool) {
 	if box == nil {
 		return

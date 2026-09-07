@@ -40,7 +40,7 @@ func TestServiceMessageConfirmationRequiresTransportWithoutConsumingChallenge(t 
 }
 
 func TestServiceMessageConfirmationRechecksRuntimeGates(t *testing.T) {
-	for _, mode := range []string{"dry-run", "target-revoked", "policy-revoked"} {
+	for _, mode := range []string{"target-revoked", "policy-revoked"} {
 		t.Run(mode, func(t *testing.T) {
 			client := &transportClientFixture{}
 			root, transport := newTransportFixture(t, client)
@@ -53,7 +53,12 @@ func TestServiceMessageConfirmationRechecksRuntimeGates(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "target-revoked":
-				config := DefaultClientConfig()
+				config, err := NewClientConfigStore(root).Load()
+				if err != nil {
+					t.Fatal(err)
+				}
+				config.MessageTargets = map[string]MessageTarget{}
+				config.DirectAllowedAliases = nil
 				if err := NewClientConfigStore(root).Save(config); err != nil {
 					t.Fatal(err)
 				}

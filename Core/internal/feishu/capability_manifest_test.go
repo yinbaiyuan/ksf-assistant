@@ -116,20 +116,6 @@ func TestSDKMessageSendUsesGovernedGoBackend(t *testing.T) {
 	}
 }
 
-func TestDocumentServiceEntryPointsAreFixedAndGoverned(t *testing.T) {
-	cases := map[string]string{
-		"docs.service.document.create":    "write",
-		"docs.service.document.append":    "write",
-		"docs.service.document.overwrite": "destructive",
-	}
-	for id, risk := range cases {
-		definition, ok := CapabilityByID(id)
-		if !ok || definition.Queue != "docbox" || definition.Risk != risk {
-			t.Fatalf("%s definition = %#v found=%v", id, definition, ok)
-		}
-	}
-}
-
 func TestOverwriteMoveAndHistoryRollbackAreDestructiveByDefault(t *testing.T) {
 	for _, id := range []string{
 		"sheets.shortcut.range.move",
@@ -170,7 +156,7 @@ func TestAllPublishedDestructiveCapabilitiesCanBeIndividuallyGoverned(t *testing
 			t.Fatalf("%s retains incorrect hard-delete metadata", definition.ID)
 		}
 	}
-	if count != 101 {
-		t.Fatalf("published destructive count = %d, want 101", count)
+	if count != 100 {
+		t.Fatalf("published destructive count = %d, want 100", count)
 	}
 }

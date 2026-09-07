@@ -3736,92 +3736,6 @@
       "executionClass": "standard"
     },
     {
-      "id": "docs.service.document.append",
-      "backend": "lark-cli",
-      "risk": "write",
-      "effect": "update",
-      "reversibility": "reversible",
-      "guardProfile": "none",
-      "preflight": {
-        "id": "docs.shortcut.fetch",
-        "map": {
-          "doc": "target-value"
-        },
-        "defaults": {
-          "detail": "simple",
-          "doc-format": "markdown",
-          "scope": "full"
-        }
-      },
-      "reread": {
-        "id": "docs.shortcut.fetch",
-        "map": {
-          "doc": "target-value"
-        },
-        "defaults": {
-          "detail": "simple",
-          "doc-format": "markdown",
-          "scope": "full"
-        }
-      },
-      "conflictKey": [
-        "target-value"
-      ],
-      "retryClass": "never",
-      "executionClass": "standard"
-    },
-    {
-      "id": "docs.service.document.create",
-      "backend": "lark-cli",
-      "risk": "write",
-      "effect": "create",
-      "reversibility": "reversible",
-      "guardProfile": "none",
-      "conflictKey": [
-        "target-value"
-      ],
-      "retryClass": "never",
-      "executionClass": "standard"
-    },
-    {
-      "id": "docs.service.document.overwrite",
-      "backend": "lark-cli",
-      "risk": "destructive",
-      "effect": "overwrite",
-      "reversibility": "potentially-reversible",
-      "guardProfile": "bounded",
-      "preflight": {
-        "id": "docs.shortcut.fetch",
-        "map": {
-          "doc": "target-value"
-        },
-        "defaults": {
-          "detail": "simple",
-          "doc-format": "markdown",
-          "scope": "full"
-        }
-      },
-      "reread": {
-        "id": "docs.shortcut.fetch",
-        "map": {
-          "doc": "target-value"
-        },
-        "defaults": {
-          "detail": "simple",
-          "doc-format": "markdown",
-          "scope": "full"
-        }
-      },
-      "postcondition": {
-        "kind": "observed_not_proven"
-      },
-      "conflictKey": [
-        "target-value"
-      ],
-      "retryClass": "never",
-      "executionClass": "standard"
-    },
-    {
       "id": "docs.shortcut.create",
       "backend": "lark-cli",
       "risk": "write",
@@ -4041,26 +3955,6 @@
       "effect": "update",
       "reversibility": "unknown",
       "guardProfile": "none",
-      "conflictKey": [
-        "$capability"
-      ],
-      "retryClass": "never",
-      "executionClass": "standard"
-    },
-    {
-      "id": "docs.whiteboard.insert",
-      "backend": "lark-cli",
-      "risk": "write",
-      "effect": "update",
-      "reversibility": "unknown",
-      "guardProfile": "none",
-      "reread": {
-        "id": "docs.history.list",
-        "map": {
-          "doc": "doc"
-        },
-        "defaults": null
-      },
       "conflictKey": [
         "$capability"
       ],

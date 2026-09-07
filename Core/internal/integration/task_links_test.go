@@ -43,7 +43,7 @@ func TestPublicLinksDeduplicatesLegacyTaskKeys(t *testing.T) {
 	now := time.Now().UTC()
 	links := []TaskLink{
 		{TaskKey: "same", LinkState: "released", UpdatedAt: now.Add(time.Minute)},
-		{TaskKey: "same", LinkState: "active", ExpiresAt: now.Add(time.Hour), UpdatedAt: now},
+		{TaskKey: "same", RootMessageID: "delivered-card", LinkState: "active", ExpiresAt: now.Add(time.Hour), UpdatedAt: now},
 	}
 	public := PublicLinks(links)
 	if len(public) != 1 || public[0].LinkState != "active" {

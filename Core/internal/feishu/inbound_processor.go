@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"ksfassistant/core/internal/feishutypes"
+	"ksfassistant/core/internal/retrypolicy"
 	"os"
 	"strings"
 	"sync"
@@ -43,6 +44,7 @@ type InboundProcessor struct {
 	inFlight    map[string]bool
 	closed      bool
 	jobs        [inboundDeliveryWorkers]chan inboundDeliveryJob
+	retryWake   chan struct{}
 }
 
 func NewInboundProcessor(dataRoot string, _ Settings, message InboundMessageHandler, card InboundCardHandler) (*InboundProcessor, error) {
@@ -54,7 +56,7 @@ func NewInboundProcessor(dataRoot string, _ Settings, message InboundMessageHand
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	processor := &InboundProcessor{dataRoot: dataRoot, inbox: NewEventInbox(dataRoot), workbox: workbox, message: message, card: card, audit: NewAuditLog(dataRoot), ctx: ctx, cancel: cancel, inFlight: map[string]bool{}}
+	processor := &InboundProcessor{dataRoot: dataRoot, inbox: NewEventInbox(dataRoot), workbox: workbox, message: message, card: card, audit: NewAuditLog(dataRoot), ctx: ctx, cancel: cancel, inFlight: map[string]bool{}, retryWake: make(chan struct{}, 1)}
 	for partition := range processor.jobs {
 		processor.jobs[partition] = make(chan inboundDeliveryJob, inboundDeliveryBuffer)
 		processor.workers.Add(1)
@@ -139,40 +141,56 @@ func (processor *InboundProcessor) runDeliveryWorker(partition int) {
 }
 
 func (processor *InboundProcessor) processPersisted(work inboundWork) {
-	delays := []time.Duration{0, 250 * time.Millisecond, time.Second}
-	for index, delay := range delays {
-		if processor.ctx.Err() != nil {
+	if processor.ctx.Err() != nil {
+		return
+	}
+	start := work.CreatedAt
+	if work.RetryStartedAt != nil {
+		start = *work.RetryStartedAt
+	}
+	if retrypolicy.Exhausted(work.BudgetAttempts(), start, time.Now()) {
+		_ = processor.workbox.Pause(work, "retry_budget_exhausted", "budget", 0)
+		return
+	}
+	ctx, cancel := context.WithTimeout(processor.ctx, 15*time.Second)
+	err := processor.dispatch(ctx, work.EventKey, work.Payload)
+	cancel()
+	if processor.ctx.Err() != nil {
+		return
+	}
+	if err == nil {
+		if saveErr := processor.workbox.Complete(work.ID); saveErr == nil {
 			return
-		}
-		if delay > 0 {
-			timer := time.NewTimer(delay)
-			select {
-			case <-processor.ctx.Done():
-				timer.Stop()
-				return
-			case <-timer.C:
-			}
-		}
-		ctx, cancel := context.WithTimeout(processor.ctx, 15*time.Second)
-		err := processor.dispatch(ctx, work.EventKey, work.Payload)
-		cancel()
-		if err == nil {
-			if err := processor.workbox.Complete(work.ID); err == nil {
-				_ = processor.audit.Record("inbound_delivery_accepted", map[string]any{"event": work.ID, "eventKey": work.EventKey, "attempt": work.AttemptCount + index + 1})
-				return
-			}
-		}
-		if processor.ctx.Err() != nil {
-			return
-		}
-		var terminal terminalDeliveryError
-		if errors.As(err, &terminal) {
-			_ = processor.workbox.RecordFailure(work, "delivery_not_authorized_or_invalid", index+1, true, time.Time{})
-			return
+		} else {
+			err = saveErr
 		}
 	}
-	_ = processor.workbox.RecordFailure(work, "core_ack_unavailable", len(delays), false, time.Now().UTC().Add(time.Minute))
-	_ = processor.audit.Record("inbound_delivery_deferred", map[string]any{"event": work.ID, "eventKey": work.EventKey})
+	code, permanent := retrypolicy.Class(err)
+	stage := "core_delivery"
+	var staged *DeliveryError
+	if errors.As(err, &staged) {
+		stage = staged.Stage
+	}
+	var terminal terminalDeliveryError
+	if errors.As(err, &terminal) {
+		permanent = true
+	}
+	if permanent || retrypolicy.Exhausted(work.BudgetAttempts()+1, start, time.Now()) {
+		_ = processor.workbox.Pause(work, code, stage, 1)
+		return
+	}
+	work.FailureStage = stage
+	delay := retrypolicy.Delay(work.BudgetAttempts()+1, work.ID)
+	var retry interface{ RetryDelay() time.Duration }
+	if errors.As(err, &retry) && retry.RetryDelay() > delay {
+		delay = retry.RetryDelay()
+	}
+	_ = processor.workbox.RecordFailure(work, code, 1, false, time.Now().UTC().Add(delay))
+	select {
+	case processor.retryWake <- struct{}{}:
+	default:
+	}
+	_ = processor.audit.Record("inbound_delivery_deferred", map[string]any{"code": code, "stage": stage, "attempt": work.AttemptCount + 1})
 }
 
 func (processor *InboundProcessor) Recover(ctx context.Context) error {
@@ -393,4 +411,44 @@ func stringValue(value any) string {
 		return ""
 	}
 	return text
+}
+
+// DeliveryError preserves a safe stage while retaining the typed cause.
+type DeliveryError struct {
+	Stage string
+	Err   error
+}
+
+func (e *DeliveryError) Error() string { return e.Stage + ": " + e.Err.Error() }
+func (e *DeliveryError) Unwrap() error { return e.Err }
+
+// WaitRecovery sleeps until the earliest retry or a newly scheduled failure.
+// A bounded idle wake also discovers explicit retries made by Core.
+func (p *InboundProcessor) WaitRecovery(ctx context.Context) error {
+	delay := time.Second * 30
+	if items, err := p.workbox.Pending(); err == nil {
+		for _, w := range items {
+			if w.NextAttemptAt != nil {
+				d := time.Until(*w.NextAttemptAt)
+				if d < delay {
+					delay = d
+				}
+			}
+		}
+	}
+	if delay < time.Millisecond*100 {
+		delay = time.Millisecond * 100
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-p.ctx.Done():
+		return p.ctx.Err()
+	case <-p.retryWake:
+		return nil
+	case <-timer.C:
+		return nil
+	}
 }

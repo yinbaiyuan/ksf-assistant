@@ -102,35 +102,26 @@ test('explicit app exit waits for the KSFAssistant Core to stop the full server 
 test('Feishu settings use the packaged service and keep secrets out of persisted settings', () => {
   assert.doesNotMatch(app, /choose-feishu|feishuBridgeRoot/);
   assert.match(app, /function renderFeishuPage/);
-  assert.match(app, /创建专用飞书应用/);
+  assert.match(main, /action\.confirmation/);
   assert.match(app, /接入已有应用/);
-  assert.match(app, /data-field="feishu-profile"/);
+  assert.doesNotMatch(app, /本机事件|主设备|仅手动能力|feishuProfileText|data-field="feishu-profile"/);
+  assert.doesNotMatch(preload, /setFeishuProfile|feishu:profile-set/);
+  assert.doesNotMatch(main, /feishu:profile-set|feishu\/profile\/set/);
+  assert.match(app, /renderFeishuFacts\(\['robot', 'authorizedUser', 'taskConnection'\]\)/);
   assert.match(app, /运行组件/);
-  assert.match(app, /feishuComponentStatusText/);
-  assert.match(app, /value\.processRunning/);
-  assert.match(preload, /feishu:setup-read/);
-  assert.match(preload, /feishu:setup-begin/);
-  assert.match(preload, /feishu:setup-continue/);
-  assert.match(preload, /feishu:setup-verify/);
-  assert.match(preload, /feishu:setup-activate/);
-  assert.match(app, /确认启用并发送测试消息/);
+
+
+  assert.match(preload, /feishu:configuration-read/);
+  assert.match(preload, /feishu:configuration-action/);
+  assert.doesNotMatch(preload, /feishu:setup-|feishu:auth-/);
+  assert.doesNotMatch(app, /确认启用并发送测试消息/);
   assert.doesNotMatch(app, /data-action="feishu-start"/);
   assert.doesNotMatch(main, /settings\.update\([^)]*appSecret/s);
 });
 
-test('Feishu ready settings expose permissions, optional capabilities, and diagnostics inline', () => {
-  assert.match(app, /权限/);
-  assert.match(app, /接收与高级功能/);
-  assert.match(app, /诊断/);
-  assert.match(app, /连接测试/);
-  assert.match(app, /data-field="feishu-feature"/);
-  assert.match(app, /真实执行/);
-  assert.doesNotMatch(app, /renderFeishuAdvancedPage/);
-  assert.doesNotMatch(app, /data-action="feishu-advanced"/);
-  assert.match(preload, /feishuOverview/);
-  assert.match(preload, /updateFeishuFeature/);
-  assert.match(main, /feishu\/settings\/overview\/read/);
-  assert.match(main, /feishu\/features\/update/);
+test('Feishu configuration exposes diagnostics without duplicate product features', () => {
+ assert.match(app,/missingApplicationScopes/);assert.match(app,/missingUserScopes/);assert.match(app,/诊断详情/);assert.match(app,/lark-cli/);assert.doesNotMatch(app,/data-field="feishu-feature"|高级功能|测试目标/);
+ assert.match(preload,/readFeishuConfiguration/);assert.match(preload,/actFeishuConfiguration/);assert.match(main,/feishu\/configuration\/result/);
 });
 
 test('KSF is an optional integration and preview version is explicit', () => {

@@ -27,6 +27,26 @@ final class JSONRPCPipeConnectionTests: XCTestCase {
         }
     }
 
+    func testTaskCardAuthorizationKeepsStructuredChallengeAcrossPipe() async throws {
+        let fixture = Fixture()
+        let client = fixture.client
+        defer { client.close() }
+        let server = Task.detached {
+            let request = try fixture.readRequests(1)[0]
+            try fixture.reply(["jsonrpc": "2.0", "id": request["id"]!, "error": ["code": -32063, "message": "confirmation required", "data": ["status": "authorization_required", "challenge": "fresh", "operation": ["id": "OP-fixture", "capabilityId": "im.sdk.message.send", "status": "awaiting_confirmation"]]]])
+        }
+        do {
+            _ = try await client.request(method: "feishu/taskLink/create", params: [:])
+            XCTFail("expected authorization")
+        } catch {
+            let authorization = try XCTUnwrap(FeishuTaskCardAuthorization.from(error))
+            XCTAssertEqual(authorization.operation.id, "OP-fixture")
+            XCTAssertEqual(authorization.challenge, "fresh")
+            XCTAssertEqual(error.localizedDescription, "confirmation required")
+        }
+        try await server.value
+    }
+
     func testOverlappingRequestsReceiveOnlyTheirOwnOutOfOrderResponse() async throws {
         let fixture = Fixture()
         let client = fixture.client

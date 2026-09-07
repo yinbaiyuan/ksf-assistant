@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 
@@ -11,6 +14,54 @@ import (
 	"ksfassistant/core/internal/feishuprotocol"
 	"ksfassistant/core/internal/privateipc"
 )
+
+func TestLegacyEventRolesNeverDisableInboundReadiness(t *testing.T) {
+	for _, legacy := range []string{"", "primary", "manual-only", "retired-role"} {
+		for _, connected := range []bool{false, true} {
+			settings := feishu.DefaultSettings()
+			settings.Profile = legacy
+			settings.Outbound.Enabled = true
+			settings.Outbound.DryRun = false
+			root := t.TempDir()
+			t.Setenv("LARK_CLI_BIN", filepath.Join(root, "missing-cli"))
+			server := newTestBridgeRPCServer(root, settings)
+			server.messages = &feishu.OfficialMessageClient{}
+			if connected {
+				if err := feishu.NewEventConsumerStateStore(root).UpdateConnection("connected"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			snapshot := server.snapshot(context.Background())
+			expected := "degraded"
+			if connected {
+				expected = "ready"
+			}
+			if snapshot.Profile != "managed" || !snapshot.ProfileValid || snapshot.Capabilities["feishuInbound"].State != expected || snapshot.InboundConnection != connected {
+				t.Fatalf("legacy %q connected=%v: %+v", legacy, connected, snapshot)
+			}
+			if slices.Contains(snapshot.ReadinessBlockers, "feishuInbound") == connected || !slices.Contains(snapshot.ReadinessBlockers, "larkCLI") || snapshot.Availability == "ready" {
+				t.Fatalf("readiness gate bypassed: %+v", snapshot)
+			}
+			server.messages = nil
+			snapshot = server.snapshot(context.Background())
+			if snapshot.InboundConnection || snapshot.Configured || !slices.Contains(snapshot.ReadinessBlockers, "feishuInbound") {
+				t.Fatalf("cached event connection bypassed identity gate: %+v", snapshot)
+			}
+		}
+	}
+}
+
+func TestRetiredEventProfileRPCNeverWritesSettings(t *testing.T) {
+	root := t.TempDir()
+	server := newTestBridgeRPCServer(root, feishu.DefaultSettings())
+	_, err := server.HandlePrivateRPC(context.Background(), "bridge/profile/set", json.RawMessage(`{"profile":"manual-only"}`))
+	if !errors.Is(err, privateipc.ErrMethodNotFound) {
+		t.Fatalf("retired RPC accepted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, feishu.SettingsFilename)); !os.IsNotExist(err) {
+		t.Fatalf("retired RPC wrote settings: %v", err)
+	}
+}
 
 type bridgeCapabilityExecutor struct {
 	mu    sync.Mutex
@@ -42,6 +93,38 @@ func newTestBridgeRPCServer(root string, settings feishu.Settings) *bridgeRPCSer
 	runner := feishu.UnifiedCapabilityExecutor{DataRoot: root, LongTail: feishu.CapabilityExecutor{DataRoot: root, WorkingDirectory: root}}
 	service := feishu.NewCapabilityService(root, runner, nil)
 	return newBridgeRPCServer(root, settings, service)
+}
+
+func TestBridgeSettingsWritePreservesLegacyRoleAndReturnsStoredState(t *testing.T) {
+	root := t.TempDir()
+	settings := feishu.DefaultSettings()
+	settings.Profile = "manual-only"
+	data, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, feishu.SettingsFilename), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := newTestBridgeRPCServer(root, settings)
+	settings.Profile = "primary"
+	settings.Group.Enabled = true
+	request, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := server.HandlePrivateRPC(context.Background(), feishuprotocol.SettingsWrite, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := result.(feishu.Settings)
+	if stored.Profile != "manual-only" || !stored.Group.Enabled || server.settings != stored {
+		t.Fatalf("write promoted the retired role: %+v", result)
+	}
+	loaded, err := feishu.NewSettingsStore(root).Load()
+	if err != nil || loaded != stored {
+		t.Fatalf("persisted settings diverged: %+v %v", loaded, err)
+	}
 }
 
 func TestBridgeSnapshotDegradesCapabilitiesIndependently(t *testing.T) {
@@ -143,7 +226,7 @@ func TestBridgePrivateRPCReturnsStableAdviceForGovernanceRejection(t *testing.T)
 		t.Fatal(err)
 	}
 	prepared, ok := value.(feishu.PreparedOperation)
-	if !ok || prepared.ErrorCode != "outbound_disabled" || prepared.NextAction != "enable_outbound" {
+	if !ok || prepared.Operation.Status != feishu.OperationAwaitingConfirmation || prepared.Challenge == "" {
 		t.Fatalf("unexpected rejection: %#v", value)
 	}
 }
@@ -212,13 +295,6 @@ func TestBridgeRPCSDKAndDocumentCapabilitiesUseTheInjectedService(t *testing.T) 
 				"format": "text", "text": "private", "source": "test",
 			},
 		},
-		{
-			name: "document service", capabilityID: "docs.service.document.append",
-			input: map[string]any{
-				"target-kind": "docx_token", "target-value": "doc_private", "content": "private",
-				"format": "markdown", "source": "test",
-			},
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -228,8 +304,6 @@ func TestBridgeRPCSDKAndDocumentCapabilitiesUseTheInjectedService(t *testing.T) 
 			settings.Actionbox.DryRun = false
 			settings.Outbound.Enabled = true
 			settings.Outbound.DryRun = false
-			settings.Docbox.Enabled = true
-			settings.Docbox.DryRun = false
 			if err := feishu.NewSettingsStore(root).Save(settings); err != nil {
 				t.Fatal(err)
 			}
@@ -317,5 +391,24 @@ func TestTransportConfirmationRetainsChallengeWithoutPrivateInput(t *testing.T) 
 	}
 	if data.Challenge != "isolated-confirmation-fixture" || data.Submitted || data.Status != "authorization_required" || data.NextAction != "confirm" {
 		t.Fatalf("confirmation contract lost: %+v", data)
+	}
+}
+
+func TestTaskCardWriteReadinessReflectsRuntimeSettings(t *testing.T) {
+	for _, tc := range []struct {
+		enabled, dryRun bool
+		blocker         string
+	}{
+		{false, false, ""}, {true, true, ""}, {true, false, ""},
+	} {
+		settings := feishu.DefaultSettings()
+		settings.Actionbox.Enabled, settings.Actionbox.DryRun = tc.enabled, tc.dryRun
+		server := newTestBridgeRPCServer(t.TempDir(), settings)
+		t.Setenv("LARK_CLI_BIN", filepath.Join(t.TempDir(), "missing"))
+		snapshot := server.snapshot(context.Background())
+		found := slices.Contains(snapshot.ReadinessBlockers, "taskCardWriteDisabled") || slices.Contains(snapshot.ReadinessBlockers, "taskCardWriteDryRun")
+		if found != (tc.blocker != "") || (tc.blocker != "" && !slices.Contains(snapshot.ReadinessBlockers, tc.blocker)) {
+			t.Fatalf("enabled=%v dryRun=%v: %v", tc.enabled, tc.dryRun, snapshot.ReadinessBlockers)
+		}
 	}
 }

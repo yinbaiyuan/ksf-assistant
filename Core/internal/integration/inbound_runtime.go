@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ksfassistant/core/internal/corebridge"
@@ -20,21 +21,23 @@ import (
 var desktopIntegerRequestID = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)$`)
 
 type Runtime struct {
-	healthMu     sync.Mutex
-	healthIssues map[string]bool
-	dataRoot     string
-	core         CorePort
-	messages     FeishuPort
-	links        TaskLinkStore
-	inbox        *eventInbox
-	actionMu     sync.Mutex
-	actionLocks  map[string]*actionLock
-	watchWG      sync.WaitGroup
-	closed       bool
-	watchMu      sync.Mutex
-	watchers     map[string]context.CancelFunc
-	watchCtx     context.Context
-	stopWatch    context.CancelFunc
+	admissionMu   sync.RWMutex
+	disconnecting atomic.Bool
+	healthMu      sync.Mutex
+	healthIssues  map[string]bool
+	dataRoot      string
+	core          CorePort
+	messages      FeishuPort
+	links         TaskLinkStore
+	inbox         *eventInbox
+	actionMu      sync.Mutex
+	actionLocks   map[string]*actionLock
+	watchWG       sync.WaitGroup
+	closed        bool
+	watchMu       sync.Mutex
+	watchers      map[string]context.CancelFunc
+	watchCtx      context.Context
+	stopWatch     context.CancelFunc
 }
 
 func NewRuntime(dataRoot string, messages FeishuPort, core CorePort) (*Runtime, error) {
@@ -116,6 +119,11 @@ func (runtime *Runtime) resumeActiveLinks(ctx context.Context) error {
 	return recoveryErrors
 }
 func (runtime *Runtime) HandleMessage(ctx context.Context, message InboundMessage) error {
+	done, admissionErr := runtime.admitOperation(ctx)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer done()
 	unlock := runtime.lockActions(runtime.messageActionKeys(message)...)
 	defer unlock()
 	if runtime.watchCtx.Err() != nil {
@@ -249,6 +257,11 @@ func (runtime *Runtime) HandleMessage(ctx context.Context, message InboundMessag
 	return nil
 }
 func (runtime *Runtime) HandleCard(ctx context.Context, action InboundCardAction) error {
+	done, admissionErr := runtime.admitOperation(ctx)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer done()
 	var handled bool
 	var decodeErr error
 	action, handled, decodeErr = decodeTaskCard(action)
@@ -455,6 +468,8 @@ func (runtime *Runtime) HandleCard(ctx context.Context, action InboundCardAction
 			value.PendingPlanTurnID = ""
 			value.Phase = "执行"
 			value.Detail = "计划已开始执行。"
+			value.SetExtraString("latestInput", "执行此计划")
+			value.SetExtraString("latestInputTurnId", turnID)
 			value.SetExtraString("activeTurnMode", "default")
 			value.NextTurnMode = "default"
 		})
@@ -530,7 +545,7 @@ func (runtime *Runtime) waitForTurn(parent context.Context, taskKey, threadID, t
 		if !found || effectiveTaskLinkState(link, time.Now()) != "active" || link.ThreadID != threadID || link.ActiveTurnID != turnID || link.TurnState == "interrupted" || ctx.Err() != nil {
 			return
 		}
-		snapshot, err := runtime.readThread(ctx, link)
+		snapshot, _, err := runtime.core.(ObservationPort).ObserveThread(ctx, link.ExtraString("runtimeOwner"), link.ThreadID, link.ActiveTurnID)
 		if ctx.Err() != nil {
 			return
 		}
@@ -728,18 +743,63 @@ func normalizeDesktopState(state map[string]any) map[string]any {
 		seen[id] = true
 		turns = append(turns, copy)
 	}
-	if direct, ok := state["turns"].([]any); ok {
+	history, _ := state["turnHistory"].(map[string]any)
+	inner, _ := history["history"].(map[string]any)
+	entities, _ := inner["entitiesByKey"].(map[string]any)
+	// Canonical history is ordered by islands/entries, not by dictionary order
+	// or optional timestamps. Unindexed entities and the compact turns cache
+	// are not authoritative candidates for the current turn.
+	if history["kind"] == "canonical" || inner["islands"] != nil {
+		islands, valid := inner["islands"].([]any)
+		result["turns"] = []any{}
+		if !valid {
+			return result
+		}
+		for _, rawIsland := range islands {
+			island, ok := rawIsland.(map[string]any)
+			if !ok {
+				return result
+			}
+			entries, ok := island["entries"].([]any)
+			if !ok {
+				return result
+			}
+			for _, rawEntry := range entries {
+				entry, ok := rawEntry.(map[string]any)
+				if !ok {
+					return result
+				}
+				key, ok := entry["value"].(string)
+				if !ok {
+					return result
+				}
+				turn, ok := entities[key].(map[string]any)
+				if !ok {
+					return result
+				}
+				add(turn)
+			}
+		}
+		result["turns"] = turns
+		return result
+	}
+	if direct, ok := state["turns"].([]any); ok && len(direct) > 0 {
 		for _, turn := range direct {
 			add(turn)
 		}
+		result["turns"] = turns
+		return result
 	}
-	if history, ok := state["turnHistory"].(map[string]any); ok {
-		if inner, ok := history["history"].(map[string]any); ok {
-			if entities, ok := inner["entitiesByKey"].(map[string]any); ok {
-				for _, turn := range entities {
-					add(turn)
-				}
-			}
+	// Older snapshots lack an explicit index. Only timestamped entities can
+	// establish chronology; never choose an arbitrary untimed dictionary entry.
+	keys := make([]string, 0, len(entities))
+	for key := range entities {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if desktopTurnTimestamp(entities[key]) > 0 {
+			add(entities[key])
 		}
 	}
 	sort.SliceStable(turns, func(i, j int) bool { return desktopTurnTimestamp(turns[i]) < desktopTurnTimestamp(turns[j]) })
@@ -754,6 +814,21 @@ func desktopTurnTimestamp(raw any) int64 {
 	}
 	for _, key := range []string{"turnStartedAtMs", "startedAtMs"} {
 		switch value := turn[key].(type) {
+		case json.Number:
+			if number, err := value.Int64(); err == nil && number > 0 {
+				return number
+			}
+			if number, err := value.Float64(); err == nil && number > 0 {
+				return int64(number)
+			}
+		case int64:
+			if value > 0 {
+				return value
+			}
+		case int:
+			if value > 0 {
+				return int64(value)
+			}
 		case float64:
 			if value > 0 {
 				return int64(value)
@@ -1066,6 +1141,7 @@ func (runtime *Runtime) runDesktopTaskObserver(ctx context.Context, taskKey stri
 type desktopTaskProjection struct {
 	TurnID, TurnState, TurnOwner, ActionRequired string
 	Phase, Detail                                string
+	UserInput                                    string
 	PendingPlan                                  pendingPlan
 	PendingQuestions                             []map[string]any
 	PendingRequestID                             string
@@ -1074,12 +1150,15 @@ type desktopTaskProjection struct {
 }
 
 func (runtime *Runtime) reconcileDesktopTaskLink(ctx context.Context, link TaskLink) error {
-	snapshot, err := runtime.readThread(ctx, link)
+	snapshot, revision, err := runtime.core.(ObservationPort).ObserveThread(ctx, link.ExtraString("runtimeOwner"), link.ThreadID, link.ActiveTurnID)
 	if err != nil {
 		return err
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+	if revision != "" && revision == link.ExtraString("observedSnapshotRevision") && link.ExtraString("userMessageProjectionVersion") == "1" {
+		return nil
 	}
 	projection := projectDesktopTaskLink(snapshot)
 	if len(projection.PendingQuestions) > 0 {
@@ -1093,6 +1172,10 @@ func (runtime *Runtime) reconcileDesktopTaskLink(ctx context.Context, link TaskL
 		return nil
 	}
 	updated, err := runtime.links.UpdateActiveByID(link.ID, func(value *TaskLink) {
+		value.SetExtraString("observedSnapshotRevision", revision)
+		value.SetExtraString("latestInput", projection.UserInput)
+		value.SetExtraString("latestInputTurnId", projection.TurnID)
+		value.SetExtraString("userMessageProjectionVersion", "1")
 		value.TurnState = projection.TurnState
 		value.TurnOwner = projection.TurnOwner
 		value.ActionRequired = projection.ActionRequired
@@ -1161,7 +1244,7 @@ func projectDesktopTaskLink(snapshot map[string]any) desktopTaskProjection {
 		return desktopTaskProjection{}
 	}
 	turnID := cleanString(turn["id"])
-	result := desktopTaskProjection{TurnID: turnID, TurnState: "idle", TurnOwner: "none", ActionRequired: "none", Phase: "已连接", Detail: "任务已连接。回复本消息可继续任务。"}
+	result := desktopTaskProjection{UserInput: desktopTurnUserInput(turn), TurnID: turnID, TurnState: "idle", TurnOwner: "none", ActionRequired: "none", Phase: "已连接", Detail: "任务已连接。回复本消息可继续任务。"}
 	if pending := pendingPlanImplementation(normalized); pending.Content != "" {
 		result.TurnState, result.ActionRequired = "plan_ready", "feishu"
 		result.Phase, result.Detail, result.PendingPlan = "计划已生成", pending.Content, pending
@@ -1191,10 +1274,8 @@ func projectDesktopTaskLink(snapshot map[string]any) desktopTaskProjection {
 	}
 	switch status {
 	case "completed":
-		result.TurnState, result.Phase, result.Detail = "completed", "已完成", finalAgentText(turn)
-		if result.Detail == "" {
-			result.Detail = "任务已完成。"
-		}
+		result.TurnState, result.Detail = completedTurnOutcome(turn)
+		result.Phase = map[string]string{"completed": "已完成", "failed": "失败"}[result.TurnState]
 	case "failed":
 		result.TurnState, result.Phase, result.Detail = "failed", "失败", "任务执行失败，请在 Codex Desktop 查看。"
 	case "interrupted", "cancelled", "canceled":
@@ -1224,6 +1305,9 @@ func desktopAnswerSubmissionPending(link TaskLink, projection desktopTaskProject
 }
 
 func desktopProjectionRequiresSync(link TaskLink, next desktopTaskProjection) bool {
+	if link.ExtraString("latestInput") != next.UserInput || link.ExtraString("latestInputTurnId") != next.TurnID {
+		return true
+	}
 	if link.TurnState != next.TurnState || link.TurnOwner != next.TurnOwner || link.ActionRequired != next.ActionRequired || link.ActiveTurnID != activeProjectionTurnID(next) {
 		return true
 	}
@@ -1404,7 +1488,7 @@ func bridgeTurnProjection(snapshot map[string]any, turnID string) (string, strin
 		}
 		status := strings.ToLower(statusType(turn["status"]))
 		if status == "completed" {
-			return "completed", finalAgentText(turn)
+			return completedTurnOutcome(turn)
 		}
 		if status == "failed" {
 			return "failed", ""
@@ -1416,6 +1500,20 @@ func bridgeTurnProjection(snapshot map[string]any, turnID string) (string, strin
 	}
 	return "running", ""
 }
+
+// Completion is a transport lifecycle state, not proof of a successful reply.
+// Older App Servers can emit completed after rejecting a model request, with
+// no agent output and even no persisted error. Both card paths share this rule.
+func completedTurnOutcome(turn map[string]any) (string, string) {
+	if turn["error"] != nil {
+		return "failed", "Codex 执行失败，请在 Codex Desktop 查看错误后重试。"
+	}
+	if text := finalAgentText(turn); text != "" {
+		return "completed", text
+	}
+	return "failed", "Codex 本轮已结束，但没有返回回复。请检查 Codex 运行环境后重试。"
+}
+
 func statusType(value any) string {
 	if text, ok := value.(string); ok {
 		return text
@@ -1430,6 +1528,9 @@ func finalAgentText(turn map[string]any) string {
 	for index := len(items) - 1; index >= 0; index-- {
 		item, _ := items[index].(map[string]any)
 		if item != nil && fmt.Sprint(item["type"]) == "agentMessage" {
+			if phase, _ := item["phase"].(string); phase == "commentary" || phase == "analysis" {
+				continue
+			}
 			text := strings.TrimSpace(fmt.Sprint(item["text"]))
 			if text != "" && text != "<nil>" {
 				if len([]rune(text)) > 6000 {

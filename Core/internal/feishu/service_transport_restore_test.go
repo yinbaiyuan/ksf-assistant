@@ -148,7 +148,13 @@ func TestServiceTransportRestoreRechecksTargetAfterCLI(t *testing.T) {
 	fixture := &restorationCLIFixture{response: map[string]any{"code": 0, "data": map[string]any{"items": []any{restorationCLIMessage()}}}}
 	root, transport := newTransportFixture(t, newRestorationCLI(t, fixture, "cli_fixture_restore"))
 	fixture.onGet = func() {
-		if err := NewClientConfigStore(root).Save(DefaultClientConfig()); err != nil {
+		config, err := NewClientConfigStore(root).Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		config.MessageTargets = map[string]MessageTarget{}
+		config.DirectAllowedAliases = nil
+		if err := NewClientConfigStore(root).Save(config); err != nil {
 			t.Fatal(err)
 		}
 	}

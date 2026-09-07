@@ -86,9 +86,6 @@ func (transport *ServiceTransport) gate(target MessageTarget) error {
 	if err != nil {
 		return err
 	}
-	if !settings.Outbound.Enabled || settings.Outbound.DryRun {
-		return errors.New("Feishu outbound disabled or dry-run")
-	}
 	if target.Type == "chat_id" && !settings.Group.Enabled {
 		return errors.New("Feishu group interaction disabled")
 	}

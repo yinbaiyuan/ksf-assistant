@@ -18,13 +18,12 @@ func TestQueueHealthReportsEnabledPendingAndDisabledQueues(t *testing.T) {
 
 	result := QueueHealthSnapshot(root, Settings{
 		Outbound:  DryRunSwitch{Enabled: true},
-		Docbox:    DryRunSwitch{Enabled: false},
 		Actionbox: DryRunSwitch{Enabled: true},
 	})
 	if result["outbox"].State != "ready" || result["outbox"].Pending != 2 {
 		t.Fatalf("outbox health = %#v", result["outbox"])
 	}
-	if result["docbox"].State != "disabled" {
+	if _, present := result["docbox"]; present {
 		t.Fatalf("docbox health = %#v", result["docbox"])
 	}
 }

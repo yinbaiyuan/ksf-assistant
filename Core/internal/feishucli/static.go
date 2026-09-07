@@ -4,6 +4,8 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
+
+	"ksfassistant/core/internal/feishuprotocol"
 )
 
 //go:embed catalog.json
@@ -48,14 +50,14 @@ func Static(request Request) (any, bool, error) {
 	}
 	switch request.Command {
 	case "help":
-		return map[string]any{"usage": []string{"ksf-assistant-feishu-bridge client snapshot", "ksf-assistant-feishu-bridge client status|doctor", "ksf-assistant-feishu-bridge client targets init|list|set|remove", "ksf-assistant-feishu-bridge client send ...", "ksf-assistant-feishu-bridge client task-link protocol|list|create|status|interrupt|release", "ksf-assistant-feishu-bridge client capability catalog|get|read|write", "ksf-assistant-feishu-bridge client operation prepare|confirm|cancel|status", "ksf-assistant-feishu-bridge client policy read|update", "ksf-assistant-feishu-bridge client events catalog|status|recent|get", "ksf-assistant-feishu-bridge client result <outbox|docbox|actionbox> <id>", "ksf-assistant-feishu-bridge client recent <outbox|docbox|actionbox|messages|audit>"}}, true, nil
+		return map[string]any{"usage": []string{"ksf-assistant-feishu-bridge client snapshot", "ksf-assistant-feishu-bridge client status|doctor", "ksf-assistant-feishu-bridge client targets init|list|set|remove", "ksf-assistant-feishu-bridge client send ...", "ksf-assistant-feishu-bridge client task-link protocol|list|create|status|interrupt|release", "ksf-assistant-feishu-bridge client capability catalog|get|read|write", "ksf-assistant-feishu-bridge client operation prepare|confirm|cancel|status", "ksf-assistant-feishu-bridge client policy read|update", "ksf-assistant-feishu-bridge client events catalog|status|recent|get", "ksf-assistant-feishu-bridge client result <outbox|actionbox> <id>", "ksf-assistant-feishu-bridge client recent <outbox|actionbox|messages|audit>"}}, true, nil
 	case "version":
 		return map[string]any{"version": Version}, true, nil
 	case "capabilities":
 		return append(json.RawMessage(nil), bundle.Capabilities...), true, bundleError
 	case "profile":
 		if request.Action == "catalog" {
-			return map[string]any{"status": "ok", "profiles": []any{map[string]any{"profile": "primary"}, map[string]any{"profile": "manual-only"}}, "sharedAppRule": "exactly_one_primary"}, true, nil
+			return map[string]any{"status": "ok", "profiles": []any{}, "eventConsumer": feishuprotocol.ManagedEventConsumerStatus()}, true, nil
 		}
 	case "events":
 		if request.Action == "catalog" {

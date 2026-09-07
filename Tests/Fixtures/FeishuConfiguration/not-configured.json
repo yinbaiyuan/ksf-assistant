@@ -1,0 +1,245 @@
+{
+  "schemaVersion": 1,
+  "epoch": "fixture-epoch",
+  "revision": 7,
+  "contextRevision": "fixture-context",
+  "observedAt": "2026-09-06T10:00:00Z",
+  "refreshing": false,
+  "summary": {
+    "state": "not_configured",
+    "title": "尚未配置飞书应用",
+    "detail": "扫码创建应用，或接入已有应用。",
+    "tone": "neutral"
+  },
+  "facts": [
+    {
+      "id": "application",
+      "title": "应用配置",
+      "state": "missing",
+      "value": "未配置",
+      "source": "官方 CLI · default",
+      "checkedAt": "2026-09-06T10:00:00Z",
+      "stale": false
+    },
+    {
+      "id": "user",
+      "title": "用户授权",
+      "state": "unknown",
+      "value": "尚未验证",
+      "source": "官方 CLI · user",
+      "checkedAt": "2026-09-06T10:00:00Z",
+      "stale": false
+    },
+    {
+      "id": "bot",
+      "title": "机器人身份",
+      "state": "unknown",
+      "value": "尚未验证",
+      "source": "官方 CLI · bot",
+      "checkedAt": "2026-09-06T10:00:00Z",
+      "stale": false
+    },
+    {
+      "id": "permissions",
+      "title": "用户功能权限",
+      "state": "unknown",
+      "value": "尚未验证",
+      "source": "官方 CLI · 应用权限与用户授权范围",
+      "checkedAt": "2026-09-06T10:00:00Z",
+      "stale": false
+    },
+    {
+      "id": "connection",
+      "title": "消息连接",
+      "state": "missing",
+      "value": "未连接",
+      "source": "飞书服务实际连接",
+      "checkedAt": "2026-09-06T10:00:00Z",
+      "stale": false
+    },
+    {
+      "id": "operator",
+      "title": "当前用户远程控制",
+      "state": "unknown",
+      "value": "尚未验证",
+      "source": "KSFAssistant 访问规则",
+      "checkedAt": "2026-09-06T10:00:00Z",
+      "stale": false
+    },
+    {
+      "id": "outbound",
+      "title": "主动出站",
+      "state": "present",
+      "value": "关闭",
+      "source": "KSFAssistant 功能设置",
+      "checkedAt": "2026-09-06T10:00:00Z",
+      "stale": false
+    },
+    {
+      "id": "actionbox",
+      "title": "通用动作队列",
+      "state": "present",
+      "value": "关闭",
+      "source": "KSFAssistant 功能设置",
+      "checkedAt": "2026-09-06T10:00:00Z",
+      "stale": false
+    },
+    {
+      "id": "desktop",
+      "title": "Codex Desktop 控制通道",
+      "state": "unknown",
+      "value": "尚未验证",
+      "source": "Core 宿主观测",
+      "checkedAt": "2026-09-06T10:00:00Z",
+      "stale": false
+    }
+  ],
+  "actions": [
+    {
+      "id": "create_app",
+      "title": "扫码创建应用",
+      "enabled": true,
+      "confirmation": "将通过官方 CLI 创建新的飞书应用，不会自动进行用户授权。"
+    },
+    {
+      "id": "connect_app",
+      "title": "接入已有应用",
+      "enabled": true,
+      "confirmation": "将保存提供的飞书应用配置，不会自动绑定远程操作者。"
+    },
+    {
+      "id": "start_auth",
+      "title": "授权用户身份",
+      "enabled": false,
+      "reason": "当前没有符合条件的操作，请查看对应状态。",
+      "confirmation": "将申请当前功能所需用户权限；不会自动授予远程控制权限。"
+    },
+    {
+      "id": "logout",
+      "title": "注销用户授权",
+      "enabled": false,
+      "reason": "当前没有已验证的用户授权可注销。",
+      "confirmation": "仅注销当前应用的用户身份；保留应用、机器人配置及业务记录。"
+    },
+    {
+      "id": "bind_operator",
+      "title": "绑定当前用户为远程操作者",
+      "enabled": false,
+      "reason": "仅当前用户身份已验证且尚未绑定时可操作。",
+      "confirmation": "允许当前已验证的飞书用户（当前 CLI 用户）通过消息控制已授权的 Codex 任务，并更新“我”目标。"
+    },
+    {
+      "id": "set_feature",
+      "title": "调整功能模式",
+      "enabled": false,
+      "reason": "当前没有符合条件的操作，请查看对应状态。",
+      "confirmation": "仅调整所选功能模式；不会发送测试消息。真实执行仍遵守已有批准与权限规则。"
+    },
+    {
+      "id": "enable_outbound",
+      "title": "启用主动出站",
+      "enabled": false,
+      "reason": "需要机器人身份可用，且主动出站尚未启用。",
+      "confirmation": "启用机器人主动出站；不会自动发送测试消息，平台权限仍逐项执行时校验。"
+    },
+    {
+      "id": "test_message",
+      "title": "发送测试消息",
+      "enabled": false,
+      "reason": "需要机器人身份、已启用的真实出站和有效测试目标。",
+      "confirmation": "以机器人身份向所选目标发送一条固定连通性测试消息；结果未知时不会重发。"
+    },
+    {
+      "id": "restart",
+      "title": "重新连接飞书服务",
+      "enabled": true,
+      "confirmation": "重启受管飞书服务，短暂中断消息连接；保留配置与业务队列。"
+    },
+    {
+      "id": "cancel_flow",
+      "title": "取消本次等待",
+      "enabled": false,
+      "reason": "当前没有符合条件的操作，请查看对应状态。",
+      "confirmation": "仅停止当前流程的本地等待，不能撤销飞书端已完成的操作或已有授权。"
+    },
+    {
+      "id": "finish_app",
+      "title": "检查应用创建结果",
+      "enabled": false,
+      "reason": "当前没有符合条件的操作，请查看对应状态。"
+    },
+    {
+      "id": "finish_auth",
+      "title": "检查用户授权结果",
+      "enabled": false,
+      "reason": "当前没有符合条件的操作，请查看对应状态。"
+    }
+  ],
+  "setup": {
+    "version": 1,
+    "stage": "not_started"
+  },
+  "overview": {
+    "state": "notConfigured",
+    "summary": "各项功能独立管理",
+    "profile": "managed",
+    "health": {
+      "core": "running",
+      "bridge": "notConfigured",
+      "inbound": "unavailable"
+    },
+    "permissions": {
+      "application": "unknown",
+      "user": "unknown",
+      "missing": []
+    },
+    "features": [
+      {
+        "id": "groupMessaging",
+        "title": "群聊消息处理",
+        "description": "在群聊中接收并处理消息",
+        "state": "off",
+        "writable": false
+      },
+      {
+        "id": "peopleDirectory",
+        "title": "人员查询",
+        "description": "按姓名查询已授权人员",
+        "state": "off",
+        "writable": false
+      },
+      {
+        "id": "groupDirectory",
+        "title": "群组查询",
+        "description": "按名称查询已授权群组",
+        "state": "off",
+        "writable": false
+      },
+      {
+        "id": "actionbox",
+        "title": "自动化与队列",
+        "description": "通过受控队列执行自动化操作",
+        "state": "off",
+        "writable": true
+      }
+    ],
+    "targets": []
+  },
+  "connection": {
+    "revision": 0,
+    "availability": "notConfigured",
+    "processState": "idle_unconfigured",
+    "configured": false,
+    "processPid": 0,
+    "restartCount": 0,
+    "profileValid": false,
+    "inboundConnection": false,
+    "processRunning": true,
+    "targetAliases": [],
+    "taskLinkProtocolVersion": 0,
+    "taskLinkReady": false,
+    "readinessBlockers": [],
+    "links": []
+  },
+  "issues": []
+}

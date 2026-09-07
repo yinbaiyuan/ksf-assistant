@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 )
 
 var FixedEventKeys = []string{
@@ -76,14 +77,43 @@ func (inbound *OfficialInbound) Start(ctx context.Context) error {
 	inbound.done = done
 	inbound.mu.Unlock()
 	defer func() { cancel(); inbound.mu.Lock(); inbound.cancel = nil; close(done); inbound.mu.Unlock() }()
-	inbound.observer("starting")
-	err := inbound.runConsumers(runCtx)
-	if err != nil && runCtx.Err() == nil {
-		inbound.observer("failed")
-	} else {
-		inbound.observer("disconnected")
+	// Each attempt joins and cleans up only its owned consumers before retrying.
+	// Never take over a foreign bus or replay malformed/unpersisted events.
+	delays := []time.Duration{time.Second, 2 * time.Second, 5 * time.Second, 15 * time.Second, 30 * time.Second}
+	for attempt := 0; ; attempt++ {
+		inbound.observer("starting")
+		err := inbound.runConsumers(runCtx)
+		if runCtx.Err() != nil || err == nil {
+			inbound.observer("disconnected")
+			return err
+		}
+		code := diagnosticToken(err.Error(), "cli_event_runtime_failed")
+		_ = NewDiagnosticLog(inbound.runner.DataRoot).Record(SupervisorDiagnostic{Code: code, Component: "event-consumers", SafeSummary: code})
+		if attempt >= len(delays) || !retryableConsumerFailure(err) {
+			inbound.observer("failed")
+			return err
+		}
+		inbound.observer("reconnecting")
+		timer := time.NewTimer(delays[attempt])
+		select {
+		case <-runCtx.Done():
+			timer.Stop()
+			inbound.observer("disconnected")
+			return runCtx.Err()
+		case <-timer.C:
+		}
 	}
-	return err
+}
+
+func retryableConsumerFailure(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	switch err.Error() {
+	case "cli_event_consumer_failed", "cli_event_consumer_exited", "cli_event_ready_timeout", "cli_event_status_unavailable":
+		return true
+	}
+	return false
 }
 
 func (inbound *OfficialInbound) Close() {

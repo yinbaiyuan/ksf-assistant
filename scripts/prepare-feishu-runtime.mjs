@@ -5,11 +5,11 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
+import { adaptSkills } from './adapt-lark-skills.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const larkCliManifest = JSON.parse(readFileSync(path.join(repoRoot, 'runtime', 'lark-cli-runtime.json'), 'utf8'));
 const skillsManifest = JSON.parse(readFileSync(path.join(repoRoot, 'runtime', 'lark-skills.json'), 'utf8'));
-const integration = JSON.parse(readFileSync(path.join(repoRoot, 'runtime', 'lark-skills-integration.json'), 'utf8'));
 const args = process.argv.slice(2);
 const verifyOnly = args.includes('--verify');
 const platform = valueAfter('--platform');
@@ -29,7 +29,7 @@ function valuesAfter(flag) {
 }
 
 function assertLayout() {
-	if (larkCliManifest.version !== '1.0.93' || skillsManifest.version !== larkCliManifest.version || skillsManifest.source.tag !== `v${larkCliManifest.version}` || skillsManifest.license !== 'MIT' || !/^[a-f0-9]{64}$/.test(skillsManifest.source.sha256)) throw new Error('CLI/Skills version or license mismatch');
+	if (!/^\d+\.\d+\.\d+$/.test(larkCliManifest.version) || skillsManifest.version !== larkCliManifest.version || skillsManifest.source.tag !== `v${larkCliManifest.version}` || skillsManifest.license !== 'MIT' || !/^[a-f0-9]{64}$/.test(skillsManifest.source.sha256)) throw new Error('CLI/Skills version or license mismatch');
 	const names = new Set();
 	for (const skill of skillsManifest.skills) {
 		if (!/^[a-z][a-z0-9-]+$/.test(skill.name) || names.has(skill.name) || !skill.files['SKILL.md']) throw new Error('Invalid skill name');
@@ -154,18 +154,11 @@ async function stageSkills() {
         cpSync(source, destination);
       }
     }
-    const bundled = structuredClone(skillsManifest);
-    const files = {};
-    if (integration.schemaVersion !== 1 || integration.name !== 'ksfas' || integration.license !== 'MIT') throw new Error('Invalid integration Skill');
-    for (const [name, content] of Object.entries(integration.files)) {
-      if (!safeRelative(name) || typeof content !== 'string') throw new Error('Invalid integration resource');
-      const destination = path.join(stage, 'skills', integration.name, name);
-      mkdirSync(path.dirname(destination), { recursive: true });
-      writeFileSync(destination, content);
-      files[name] = sha256(destination);
-    }
-    bundled.skills.push({ name: integration.name, files });
-    writeFileSync(path.join(stage, 'manifest.json'), `${JSON.stringify(bundled, null, 2)}\n`);
+    const execution = JSON.parse(readFileSync(path.join(repoRoot, 'Core/internal/usercommand/execution-manifest.json'), 'utf8'));
+    if (execution.version !== skillsManifest.version) throw new Error('Reviewed execution manifest must match the pinned Skills version');
+    const adapted = adaptSkills({ root: path.join(stage, 'skills'), upstream: skillsManifest, upstreamBytes: readFileSync(path.join(repoRoot, 'runtime/lark-skills.json')), descriptors: execution.descriptors });
+    writeFileSync(path.join(stage, 'manifest.json'), `${JSON.stringify(adapted.manifest, null, 2)}\n`);
+    writeFileSync(path.join(stage, 'adaptation-report.json'), adapted.bytes);
     rmSync(output, { recursive: true, force: true });
     renameSync(stage, output);
   } finally {
@@ -192,4 +185,4 @@ for (const [target, artifact] of Object.entries(larkCliManifest.artifacts)) {
   if (existsSync(binary)) artifact.taskExecutableSha256 = sha256(binary);
 }
 writeFileSync(path.join(repoRoot, 'dist', 'runtime', 'lark-cli-runtime.json'), `${JSON.stringify(larkCliManifest, null, 2)}\n`);
-console.log(`Staged pinned lark-cli ${larkCliManifest.version} and ${skillsManifest.skills.length} official Skills plus ksfas.`);
+console.log(`Staged pinned lark-cli ${larkCliManifest.version} and ${skillsManifest.skills.length} KSFAssistant-adapted official Skills (no standalone ksfas).`);

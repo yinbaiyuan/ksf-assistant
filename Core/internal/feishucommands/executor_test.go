@@ -14,7 +14,28 @@ import (
 
 	"ksfassistant/core/internal/feishu"
 	"ksfassistant/core/internal/feishucli"
+	"ksfassistant/core/internal/feishuprotocol"
 )
+
+func TestEventStatusDoesNotExposeLegacyRole(t *testing.T) {
+	for _, profile := range []string{"", "primary", "manual-only"} {
+		t.Run(profile, func(t *testing.T) {
+			settings := feishu.DefaultSettings()
+			settings.Profile = profile
+			call := &invocation{ctx: context.Background()}
+			err := call.runClient(t.TempDir(), settings, []string{"events", "status"}, func(value any) error {
+				result := value.(map[string]any)
+				if !reflect.DeepEqual(result["transport"], feishuprotocol.ManagedEventConsumerStatus()) {
+					t.Fatalf("unexpected transport: %#v", result["transport"])
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
 
 type recordingExecutor struct {
 	calls   int
@@ -133,6 +154,7 @@ func TestTargetSetUsesTransferredValueAndPreservesEnvelope(t *testing.T) {
 func TestSnapshotAndDoctorDoNotDependOnTaskLinks(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("LARK_CLI_BIN", filepath.Join(root, "missing-cli"))
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", filepath.Join(root, "isolated-config"))
 	call := &invocation{ctx: context.Background(), dataRoot: root}
 	snapshot, err := call.clientAggregateSnapshot(root, feishu.DefaultSettings())
 	if err != nil {
@@ -146,7 +168,27 @@ func TestSnapshotAndDoctorDoNotDependOnTaskLinks(t *testing.T) {
 			t.Fatalf("non-Feishu capability %s", key)
 		}
 	}
-	doctor := call.nativeDoctor(root, feishu.Settings{Version: 1, Profile: feishu.ProfileManualOnly, Codex: feishu.CodexSettings{DefaultThreadTitle: "test"}}, feishu.CapabilityExecutor{Binary: filepath.Join(root, "missing-cli")})
+	doctor := call.nativeDoctor(root, feishu.Settings{Version: 1, Profile: "manual-only", Codex: feishu.CodexSettings{DefaultThreadTitle: "test"}}, feishu.CapabilityExecutor{Binary: filepath.Join(root, "missing-cli")})
+	checks, _ := json.Marshal(doctor["checks"])
+	var values []struct {
+		Name string `json:"name"`
+		OK   bool   `json:"ok"`
+	}
+	if err := json.Unmarshal(checks, &values); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, check := range values {
+		if check.Name == "event_consumers" {
+			found = true
+			if check.OK {
+				t.Fatal("missing consumers reported healthy")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("doctor did not inspect message/card listeners")
+	}
 	encoded, _ := json.Marshal([]any{snapshot, doctor})
 	for _, term := range []string{"taskLink", "task_links", "\"links\""} {
 		if strings.Contains(string(encoded), term) {

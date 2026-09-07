@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"ksfassistant/core/internal/usercommand"
 	"sort"
 	"strings"
 )
@@ -25,30 +26,24 @@ func RequiredPermissionScopes() (PermissionScopes, error) {
 	if value.SchemaVersion != 1 || len(value.Bot) != 17 || len(value.User) != 119 {
 		return PermissionScopes{}, fmt.Errorf("invalid embedded Feishu permission scope contract")
 	}
-	manifest, err := LoadCapabilityManifest()
+	scopes, err := usercommand.PermissionScopes()
 	if err != nil {
 		return PermissionScopes{}, err
 	}
 	bot, user := map[string]bool{}, map[string]bool{}
-	for _, scope := range value.Bot {
+	for _, scope := range append(value.Bot, scopes["bot"]...) {
 		bot[scope] = true
 	}
-	for _, scope := range value.User {
+	for _, scope := range append(value.User, scopes["user"]...) {
 		user[scope] = true
 	}
-	for _, definition := range manifest.Capabilities {
-		if !CapabilityPublished(definition) {
-			continue
-		}
-		for _, scope := range definition.RequiredScopes {
-			if definition.Identity == "bot" {
-				bot[scope] = true
-			} else {
-				user[scope] = true
-			}
-		}
+	// Typed approval/mail operations have no upstream scope metadata in the
+	// pinned schema; these explicit permissions supplement the shared descriptors.
+	for _, scope := range []string{"approval:approval:read", "approval:instance:read", "approval:instance:write", "approval:task:read", "approval:task:write", "mail:user_mailbox.message:readonly"} {
+		user[scope] = true
 	}
 	bot["mail:event"] = true
+	user["contact:user.base:readonly"] = true
 	value.Bot = sortedScopeSet(bot)
 	value.User = sortedScopeSet(user)
 	return value, nil
@@ -116,4 +111,25 @@ func stringList(value any) []string {
 		result = append(result, item...)
 	}
 	return result
+}
+
+func loginPermissionScopes(available []string) ([]string, error) {
+	contract, err := RequiredPermissionScopes()
+	if err != nil {
+		return nil, err
+	}
+	offered := map[string]bool{}
+	for _, scope := range available {
+		offered[scope] = true
+	}
+	if !offered["contact:user.base:readonly"] {
+		return nil, fmt.Errorf("application_permissions_missing")
+	}
+	requested := map[string]bool{"contact:user.base:readonly": true}
+	for _, scope := range contract.User {
+		if offered[scope] {
+			requested[scope] = true
+		}
+	}
+	return sortedScopeSet(requested), nil
 }

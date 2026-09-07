@@ -90,3 +90,11 @@ func (port eventFeishuPort) Record(event string, fields map[string]any) error {
 	}
 	return nil
 }
+
+func (p eventCorePort) ObserveThread(ctx context.Context, owner, thread, turn string) (map[string]any, string, error) {
+	if observer, ok := p.CorePort.(ObservationPort); ok {
+		return observer.ObserveThread(ctx, owner, thread, turn)
+	}
+	s, e := p.ReadThread(ctx, owner, thread, turn)
+	return s, "", e
+}

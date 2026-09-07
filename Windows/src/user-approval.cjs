@@ -5,7 +5,7 @@ function parsePoll(value, now = Date.now()) {
   if (!exact(value, ['schemaVersion', 'request']) || value.schemaVersion !== 1) throw new Error('批准协议无效');
   if (value.request === null) return null;
   const request = value.request;
-  if (!exact(request, ['id', 'title', 'user', 'application', 'action', 'target', 'content', 'attachments', 'source', 'expiresAt'])) throw new Error('批准请求无效');
+  if (!exact(request, ['id', 'title', 'user', 'application', 'action', 'target', 'content', 'attachments', 'source', 'expiresAt', ...(Object.hasOwn(request, 'preview') ? ['preview'] : [])])) throw new Error('批准请求无效');
   for (const key of ['id', 'title', 'user', 'application', 'action', 'target', 'content', 'source', 'expiresAt']) {
     if (typeof request[key] !== 'string' || request[key].includes('\0') || (key !== 'content' && !request[key].trim())) throw new Error('批准字段无效');
     if (Buffer.byteLength(request[key]) > (key === 'content' ? 1_048_576 : key === 'id' ? 256 : 65_536)) throw new Error('批准字段过长');
@@ -15,6 +15,10 @@ function parsePoll(value, now = Date.now()) {
   if (!Array.isArray(request.attachments) || request.attachments.length > 1000) throw new Error('附件无效');
   for (const attachment of request.attachments) {
     if (!exact(attachment, ['name', 'size', 'sha256']) || typeof attachment.name !== 'string' || !attachment.name || attachment.name.includes('\0') || Buffer.byteLength(attachment.name) > 4096 || !Number.isSafeInteger(attachment.size) || attachment.size < 0 || typeof attachment.sha256 !== 'string' || !/^[a-fA-F0-9]{64}$/.test(attachment.sha256)) throw new Error('附件无效');
+  }
+  if (Object.hasOwn(request, 'preview')) {
+    const preview = request.preview;
+    if (!exact(preview, ['content', 'confirmLabel', 'destructive']) || typeof preview.content !== 'string' || preview.content.includes('\0') || Buffer.byteLength(preview.content) > 262144 || typeof preview.confirmLabel !== 'string' || !preview.confirmLabel.trim() || [...preview.confirmLabel].length > 8 || /[\0\r\n]/.test(preview.confirmLabel) || typeof preview.destructive !== 'boolean') throw new Error('批准预览无效');
   }
   return structuredClone(request);
 }

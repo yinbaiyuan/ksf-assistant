@@ -128,12 +128,7 @@ func TestNormalizedHistoryDayCountUsesBoundedDefault(t *testing.T) {
 }
 
 func TestPermissionsReadyRequiresVerifiedUserWithNoMissingScopes(t *testing.T) {
-	ready := map[string]any{"permissions": map[string]any{
-		"verified": true,
-		"identities": map[string]any{"user": map[string]any{
-			"ready": true, "missing": []any{},
-		}},
-	}}
+	ready := completeSetupPermissions()
 	if !permissionsReady(ready) {
 		t.Fatal("expected complete permissions to be ready")
 	}
@@ -232,25 +227,6 @@ func TestNormalizedDaysSortsBeforeApplyingLimit(t *testing.T) {
 	}
 }
 
-func TestOnlyReadyFeishuSetupConfiguresManagedBridge(t *testing.T) {
-	for _, stage := range []string{
-		managedfeishu.SetupNotStarted,
-		managedfeishu.SetupAppPending,
-		managedfeishu.SetupAppConfigured,
-		managedfeishu.SetupAuthorizationPending,
-		managedfeishu.SetupPlatformPending,
-		managedfeishu.SetupVerifying,
-		managedfeishu.SetupFailed,
-	} {
-		if feishuSetupConfiguresBridge(stage) {
-			t.Fatalf("unfinished stage %q configured the bridge", stage)
-		}
-	}
-	if !feishuSetupConfiguresBridge(managedfeishu.SetupReady) {
-		t.Fatal("ready setup did not configure the bridge")
-	}
-}
-
 func TestDashboardRecognizesNativeFeishuRuntimeWithoutLegacyServiceRoot(t *testing.T) {
 	nativeOnly := &Service{managedFeishuSupervisor: &managedfeishu.Supervisor{}}
 	if !nativeOnly.hasFeishuRuntime() {
@@ -261,41 +237,23 @@ func TestDashboardRecognizesNativeFeishuRuntimeWithoutLegacyServiceRoot(t *testi
 	}
 }
 
-func TestFeishuSetupSettingsKeepRealWritesDisabledUntilConfirmation(t *testing.T) {
+func TestFeishuActivationSettingsChangeOnlyOutbound(t *testing.T) {
 	settings := managedfeishu.DefaultSettings()
-	prepared := prepareFeishuDryRunSettings(settings)
-	if prepared.Profile != managedfeishu.ProfilePrimary {
-		t.Fatalf("onboarding must enable the primary inbound profile: %q", prepared.Profile)
-	}
-	if !prepared.Outbound.Enabled || !prepared.Outbound.DryRun {
-		t.Fatalf("verification must prepare dry-run only: %#v", prepared.Outbound)
-	}
-	if feishuSetupCanBecomeReady(prepared) {
-		t.Fatal("dry-run setup must not be marked ready")
-	}
-
-	activated := activateFeishuSettings(prepared)
+	settings.Profile = "manual-only"
+	settings.Actionbox = managedfeishu.DryRunSwitch{Enabled: true, DryRun: false}
+	activated := activateFeishuSettings(settings)
 	if !activated.Outbound.Enabled || activated.Outbound.DryRun {
 		t.Fatalf("explicit confirmation did not activate real outbound: %#v", activated.Outbound)
 	}
-	if !feishuSetupCanBecomeReady(activated) {
-		t.Fatal("confirmed outbound setup should be eligible for ready")
+	activated.Outbound = settings.Outbound
+	if activated != settings {
+		t.Fatal("activation changed unrelated policy")
 	}
 }
 
 func TestFeishuSettingsOverviewSeparatesEnabledFromWriteModes(t *testing.T) {
-	settings := managedfeishu.DefaultSettings()
-	settings.Group.Enabled = true
-	settings.Directory.Enabled = true
-	settings.Docbox = managedfeishu.DryRunSwitch{Enabled: true, DryRun: true}
-	settings.Actionbox = managedfeishu.DryRunSwitch{Enabled: true, DryRun: false}
-	features := feishuFeatureOverview(settings)
-	states := map[string]string{}
-	for _, feature := range features {
-		states[feature.ID] = feature.State
-	}
-	if states["groupMessaging"] != "enabled" || states["peopleDirectory"] != "enabled" || states["groupDirectory"] != "off" || states["docbox"] != "dry_run" || states["actionbox"] != "live" {
-		t.Fatalf("unexpected feature projection: %#v", states)
+	if len(feishuFeatureOverview(managedfeishu.DefaultSettings())) != 0 {
+		t.Fatal("retired product capabilities exposed")
 	}
 }
 
@@ -331,7 +289,7 @@ func TestNormalizedFeishuSnapshotKeepsCollectionsAsArrays(t *testing.T) {
 	}
 }
 
-func TestFeishuActivationWaitsForReadyBeforeSending(t *testing.T) {
+func TestFeishuActivationNeverSendsOrRollsBack(t *testing.T) {
 	source, err := os.ReadFile("service.go")
 	if err != nil {
 		t.Fatal(err)
@@ -341,19 +299,18 @@ func TestFeishuActivationWaitsForReadyBeforeSending(t *testing.T) {
 	if start < 0 {
 		t.Fatal("activation implementation not found")
 	}
-	end := strings.Index(body[start:], "func (service *Service) prepareFeishuDryRun")
+	end := strings.Index(body[start:], "func (service *Service) saveAndRestartFeishuSettings")
 	if end < 0 {
 		t.Fatal("activation implementation not found")
 	}
 	body = body[start : start+end]
 	wait := strings.Index(body, `waitForFeishuAvailability(ctx, "ready"`)
-	send := strings.Index(body, "service.SendFeishuTest(ctx, targetAlias)")
-	if wait < 0 || send <= wait {
-		t.Fatal("activation must wait for the managed bridge before its real test send")
+	if wait >= 0 || !strings.Contains(body, "configuration_action_retired") || strings.Contains(body, "SendFeishuTest") || strings.Contains(body, "rollback") || strings.Contains(body, "permissionsReady") {
+		t.Fatal("activation must only enable outbound and observe runtime without user-scope gating or a test send")
 	}
 }
 
-func TestConfigureCodexProcessEnvironmentDiscoversUserInstallWithoutPATH(t *testing.T) {
+func TestConfigureCodexProcessEnvironmentHonorsExplicitInstallWithoutPATH(t *testing.T) {
 	home := t.TempDir()
 	name := "codex"
 	if runtime.GOOS == "windows" {
@@ -367,7 +324,7 @@ func TestConfigureCodexProcessEnvironmentDiscoversUserInstallWithoutPATH(t *test
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", "")
-	t.Setenv("CODEX_BIN", "")
+	t.Setenv("CODEX_BIN", executable)
 	resolved, err := configureCodexProcessEnvironment(home)
 	if err != nil {
 		t.Fatal(err)

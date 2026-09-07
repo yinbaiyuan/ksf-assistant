@@ -25,7 +25,7 @@ import (
 	"ksfassistant/core/internal/tokens"
 )
 
-const Version = "0.11.0-preview.3"
+const Version = "0.11.0-preview.4"
 
 const (
 	rateRefreshInterval      = 5 * time.Minute
@@ -52,9 +52,10 @@ type IntegrationContextRequest struct {
 }
 
 type FeishuFeatureUpdateRequest struct {
-	Feature          string `json:"feature"`
-	Mode             string `json:"mode"`
-	ConfirmRealWrite bool   `json:"confirmRealWrite"`
+	ExpectedSettings *managedfeishu.Settings `json:"-"`
+	Feature          string                  `json:"feature"`
+	Mode             string                  `json:"mode"`
+	ConfirmRealWrite bool                    `json:"confirmRealWrite"`
 }
 
 type FeishuOperationPrepareRequest struct {
@@ -113,6 +114,7 @@ type PricingCatalogRequest struct {
 }
 
 type Service struct {
+	configuration           configurationRuntime
 	approvalMu              sync.Mutex
 	userApprovals           *approvalState
 	integrationRuntime      *integration.Runtime
@@ -355,10 +357,32 @@ func (service *Service) InterruptTaskLink(ctx context.Context, request TaskLinkR
 }
 
 func (service *Service) SendFeishuTest(ctx context.Context, target string) error {
+	return errors.New("configuration_confirmation_required")
+}
+func (service *Service) sendConfigurationTest(ctx context.Context, target, requestID string) error {
 	if service.managedFeishuSupervisor == nil {
-		return errors.New("KSFAssistant Feishu is unavailable")
+		return errors.New("test_not_submitted_transport_unavailable")
 	}
-	return service.managedFeishuSupervisor.Call(ctx, "bridge/message/test", map[string]any{"targetAlias": target}, nil)
+	var result feishuprotocol.MessageResult
+	err := service.managedFeishuSupervisor.Call(ctx, feishuprotocol.MethodMessageTest, map[string]any{"targetAlias": target, "requestId": requestID, "confirm": true}, &result)
+	if err != nil || result.MessageID == "" {
+		var receipt struct {
+			Outcome   string `json:"outcome"`
+			MessageID string `json:"messageId"`
+		}
+		if queryErr := service.managedFeishuSupervisor.Call(ctx, "bridge/message/test/result", map[string]any{"requestId": requestID}, &receipt); queryErr == nil {
+			if receipt.Outcome == "completed" && receipt.MessageID != "" {
+				return nil
+			}
+			if receipt.Outcome == "failed" {
+				return errors.New("test_definitive_failure")
+			}
+		}
+		if err == nil {
+			return errors.New("test_receipt_missing")
+		}
+	}
+	return err
 }
 
 func (service *Service) PrepareFeishuOperation(ctx context.Context, request FeishuOperationPrepareRequest) (managedfeishu.PreparedOperation, error) {
@@ -416,13 +440,19 @@ func (service *Service) UpdateFeishuCapabilityPolicy(ctx context.Context, reques
 }
 
 func (service *Service) FeishuProfile(ctx context.Context) (map[string]any, error) {
-	settings, err := service.FeishuSettings()
-	return map[string]any{"status": "ok", "eventConsumer": map[string]any{"profile": settings.Profile, "profileValid": err == nil, "desiredConnection": settings.Profile == managedfeishu.ProfilePrimary}}, err
+	if _, err := service.FeishuSettings(); err != nil {
+		return nil, err
+	}
+	return map[string]any{"status": "ok", "eventConsumer": feishuprotocol.ManagedEventConsumerStatus()}, nil
 }
 
 func (service *Service) ConfigureFeishu(ctx context.Context, appID, appSecret string) error {
 	if service.managedFeishuSupervisor == nil {
 		return errors.New("KSFAssistant Feishu is unavailable")
+	}
+	evidence, err := service.readConfigurationEvidence(ctx)
+	if err != nil || evidence.ApplicationState != "missing" {
+		return errors.New("官方 CLI 已有配置或配置状态未确认，请检查并沿用当前应用；不会覆盖配置")
 	}
 	var result map[string]any
 	return service.managedFeishuSupervisor.Call(ctx, "bridge/auth/configure", map[string]any{"appId": appID, "appSecret": appSecret, "brand": "feishu", "profile": "default"}, &result)
@@ -433,30 +463,12 @@ func (service *Service) FeishuSettings() (managedfeishu.Settings, error) {
 }
 
 func (service *Service) UpdateFeishuSettings(settings managedfeishu.Settings) (managedfeishu.Settings, error) {
-	store := remoteSettingsStore{service}
-	previous, err := store.Load()
-	if err != nil {
-		return managedfeishu.Settings{}, err
-	}
-	if err := store.Save(settings); err != nil {
-		return managedfeishu.Settings{}, err
-	}
-	if service.managedFeishuSupervisor == nil {
-		return store.Load()
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	var applied managedfeishu.Settings
-	if err := service.managedFeishuSupervisor.Call(ctx, "bridge/settings/reload", map[string]any{}, &applied); err != nil {
-		_ = store.Save(previous)
+	if err := service.saveAndRestartFeishuSettings(ctx, settings); err != nil {
 		return managedfeishu.Settings{}, err
 	}
-	if err := service.restartFeishuSupervisor(ctx); err != nil {
-		_ = store.Save(previous)
-		_ = service.restartFeishuSupervisor(context.Background())
-		return managedfeishu.Settings{}, err
-	}
-	return store.Load()
+	return (remoteSettingsStore{service}).Load()
 }
 
 func (service *Service) FeishuSetup() (managedfeishu.SetupState, error) {
@@ -468,6 +480,7 @@ func (service *Service) BeginFeishuSetup(ctx context.Context, mode, appID, appSe
 	state.Mode = mode
 	var result map[string]any
 	var err error
+	restartAfterSave := false
 	switch mode {
 	case managedfeishu.SetupModeExisting:
 		if strings.TrimSpace(appID) == "" || appSecret == "" {
@@ -481,28 +494,55 @@ func (service *Service) BeginFeishuSetup(ctx context.Context, mode, appID, appSe
 			return nil, errors.New("KSFAssistant Feishu is unavailable")
 		}
 		err = service.managedFeishuSupervisor.Call(ctx, "bridge/auth/start", map[string]any{"kind": "config", "profile": "default", "createNew": true}, &result)
-		state.Stage = managedfeishu.SetupAppPending
-		if result != nil {
-			state.VerificationURL, _ = result["verificationUrl"].(string)
+		if err == nil {
+			state.Stage, err = appConfigurationStage(result)
+			restartAfterSave = state.Stage == managedfeishu.SetupAppConfigured
 		}
+	case "reuse":
+		if service.managedFeishuSupervisor == nil {
+			return nil, errors.New("KSFAssistant Feishu is unavailable")
+		}
+		state.Mode = managedfeishu.SetupModeExisting
+		err = service.managedFeishuSupervisor.Call(ctx, feishuprotocol.MethodAuthStart, map[string]any{"kind": "config", "profile": "default", "createNew": false}, &result)
+		if err == nil && (result["status"] != "configured" || result["flow"] != "existing-config") {
+			err = errors.New("官方 CLI 现有应用配置尚未验证，未变更配置向导")
+		}
+		state.Stage = managedfeishu.SetupAppConfigured
 	default:
 		return nil, errors.New("不支持的飞书配置方式")
 	}
 	store := remoteSetupStore{service}
 	if err != nil {
-		state.Stage = managedfeishu.SetupFailed
-		state.LastError = safeSetupError(err)
-		_ = store.Save(state)
 		return nil, err
 	}
 	if err := store.Save(state); err != nil {
 		return nil, err
 	}
-	if service.managedFeishuSupervisor != nil {
-		service.managedFeishuSupervisor.SetConfigured(false)
+	if restartAfterSave {
+		if err := service.restartFeishuSupervisor(ctx); err != nil {
+			return nil, err
+		}
+		service.clearFeishuCache()
 	}
-	result["setup"] = state
+	publicState := state
+	if state.Stage == managedfeishu.SetupAppPending {
+		publicState.VerificationURL, _ = result["verificationUrl"].(string)
+		publicState.UserCode, _ = result["userCode"].(string)
+	}
+	result["setup"] = publicState
 	return result, nil
+}
+
+func appConfigurationStage(result map[string]any) (string, error) {
+	if result["flow"] == "app-create" {
+		switch result["status"] {
+		case "pending":
+			return managedfeishu.SetupAppPending, nil
+		case "completed":
+			return managedfeishu.SetupAppConfigured, nil
+		}
+	}
+	return "", errors.New("应用创建会话未返回有效结果，请重新检查；未启动用户授权")
 }
 
 func (service *Service) ContinueFeishuSetup(ctx context.Context) (map[string]any, error) {
@@ -512,29 +552,49 @@ func (service *Service) ContinueFeishuSetup(ctx context.Context) (map[string]any
 		return nil, err
 	}
 	var result map[string]any
-	verifyAfterSave := false
+	restartAfterSave := false
 	switch state.Stage {
-	case managedfeishu.SetupAppPending, managedfeishu.SetupAppConfigured:
-		result, err = service.StartFeishuAuth(ctx)
-		if err == nil {
-			state.Stage = managedfeishu.SetupAuthorizationPending
-			state.VerificationURL, _ = result["verificationUrl"].(string)
-			state.UserCode, _ = result["userCode"].(string)
+	case managedfeishu.SetupAppPending:
+		state.VerificationURL = ""
+		state.UserCode = ""
+		state.ReadyToActivate = false
+		if service.managedFeishuSupervisor == nil {
+			err = errors.New("KSFAssistant Feishu is unavailable")
+		} else {
+			err = service.managedFeishuSupervisor.Call(ctx, feishuprotocol.MethodAuthConfigFinish, map[string]any{}, &result)
 		}
-	case managedfeishu.SetupAuthorizationPending:
-		err = service.ensureCurrentFeishuUser(ctx)
-		if err != nil {
-			err = service.FinishFeishuAuth(ctx)
+		if err == nil {
+			var stage string
+			stage, err = appConfigurationStage(result)
 			if err == nil {
-				err = service.ensureCurrentFeishuUser(ctx)
+				state.Stage = stage
+				restartAfterSave = stage == managedfeishu.SetupAppConfigured
 			}
 		}
-		if err == nil {
+	case managedfeishu.SetupAppConfigured:
+		var evidence feishuprotocol.ConfigurationEvidence
+		evidence, err = service.readConfigurationEvidence(ctx)
+		if err != nil {
+			break
+		}
+		if confirmedFeishuUserAuth(evidence.Auth) && evidence.ApplicationState == "present" {
 			state.Stage = managedfeishu.SetupPlatformPending
-			state.VerificationURL = ""
-			state.UserCode = ""
+			result = map[string]any{"status": "authorized"}
+		} else if evidence.ApplicationState != "present" || evidence.Auth == nil || evidence.Auth.Status != "unauthorized" {
+			err = errors.New("当前应用或授权状态尚未确认，请先检查；未自动发起授权")
+		} else if result, err = service.StartFeishuAuth(ctx); err == nil {
+			state.Stage = managedfeishu.SetupAuthorizationPending
+		}
+	case managedfeishu.SetupAuthorizationPending:
+		var auth feishuprotocol.AuthStatus
+		auth, err = service.FinishDesktopFeishuAuth(ctx)
+		if err == nil && confirmedFeishuUserAuth(&auth) {
+			state.Stage = managedfeishu.SetupPlatformPending
 			result = map[string]any{"status": "authenticated"}
-			verifyAfterSave = true
+		} else if err == nil && auth.Status == "pending" {
+			result = publicFeishuAuthResult(auth)
+		} else if err == nil {
+			err = errors.New("用户授权结果尚未确认，请重新检查")
 		}
 	case managedfeishu.SetupPlatformPending, managedfeishu.SetupFailed:
 		return service.VerifyFeishuSetup(ctx)
@@ -543,8 +603,13 @@ func (service *Service) ContinueFeishuSetup(ctx context.Context) (map[string]any
 	default:
 		return nil, errors.New("请先开始飞书配置")
 	}
+	state.VerificationURL = ""
+	state.UserCode = ""
 	if err != nil {
 		state.LastError = safeSetupError(err)
+		if state.Stage == managedfeishu.SetupAppPending {
+			state.LastError = "应用创建尚未完成或会话已失效，请重新检查或重新开始；未启动用户授权"
+		}
 		_ = store.Save(state)
 		return nil, err
 	}
@@ -552,145 +617,76 @@ func (service *Service) ContinueFeishuSetup(ctx context.Context) (map[string]any
 	if err := store.Save(state); err != nil {
 		return nil, err
 	}
-	if verifyAfterSave {
-		return service.VerifyFeishuSetup(ctx)
+	if restartAfterSave {
+		if err := service.restartFeishuSupervisor(ctx); err != nil {
+			return nil, err
+		}
+		service.clearFeishuCache()
 	}
-	result["setup"] = state
+	publicState := state
+	if state.Stage == managedfeishu.SetupAppPending || state.Stage == managedfeishu.SetupAuthorizationPending {
+		publicState.VerificationURL, _ = result["verificationUrl"].(string)
+		publicState.UserCode, _ = result["userCode"].(string)
+	}
+	result["setup"] = publicState
 	return result, nil
 }
 
 func (service *Service) VerifyFeishuSetup(ctx context.Context) (map[string]any, error) {
-	permissions, err := service.FeishuPermissions(ctx)
 	store := remoteSetupStore{service}
 	state, loadErr := store.Load()
 	if loadErr != nil {
 		return nil, loadErr
 	}
+	if state.Stage == managedfeishu.SetupAppPending || state.Mode == managedfeishu.SetupModeNew && state.Stage == managedfeishu.SetupAppConfigured {
+		return nil, errors.New("请先完成应用创建，并单独开始用户授权；现有授权状态不能替代创建会话")
+	}
+	permissions, err := service.FeishuPermissions(ctx)
 	if err != nil {
-		state.Stage = managedfeishu.SetupFailed
-		state.LastError = safeSetupError(err)
-		_ = store.Save(state)
 		return nil, err
 	}
-	state.Stage = managedfeishu.SetupPlatformPending
-	state.ReadyToActivate = false
+	status := "incomplete"
 	if permissionsReady(permissions) {
-		if err := service.ensureCurrentFeishuUser(ctx); err != nil {
-			state.Stage = managedfeishu.SetupFailed
-			state.LastError = safeSetupError(err)
-			_ = store.Save(state)
-			return nil, err
-		}
-		if err := service.prepareFeishuDryRun(ctx); err != nil {
-			state.Stage = managedfeishu.SetupFailed
-			state.LastError = safeSetupError(err)
-			_ = store.Save(state)
-			return nil, err
-		}
-		state.ReadyToActivate = true
+		status = "verified"
 	}
-	state.LastError = ""
-	if err := store.Save(state); err != nil {
-		return nil, err
-	}
-	if service.managedFeishuSupervisor != nil {
-		service.managedFeishuSupervisor.SetConfigured(feishuSetupConfiguresBridge(state.Stage))
-	}
-	return map[string]any{"status": state.Stage, "setup": state, "permissions": permissions["permissions"]}, nil
+	return map[string]any{"status": status, "setup": state, "permissions": permissions["permissions"]}, nil
 }
 
-func (service *Service) ActivateFeishuSetup(ctx context.Context, targetAlias string) (map[string]any, error) {
-	store := remoteSetupStore{service}
-	state, err := store.Load()
-	if err != nil {
-		return nil, err
-	}
-	targetAlias = strings.TrimSpace(targetAlias)
-	if !state.ReadyToActivate || (state.Stage != managedfeishu.SetupPlatformPending && state.Stage != managedfeishu.SetupFailed) {
-		return nil, errors.New("请先重新检查飞书后台设置")
-	}
-	if targetAlias == "" {
-		return nil, errors.New("请选择软件内显示的测试目标")
-	}
-	snapshot := service.readFeishu(ctx, time.Now())
-	if !containsString(snapshot.TargetAliases, targetAlias) {
-		return nil, errors.New("测试目标已失效，请重新检查飞书配置")
-	}
-
-	settingsStore := remoteSettingsStore{service}
-	previous, err := settingsStore.Load()
-	if err != nil {
-		return nil, err
-	}
-	activated := activateFeishuSettings(previous)
-	if err := service.saveAndRestartFeishuSettings(ctx, activated); err != nil {
-		return nil, err
-	}
-	_, err = service.waitForFeishuAvailability(ctx, "ready", 45*time.Second)
-	if err == nil {
-		err = service.SendFeishuTest(ctx, targetAlias)
-	}
-	if err != nil {
-		rollbackContext, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		_ = service.saveAndRestartFeishuSettings(rollbackContext, prepareFeishuDryRunSettings(previous))
-		state.Stage = managedfeishu.SetupFailed
-		state.ReadyToActivate = true
-		state.LastError = safeSetupError(err)
-		_ = store.Save(state)
-		return nil, err
-	}
-
-	state.Stage = managedfeishu.SetupReady
-	state.ReadyToActivate = false
-	state.LastError = ""
-	if err := store.Save(state); err != nil {
-		return nil, err
-	}
-	if service.managedFeishuSupervisor != nil {
-		service.managedFeishuSupervisor.SetConfigured(true)
-	}
-	service.clearFeishuCache()
-	return map[string]any{"status": state.Stage, "setup": state}, nil
+func (service *Service) ActivateFeishuSetup(ctx context.Context, _ string) (map[string]any, error) {
+	return service.activateFeishuSetup(ctx, nil)
 }
 
-func (service *Service) prepareFeishuDryRun(ctx context.Context) error {
-	store := remoteSettingsStore{service}
-	settings, err := store.Load()
-	if err != nil {
-		return err
-	}
-	settings = prepareFeishuDryRunSettings(settings)
-	if err := service.saveAndRestartFeishuSettings(ctx, settings); err != nil {
-		return err
-	}
-	snapshot, err := service.waitForFeishuAvailability(ctx, "dryRun", 45*time.Second)
-	if err != nil {
-		return err
-	}
-	target := preferredFeishuSetupTarget(snapshot.TargetAliases)
-	if target == "" {
-		return errors.New("未找到软件自动授权的飞书测试目标")
-	}
-	return service.SendFeishuTest(ctx, target)
+func (service *Service) ActivateFeishuSetupWithExpected(ctx context.Context, expected managedfeishu.Settings) (map[string]any, error) {
+	return service.activateFeishuSetup(ctx, &expected)
+}
+
+func (service *Service) activateFeishuSetup(ctx context.Context, expected *managedfeishu.Settings) (map[string]any, error) {
+	return nil, errors.New("configuration_action_retired")
 }
 
 func (service *Service) saveAndRestartFeishuSettings(ctx context.Context, settings managedfeishu.Settings) error {
-	store := remoteSettingsStore{service}
-	previous, err := store.Load()
+	previous, err := (remoteSettingsStore{service}).Load()
 	if err != nil {
 		return err
 	}
-	if err := store.Save(settings); err != nil {
+	return service.compareAndSwapAndRestartFeishuSettings(ctx, previous, settings)
+}
+
+func (service *Service) compareAndSwapAndRestartFeishuSettings(ctx context.Context, previous, settings managedfeishu.Settings) error {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := service.restartFeishuSupervisor(ctx); err != nil {
-		if rollbackErr := store.Save(previous); rollbackErr != nil {
-			return fmt.Errorf("重启飞书服务失败，且无法恢复原设置：%v；恢复失败：%w", err, rollbackErr)
+	store := remoteSettingsStore{service}
+	if err := store.CompareAndSwap(ctx, previous, settings); err != nil {
+		if errors.Is(err, ErrFeishuSettingsConflict) {
+			return err
 		}
-		return err
+		return errors.New("设置保存结果未确认，请检查当前设置；不会自动重试")
 	}
 	service.clearFeishuCache()
+	if err := service.restartFeishuSupervisor(ctx); err != nil {
+		return errors.New("设置已保存，但服务重启结果未确认；请检查当前状态，不会自动还原设置")
+	}
 	return nil
 }
 
@@ -701,33 +697,10 @@ func (service *Service) waitForFeishuAvailability(ctx context.Context, expected 
 	return waitForSetupSnapshot(ctx, expected, timeout, service.fetchFeishuSnapshot)
 }
 
-func prepareFeishuDryRunSettings(settings managedfeishu.Settings) managedfeishu.Settings {
-	settings.Profile = managedfeishu.ProfilePrimary
-	settings.Outbound.Enabled = true
-	settings.Outbound.DryRun = true
-	return settings
-}
-
 func activateFeishuSettings(settings managedfeishu.Settings) managedfeishu.Settings {
 	settings.Outbound.Enabled = true
 	settings.Outbound.DryRun = false
 	return settings
-}
-
-func feishuSetupCanBecomeReady(settings managedfeishu.Settings) bool {
-	return settings.Outbound.Enabled && !settings.Outbound.DryRun
-}
-
-func preferredFeishuSetupTarget(aliases []string) string {
-	for _, alias := range aliases {
-		if alias == "我" {
-			return alias
-		}
-	}
-	if len(aliases) == 1 {
-		return aliases[0]
-	}
-	return ""
 }
 
 func containsString(values []string, expected string) bool {
@@ -745,19 +718,17 @@ func (service *Service) CancelFeishuSetup() (managedfeishu.SetupState, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := service.managedFeishuSupervisor.Call(ctx, feishuprotocol.MethodAuthCancel, map[string]any{}, nil); err != nil {
-		return managedfeishu.SetupState{}, errors.New("未能终止飞书授权，请重试取消")
+	var flow *feishuprotocol.ConfigurationFlow
+	if err := service.managedFeishuSupervisor.Call(ctx, feishuprotocol.MethodConfigurationFlow, map[string]any{}, &flow); err != nil {
+		return managedfeishu.SetupState{}, err
 	}
-	state := managedfeishu.DefaultSetupState()
-	err := (remoteSetupStore{service}).Save(state)
-	if err == nil && service.managedFeishuSupervisor != nil {
-		service.managedFeishuSupervisor.SetConfigured(false)
+	if flow != nil && flow.State == "pending" {
+		request := feishuprotocol.ConfigurationCancelRequest{FlowID: flow.ID, Kind: flow.Kind}
+		if err := service.managedFeishuSupervisor.Call(ctx, feishuprotocol.MethodConfigurationCancel, request, nil); err != nil {
+			return managedfeishu.SetupState{}, errors.New("未能确认指定会话已终止，请检查当前状态")
+		}
 	}
-	return state, err
-}
-
-func feishuSetupConfiguresBridge(stage string) bool {
-	return stage == managedfeishu.SetupReady
+	return (remoteSetupStore{service}).Load()
 }
 
 func safeSetupError(err error) string {
@@ -775,13 +746,14 @@ func safeSetupError(err error) string {
 }
 
 func permissionsReady(result map[string]any) bool {
-	permissions, _ := result["permissions"].(map[string]any)
-	verified, _ := permissions["verified"].(bool)
-	identities, _ := permissions["identities"].(map[string]any)
-	user, _ := identities["user"].(map[string]any)
-	ready, _ := user["ready"].(bool)
-	missing, _ := user["missing"].([]any)
-	return verified && ready && len(missing) == 0
+	report, err := decodeFeishuPermissionReport(result)
+	if err != nil || report.Permissions.Verified == nil || !*report.Permissions.Verified || report.Permissions.Identities.Bot.Ready == nil || !*report.Permissions.Identities.Bot.Ready {
+		return false
+	}
+	overview := feishuPermissionOverview(result, nil)
+	user := report.Permissions.Identities.User
+	combined, _ := feishuScopeEvidenceState(&user.feishuScopeEvidence)
+	return overview.Application == "verified" && overview.User == "verified" && combined == "verified"
 }
 
 func (service *Service) StartFeishuAuth(ctx context.Context) (map[string]any, error) {
@@ -828,8 +800,8 @@ func (service *Service) FeishuSettingsOverview(ctx context.Context) (domain.Feis
 	overview := domain.FeishuSettingsOverview{
 		State:       snapshot.Availability,
 		Summary:     feishuOverviewSummary(snapshot),
-		Profile:     settings.Profile,
-		Health:      domain.FeishuSettingsHealth{Core: "running", Bridge: feishuServiceHealth(snapshot), Inbound: feishuInboundHealth(settings.Profile, snapshot), Detail: snapshot.Message},
+		Profile:     feishuprotocol.ManagedEventProfile,
+		Health:      domain.FeishuSettingsHealth{Core: "running", Bridge: feishuServiceHealth(snapshot), Inbound: feishuInboundHealth(snapshot), Detail: snapshot.Message},
 		Permissions: feishuPermissionOverview(permissions, permissionErr),
 		Features:    feishuFeatureOverview(settings),
 		Targets:     snapshot.TargetAliases,
@@ -838,111 +810,76 @@ func (service *Service) FeishuSettingsOverview(ctx context.Context) (domain.Feis
 }
 
 func (service *Service) UpdateFeishuFeature(ctx context.Context, request FeishuFeatureUpdateRequest) (domain.FeishuSettingsOverview, error) {
-	settings, err := service.FeishuSettings()
-	if err != nil {
-		return domain.FeishuSettingsOverview{}, err
-	}
-	mode := strings.TrimSpace(request.Mode)
-	switch request.Feature {
-	case "groupMessaging":
-		if mode != "off" && mode != "enabled" {
-			return domain.FeishuSettingsOverview{}, errors.New("群聊消息处理只支持关闭或启用")
-		}
-		settings.Group.Enabled = mode == "enabled"
-	case "peopleDirectory":
-		if mode != "off" && mode != "enabled" {
-			return domain.FeishuSettingsOverview{}, errors.New("人员查询只支持关闭或启用")
-		}
-		settings.Directory.Enabled = mode == "enabled"
-	case "groupDirectory":
-		if mode != "off" && mode != "enabled" {
-			return domain.FeishuSettingsOverview{}, errors.New("群组查询只支持关闭或启用")
-		}
-		settings.GroupDirectory.Enabled = mode == "enabled"
-	case "docbox", "actionbox":
-		if mode != "off" && mode != "dry_run" && mode != "live" {
-			return domain.FeishuSettingsOverview{}, errors.New("写入能力只支持关闭、演练或真实执行")
-		}
-		if mode == "live" && !request.ConfirmRealWrite {
-			return domain.FeishuSettingsOverview{}, errors.New("允许真实执行前需要明确确认")
-		}
-		value := managedfeishu.DryRunSwitch{Enabled: mode != "off", DryRun: mode != "live"}
-		if request.Feature == "docbox" {
-			settings.Docbox = value
-		} else {
-			settings.Actionbox = value
-		}
-	default:
-		return domain.FeishuSettingsOverview{}, errors.New("不支持的飞书高级功能")
-	}
-	if err := service.saveAndRestartFeishuSettings(ctx, settings); err != nil {
-		return domain.FeishuSettingsOverview{}, err
-	}
-	return service.FeishuSettingsOverview(ctx)
+	return domain.FeishuSettingsOverview{}, errors.New("configuration_action_retired")
 }
 
 func feishuFeatureOverview(settings managedfeishu.Settings) []domain.FeishuFeatureOverview {
-	switchState := func(enabled bool) string {
-		if enabled {
-			return "enabled"
-		}
-		return "off"
-	}
-	writeState := func(value managedfeishu.DryRunSwitch) string {
-		if !value.Enabled {
-			return "off"
-		}
-		if value.DryRun {
-			return "dry_run"
-		}
-		return "live"
-	}
-	return []domain.FeishuFeatureOverview{
-		{ID: "groupMessaging", Title: "群聊消息处理", Description: "在群聊中接收并处理消息", State: switchState(settings.Group.Enabled)},
-		{ID: "peopleDirectory", Title: "人员查询", Description: "按姓名查询已授权人员", State: switchState(settings.Directory.Enabled)},
-		{ID: "groupDirectory", Title: "群组查询", Description: "按名称查询已授权群组", State: switchState(settings.GroupDirectory.Enabled)},
-		{ID: "docbox", Title: "文档与知识库", Description: "通过受控队列处理文档写入", State: writeState(settings.Docbox), Writable: true},
-		{ID: "actionbox", Title: "自动化与队列", Description: "通过受控队列执行自动化操作", State: writeState(settings.Actionbox), Writable: true},
-	}
+	return []domain.FeishuFeatureOverview{}
 }
 
 func feishuPermissionOverview(value map[string]any, callErr error) domain.FeishuPermissionOverview {
 	if callErr != nil {
 		return domain.FeishuPermissionOverview{Application: "unavailable", User: "unavailable", Missing: []string{}}
 	}
-	data, _ := json.Marshal(value)
-	var report struct {
-		Permissions struct {
-			Verified   bool `json:"verified"`
-			Identities struct {
-				User struct {
-					Ready       bool `json:"ready"`
-					Application *struct {
-						Missing []string `json:"missing"`
-					} `json:"application"`
-					OAuth struct {
-						Missing []string `json:"missing"`
-					} `json:"oauth"`
-				} `json:"user"`
-			} `json:"identities"`
-		} `json:"permissions"`
-	}
-	if json.Unmarshal(data, &report) != nil {
+	report, err := decodeFeishuPermissionReport(value)
+	if err != nil {
 		return domain.FeishuPermissionOverview{Application: "unavailable", User: "unavailable", Missing: []string{}}
 	}
-	missing := append([]string{}, report.Permissions.Identities.User.OAuth.Missing...)
-	if app := report.Permissions.Identities.User.Application; app != nil {
-		missing = append(missing, app.Missing...)
-	}
-	missing = uniqueStrings(missing)
-	appState, userState := "verified", "verified"
-	if len(missing) > 0 {
-		appState, userState = "missing", "missing"
-	}
-	if !report.Permissions.Identities.User.Ready || !report.Permissions.Verified {
+	user := report.Permissions.Identities.User
+	appState, appMissing := feishuScopeEvidenceState(user.Application)
+	userState, userMissing := feishuScopeEvidenceState(user.OAuth)
+	if user.Ready == nil {
+		userState = "unknown"
+	} else if !*user.Ready {
 		userState = "missing"
 	}
-	return domain.FeishuPermissionOverview{Application: appState, User: userState, Missing: feishuMissingCapabilities(missing)}
+	return domain.FeishuPermissionOverview{Application: appState, User: userState, Missing: feishuMissingCapabilities(append(appMissing, userMissing...))}
+}
+
+type feishuScopeEvidence struct {
+	Complete *bool           `json:"complete"`
+	Missing  json.RawMessage `json:"missing"`
+}
+
+type feishuPermissionReport struct {
+	Permissions struct {
+		Verified   *bool `json:"verified"`
+		Identities struct {
+			Bot struct {
+				Ready *bool `json:"ready"`
+			} `json:"bot"`
+			User struct {
+				feishuScopeEvidence
+				Ready       *bool                `json:"ready"`
+				Application *feishuScopeEvidence `json:"application"`
+				OAuth       *feishuScopeEvidence `json:"oauth"`
+			} `json:"user"`
+		} `json:"identities"`
+	} `json:"permissions"`
+}
+
+func decodeFeishuPermissionReport(value map[string]any) (feishuPermissionReport, error) {
+	var report feishuPermissionReport
+	data, err := json.Marshal(value)
+	if err != nil {
+		return report, err
+	}
+	err = json.Unmarshal(data, &report)
+	return report, err
+}
+
+func feishuScopeEvidenceState(evidence *feishuScopeEvidence) (string, []string) {
+	if evidence == nil || evidence.Complete == nil || len(evidence.Missing) == 0 {
+		return "unknown", nil
+	}
+	var missing []string
+	if json.Unmarshal(evidence.Missing, &missing) != nil || missing == nil {
+		return "unknown", nil
+	}
+	if !*evidence.Complete || len(missing) != 0 {
+		return "missing", missing
+	}
+	return "verified", missing
 }
 
 func feishuMissingCapabilities(scopes []string) []string {
@@ -962,10 +899,7 @@ func feishuServiceHealth(snapshot domain.FeishuSnapshot) string {
 	}
 	return snapshot.Availability
 }
-func feishuInboundHealth(profile string, snapshot domain.FeishuSnapshot) string {
-	if profile == managedfeishu.ProfileManualOnly {
-		return "manual_only"
-	}
+func feishuInboundHealth(snapshot domain.FeishuSnapshot) string {
 	if snapshot.InboundConnection {
 		return "connected"
 	}
@@ -992,19 +926,6 @@ func uniqueStrings(values []string) []string {
 	}
 	sort.Strings(result)
 	return result
-}
-
-func (service *Service) SetFeishuProfile(ctx context.Context, profile string) (map[string]any, error) {
-	if service.managedFeishuSupervisor == nil {
-		return nil, errors.New("KSFAssistant Feishu is unavailable")
-	}
-	var result map[string]any
-	err := service.managedFeishuSupervisor.Call(ctx, "bridge/profile/set", map[string]any{"profile": profile}, &result)
-	if err == nil {
-		err = service.restartFeishuSupervisor(ctx)
-	}
-	service.clearFeishuCache()
-	return result, err
 }
 
 func (service *Service) ControlFeishuService(ctx context.Context, action string) (map[string]any, error) {
@@ -1135,6 +1056,7 @@ func (service *Service) PrepareProjectLaunch(ctx context.Context, request Prepar
 }
 
 func (service *Service) Close() {
+	service.closeConfiguration()
 	service.approvals().broker.Close()
 	if service.localGateway != nil {
 		_ = service.localGateway.Close()

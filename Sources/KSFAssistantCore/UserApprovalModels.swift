@@ -6,7 +6,14 @@ public struct UserApprovalAttachment: Codable, Equatable {
     public let sha256: String
 }
 
+public struct UserApprovalPreview: Codable, Equatable {
+    public let content: String
+    public let confirmLabel: String
+    public let destructive: Bool
+}
+
 public struct UserApprovalRequest: Codable, Equatable {
+    public let preview: UserApprovalPreview?
     public let id: String
     public let title: String
     public let user: String
@@ -42,13 +49,14 @@ public struct UserApprovalPoll: Decodable {
         guard result.schemaVersion == 1 else { throw JSONRPCPipeConnection.Failure.invalidResponse }
         if let request = result.request {
             guard let raw = object["request"] as? [String: Any],
-                  Set(raw.keys) == ["id", "title", "user", "application", "action", "target", "content", "attachments", "source", "expiresAt"],
+                  Set(raw.keys) == Set(["id", "title", "user", "application", "action", "target", "content", "attachments", "source", "expiresAt"] + (raw["preview"] == nil ? [] : ["preview"])),
                   let attachments = raw["attachments"] as? [[String: Any]],
                   attachments.allSatisfy({ Set($0.keys) == ["name", "size", "sha256"] }),
                   !request.id.isEmpty, request.id.utf8.count <= 256,
                   [request.title, request.user, request.application, request.action, request.target, request.source].allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.utf8.count <= 65_536 }),
                   !request.details.contains("\0"),
                   request.content.utf8.count <= 1_024 * 1_024,
+                  Self.validPreview(raw["preview"], decoded: request.preview),
                   request.attachments.count <= 1_000,
                   request.attachments.allSatisfy({ !$0.name.isEmpty && $0.name.utf8.count <= 4_096 && $0.size >= 0 && $0.size <= 9_007_199_254_740_991 && $0.sha256.range(of: "^[a-fA-F0-9]{64}$", options: .regularExpression) != nil }),
                   let expiration = request.expiration, expiration > now, expiration.timeIntervalSince(now) <= 301 else {
@@ -56,6 +64,20 @@ public struct UserApprovalPoll: Decodable {
             }
         }
         return result
+    }
+}
+
+private extension UserApprovalPoll {
+    static func validPreview(_ raw: Any?, decoded: UserApprovalPreview?) -> Bool {
+        guard let raw else { return decoded == nil }
+        guard let object = raw as? [String: Any],
+              Set(object.keys) == ["content", "confirmLabel", "destructive"],
+              let preview = decoded,
+              preview.content.utf8.count <= 262_144, !preview.content.contains("\0"),
+              !preview.confirmLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              preview.confirmLabel.count <= 8,
+              !preview.confirmLabel.unicodeScalars.contains(where: { [0, 10, 13].contains($0.value) }) else { return false }
+        return true
     }
 }
 

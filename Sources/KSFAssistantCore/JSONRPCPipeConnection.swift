@@ -4,6 +4,7 @@ import Darwin
 public final class JSONRPCPipeConnection: @unchecked Sendable {
     public enum Failure: Error, LocalizedError {
         case closed, invalidResponse, timedOut, remote(String)
+        case rpc(code: Int, message: String, data: Data?)
 
         public var errorDescription: String? {
             switch self {
@@ -11,6 +12,7 @@ public final class JSONRPCPipeConnection: @unchecked Sendable {
             case .invalidResponse: return "核心服务响应无效。"
             case .timedOut: return "等待核心服务响应超时。"
             case .remote(let message): return message
+            case .rpc(_, let message, _): return message
             }
         }
     }
@@ -136,7 +138,8 @@ public final class JSONRPCPipeConnection: @unchecked Sendable {
                 throw Failure.invalidResponse
             }
             if let error = object["error"] as? [String: Any] {
-                finish(id, result: .failure(Failure.remote(error["message"] as? String ?? "核心服务调用失败。")))
+                let details = try error["data"].map { try JSONSerialization.data(withJSONObject: $0, options: [.fragmentsAllowed]) }
+                finish(id, result: .failure(Failure.rpc(code: error["code"] as? Int ?? -32000, message: error["message"] as? String ?? "核心服务调用失败。", data: details)))
             } else if let result = object["result"] {
                 finish(id, result: .success(try JSONSerialization.data(withJSONObject: result, options: [.fragmentsAllowed])))
             } else {

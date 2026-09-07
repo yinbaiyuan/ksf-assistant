@@ -5,6 +5,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { CoreClient } = require('./core-client.cjs');
 const { UserApprovalController } = require('./user-approval.cjs');
 const { ConfigStore } = require('./config-store.cjs');
@@ -67,7 +68,7 @@ function createWindow() {
   });
   window.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   window.on('blur', () => {
-    if (!window?.webContents.isDevToolsOpened()) window?.hide();
+    if (!window?.webContents.isDevToolsOpened() && !feishuConfigurationActionBusy) window?.hide();
   });
   window.on('close', (event) => {
     if (!quitting) {
@@ -255,34 +256,52 @@ function registerIPC() {
     child.unref();
     return true;
   });
-  ipcMain.handle('feishu:task-link-create', (_event, payload) => core.request('feishu/taskLink/create', payload));
+  ipcMain.handle('feishu:task-link-create', async (event, payload) => {
+    assertFeishuDesktopSender(event);
+    if (feishuConfigurationActionBusy || approvalUnavailableReasons.size || userApproval?.active) throw new Error('请在桌面完成当前对话框后重试');
+    feishuConfigurationActionBusy = true;
+    approvalUnavailableReasons.add('task-card');
+    try {
+      return await require('./task-card-authorization.cjs').createTaskCard(core, payload, async () => {
+        assertFeishuDesktopSender(event);
+        if (quitting || !window.isVisible() || userApproval?.active) throw new Error('请在桌面重试');
+        const result = await dialog.showMessageBox(window, {
+          type: 'question', title: '发送任务卡片到飞书', message: '确认本次发送',
+          detail: `接收人：${payload.targetAlias}\n任务：${payload.title}\n项目：${payload.projectName}\n\n以机器人身份发送包含任务状态和交互按钮的卡片。确认仅限本次发送。`,
+          buttons: ['取消', '确认发送'], defaultId: 0, cancelId: 0, noLink: true,
+        });
+        assertFeishuDesktopSender(event);
+        if (quitting || !window.isVisible() || [...approvalUnavailableReasons].some((reason) => reason !== 'task-card')) throw new Error('桌面暂不可交互，请重新检查本次发送。');
+        return result.response === 1;
+      });
+    } finally {
+      approvalUnavailableReasons.delete('task-card');
+      feishuConfigurationActionBusy = false;
+    }
+  });
   ipcMain.handle('feishu:task-link-release', (_event, payload) => core.request('feishu/taskLink/release', payload));
   ipcMain.handle('feishu:task-link-interrupt', (_event, payload) => core.request('feishu/taskLink/interrupt', payload));
-  ipcMain.handle('feishu:test', (_event, targetAlias) => core.request('feishu/test', { targetAlias }));
-  ipcMain.handle('feishu:profile-set', (_event, profile) => core.request('feishu/profile/set', { profile }));
-  ipcMain.handle('feishu:setup-read', () => core.request('feishu/setup/read'));
-  ipcMain.handle('feishu:setup-begin', (_event, payload) => core.request('feishu/setup/begin', payload));
-  ipcMain.handle('feishu:setup-continue', () => core.request('feishu/setup/continue'));
-  ipcMain.handle('feishu:setup-verify', () => core.request('feishu/setup/verify'));
-  ipcMain.handle('feishu:setup-activate', (_event, targetAlias) => core.request('feishu/setup/activate', { targetAlias }));
-  ipcMain.handle('feishu:setup-cancel', () => core.request('feishu/setup/cancel'));
-  ipcMain.handle('feishu:overview-read', () => core.request('feishu/settings/overview/read'));
-  ipcMain.handle('feishu:auth-status', () => core.request('feishu/auth/status'));
-  ipcMain.handle('feishu:auth-start', () => core.request('feishu/auth/start', { scope: 'required' }));
-  ipcMain.handle('feishu:auth-finish', () => core.request('feishu/auth/finish'));
-  ipcMain.handle('feishu:auth-logout', async (_event, confirm) => {
-    if (confirm !== true) throw new Error('退出授权需要明确确认');
-    return core.request('feishu/auth/logout');
+  ipcMain.handle('feishu:configuration-read', (event, options) => {
+    assertFeishuDesktopSender(event);
+    return core.request('feishu/configuration/read', { refresh: options?.refresh === true });
   });
+  ipcMain.handle('feishu:configuration-action', (event, payload) => performFeishuConfigurationAction(event, payload));
   ipcMain.handle('toolchain:status', () => core.request('toolchain/status'));
   ipcMain.handle('toolchain:install', async (_event, confirm) => {
     if (confirm !== true) throw new Error('安装官方工具链需要明确确认');
     return core.request('toolchain/install', { confirm: true });
   });
-  ipcMain.handle('feishu:feature-update', (_event, payload) => core.request('feishu/features/update', payload));
-  ipcMain.handle('feishu:supervisor-restart', () => core.request('feishu/supervisor/restart'));
-  ipcMain.handle('feishu:open-external', async (_event, value) => {
-    const target = allowedFeishuURL(value);
+  ipcMain.handle('feishu:flow-open', async (event, payload) => {
+    assertFeishuDesktopSender(event);
+    if (!window.isVisible() || feishuConfigurationActionBusy || approvalUnavailableReasons.size) throw new Error('请在桌面打开当前会话');
+    const snapshot = await core.request('feishu/configuration/read', { refresh: false });
+    const flow = snapshot?.flow;
+    if (snapshot?.schemaVersion !== 1 || !payload?.flowId || flow?.id !== payload.flowId || flow.state !== 'pending'
+      || snapshot.epoch !== payload.epoch || snapshot.contextRevision !== payload.contextRevision
+      || (flow.expiresAt && (!Number.isFinite(Date.parse(flow.expiresAt)) || Date.parse(flow.expiresAt) <= Date.now()))) throw new Error('飞书会话已失效，请重新检查');
+    const target = allowedFeishuURL(flow.verificationURL);
+    assertFeishuDesktopSender(event);
+    if (!window.isVisible() || feishuConfigurationActionBusy || approvalUnavailableReasons.size) throw new Error('请在桌面打开当前会话');
     await shell.openExternal(target);
     return true;
   });
@@ -297,6 +316,81 @@ function registerIPC() {
   });
   ipcMain.on('window:hide', () => window?.hide());
   ipcMain.on('app:quit', () => { quitting = true; app.quit(); });
+}
+
+function assertFeishuDesktopSender(event) {
+  if (!window || window.isDestroyed() || event.sender !== window.webContents
+    || event.senderFrame !== window.webContents.mainFrame
+    || event.senderFrame.url !== pathToFileURL(path.join(__dirname, 'renderer', 'index.html')).href) throw new Error('配置操作仅允许当前桌面窗口');
+}
+
+const feishuConfigurationActions = new Set([
+  'create_app', 'connect_app', 'start_auth', 'finish_auth', 'finish_app', 'cancel_flow',
+  'logout', 'bind_operator', 'test_message', 'restart',
+]);
+let feishuConfigurationActionBusy = false;
+
+async function performFeishuConfigurationAction(event, payload) {
+  assertFeishuDesktopSender(event);
+  if (feishuConfigurationActionBusy || !window.isVisible() || approvalUnavailableReasons.size || userApproval?.active) throw new Error('请在桌面完成当前对话框后重试');
+  const fields = ['action', 'requestId', 'epoch', 'revision', 'contextRevision', 'confirm', 'appId', 'appSecret', 'targetAlias', 'feature', 'mode', 'flowId'];
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+    || Object.keys(payload).some((key) => !fields.includes(key))
+    || !feishuConfigurationActions.has(payload.action)
+    || !Number.isSafeInteger(payload.revision) || payload.revision < 0
+    || typeof payload.confirm !== 'boolean') throw new Error('配置请求无效');
+  for (const key of ['requestId', 'epoch', 'contextRevision']) {
+    if (typeof payload[key] !== 'string' || (key !== 'contextRevision' && !payload[key]) || payload[key].length > 256 || /[\u0000-\u001f\u007f]/.test(payload[key])) throw new Error('配置上下文无效');
+  }
+  for (const key of ['appId', 'appSecret', 'targetAlias', 'feature', 'mode', 'flowId']) {
+    if (payload[key] !== undefined && (typeof payload[key] !== 'string' || payload[key].length > 4096 || /[\u0000-\u001f\u007f]/.test(payload[key]))) throw new Error('配置参数无效');
+  }
+  const request = Object.fromEntries(fields.filter((key) => key !== 'confirm' && Object.hasOwn(payload, key)).map((key) => [key, payload[key]]));
+  const actionFields = { connect_app: ['appId', 'appSecret'], test_message: ['targetAlias'], set_feature: ['feature', 'mode'], finish_auth: ['flowId'], finish_app: ['flowId'], cancel_flow: ['flowId'] };
+  if (['appId', 'appSecret', 'targetAlias', 'feature', 'mode', 'flowId'].some((key) => Object.hasOwn(request, key) && !(actionFields[request.action] || []).includes(key))) throw new Error('操作参数不匹配');
+  if (request.action === 'connect_app' && (!request.appId?.trim() || !request.appSecret)) throw new Error('请填写应用凭据');
+  feishuConfigurationActionBusy = true;
+  approvalUnavailableReasons.add('feishu-configuration');
+  try {
+    const snapshot = await core.request('feishu/configuration/read', { refresh: false });
+    const action = snapshot?.actions?.find((item) => item.id === request.action);
+    if (snapshot?.schemaVersion !== 1 || snapshot.epoch !== request.epoch
+      || !Number.isSafeInteger(snapshot.revision) || snapshot.revision < 0 || request.revision > snapshot.revision
+      || snapshot.contextRevision !== request.contextRevision || action?.enabled !== true) throw new Error('配置已变化或操作不可用，请重新检查');
+    if (['finish_auth', 'finish_app', 'cancel_flow'].includes(request.action)
+      && (!request.flowId || request.flowId !== snapshot.flow?.id)) throw new Error('配置会话已变化，请重新检查');
+    if (request.action === 'test_message' && (!request.targetAlias || request.targetAlias !== snapshot.diagnostics?.selfTarget || !snapshot.connection?.targetAliases?.includes(request.targetAlias))) throw new Error('请选择当前可用的测试目标');
+    if (action.confirmation !== undefined && typeof action.confirmation !== 'string') throw new Error('核心确认文案无效，请重新检查');
+    const confirmation = action.confirmation || '';
+    const checksFlow = ['finish_auth', 'finish_app'].includes(request.action);
+    if (!confirmation.trim() && !checksFlow) throw new Error('缺少核心确认文案，请重新检查');
+    let confirmed = false;
+    assertFeishuDesktopSender(event);
+    if (!window.isVisible() || userApproval?.active) throw new Error('请在桌面重试');
+    if (confirmation.trim()) {
+      const detail = [confirmation,
+        request.action === 'connect_app' ? `待接入 App ID：${request.appId}` : '',
+        request.targetAlias ? `目标别名：${request.targetAlias}` : '',
+        request.action === 'test_message' ? '发送身份：机器人（bot）\n消息正文：【KSFAssistant 接入验收】这是一条由本人确认发送的连接测试消息，无需回复。\n本次测试只证明消息发送，不证明用户授权、消息接收或全部功能可用。' : ''].filter(Boolean).join('\n\n');
+      const result = await dialog.showMessageBox(window, {
+        type: 'warning', title: '飞书配置确认', message: action.title, detail,
+        buttons: ['取消', '确认此操作'], defaultId: 0, cancelId: 0, noLink: true,
+      });
+      confirmed = result.response === 1;
+      if (!confirmed) return { outcome: 'failed', cancelled: true, snapshot, message: '已取消，未执行配置操作。' };
+    }
+    assertFeishuDesktopSender(event);
+    if (quitting || !window.isVisible() || [...approvalUnavailableReasons].some((reason) => reason !== 'feishu-configuration')) throw new Error('桌面已不可交互，请重新检查');
+    try {
+      return await core.request('feishu/configuration/action', { ...request, confirm: confirmed }, { timeoutMs: 125_000 });
+    } catch {
+      return await core.request('feishu/configuration/result', { requestId: request.requestId }, { timeoutMs: 45_000 });
+    }
+  } finally {
+    request.appSecret = undefined;
+    approvalUnavailableReasons.delete('feishu-configuration');
+    feishuConfigurationActionBusy = false;
+  }
 }
 
 function allowedFeishuURL(value) {

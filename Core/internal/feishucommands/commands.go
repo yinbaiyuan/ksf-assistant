@@ -22,78 +22,21 @@ func (call *invocation) runClient(dataRoot string, settings feishu.Settings, arg
 	capabilityService := call.service
 	switch arguments[0] {
 	case "help":
-		return write(map[string]any{"usage": []string{"ksf-assistant-feishu-bridge client snapshot", "ksf-assistant-feishu-bridge client status|doctor", "ksf-assistant-feishu-bridge client targets init|list|set|remove", "ksf-assistant-feishu-bridge client send ...", "ksf-assistant-feishu-bridge client task-link protocol|list|create|status|interrupt|release", "ksf-assistant-feishu-bridge client capability catalog|get|read|write", "ksf-assistant-feishu-bridge client operation prepare|confirm|cancel|status", "ksf-assistant-feishu-bridge client policy read|update", "ksf-assistant-feishu-bridge client events catalog|status|recent|get", "ksf-assistant-feishu-bridge client result <outbox|docbox|actionbox> <id>", "ksf-assistant-feishu-bridge client recent <outbox|docbox|actionbox|messages|audit>"}})
+		return write(map[string]any{"usage": []string{"ksf-assistant-feishu-bridge client snapshot", "ksf-assistant-feishu-bridge client status|doctor", "ksf-assistant-feishu-bridge client targets init|list|set|remove", "ksf-assistant-feishu-bridge client send ...", "ksf-assistant-feishu-bridge client task-link protocol|list|create|status|interrupt|release", "ksf-assistant-feishu-bridge client capability catalog|get|read|write", "ksf-assistant-feishu-bridge client operation prepare|confirm|cancel|status", "ksf-assistant-feishu-bridge client policy read|update", "ksf-assistant-feishu-bridge client events catalog|status|recent|get", "ksf-assistant-feishu-bridge client result <outbox|actionbox> <id>", "ksf-assistant-feishu-bridge client recent <outbox|actionbox|messages|audit>"}})
 	case "profile":
 		action := "show"
 		if len(arguments) > 1 {
 			action = arguments[1]
 		}
 		if action == "catalog" {
-			return write(map[string]any{"status": "ok", "profiles": []any{map[string]any{"profile": feishu.ProfilePrimary}, map[string]any{"profile": feishu.ProfileManualOnly}}, "sharedAppRule": "exactly_one_primary"})
+			return write(map[string]any{"status": "ok", "profiles": []any{}, "eventConsumer": feishuprotocol.ManagedEventConsumerStatus()})
 		}
 		if action == "show" {
-			return write(map[string]any{"status": "ok", "eventConsumer": map[string]any{"profile": settings.Profile, "profileValid": true, "desiredConnection": settings.Profile == feishu.ProfilePrimary}, "sharedAppRule": "exactly_one_primary"})
+			return write(map[string]any{"status": "ok", "eventConsumer": feishuprotocol.ManagedEventConsumerStatus()})
 		}
-		if action == "set" && len(arguments) > 2 {
-			previous := settings.Profile
-			settings.Profile = arguments[2]
-			if err := feishu.NewSettingsStore(dataRoot).Save(settings); err != nil {
-				return err
-			}
-			return write(map[string]any{"status": "updated", "previousProfile": previous, "profile": settings.Profile, "appliedByRunningBridge": "pending_realtime_reconcile", "sharedAppRule": "exactly_one_primary"})
-		}
-		return errors.New("profile action must be catalog, show, or set")
+		return errors.New("event profile is read-only; action must be catalog or show")
 	case "auth":
-		if len(arguments) < 2 {
-			return errors.New("missing auth action")
-		}
-		action := arguments[1]
-		switch action {
-		case "configure-existing":
-			payload, err := call.clientPayload(arguments[2:])
-			if err != nil {
-				return err
-			}
-			var input struct {
-				AppID     string `json:"appId"`
-				AppSecret string `json:"appSecret"`
-				Brand     string `json:"brand"`
-			}
-			if json.Unmarshal(payload, &input) != nil {
-				return errors.New("invalid auth payload")
-			}
-			result, err := feishu.ConfigureExistingApp(call.ctx, authRunner, input.AppID, input.AppSecret, input.Brand, clientOptionalFlag(arguments[2:], "--profile"))
-			if err != nil {
-				return err
-			}
-			return write(result)
-		case "start-config":
-			result, err := feishu.StartAppConfiguration(call.ctx, authRunner, dataRoot, clientOptionalFlag(arguments[2:], "--profile"), clientHasFlag(arguments[2:], "--create-new"))
-			if err != nil {
-				return err
-			}
-			return write(result)
-		case "start-user":
-			result, err := feishu.StartUserAuth(call.ctx, authRunner, dataRoot, clientOptionalFlag(arguments[2:], "--scope"))
-			if err != nil {
-				return err
-			}
-			return write(result)
-		case "finish-user":
-			result, err := feishu.FinishUserAuthFlow(call.ctx, authRunner, dataRoot, clientOptionalFlag(arguments[2:], "--device-code"))
-			if err != nil {
-				return err
-			}
-			return write(result)
-		case "ensure-current-user":
-			result, err := feishu.EnsureCurrentUser(call.ctx, authRunner, feishu.NewClientConfigStore(dataRoot))
-			if err != nil {
-				return err
-			}
-			return write(result)
-		default:
-			return errors.New("unsupported auth action")
-		}
+		return errors.New("configuration_desktop_required: 请在 KSFAssistant 桌面管理应用、授权与远程操作者")
 	case "permissions":
 		result, err := feishu.AuthPermissions(call.ctx, authRunner)
 		if err != nil {
@@ -126,11 +69,11 @@ func (call *invocation) runClient(dataRoot string, settings feishu.Settings, arg
 			return err
 		}
 		return write(map[string]any{"status": "ok", "capabilities": map[string]any{
-			"bridgeVersion": "2.0.0", "packageVersion": "1.2.0", "capabilityVersion": "2.0.0", "stabilityBaselineVersion": "0.6.1", "queueStateSchemaVersion": 2, "skillCompatibility": "phase2_pending", "larkCliVersion": feishu.PinnedLarkCLIVersion, "frozenCatalogVersion": "1.0.92", "officialSdk": "none", "officialSdkVersion": "",
+			"bridgeVersion": "2.0.0", "packageVersion": "1.2.0", "capabilityVersion": "2.0.0", "stabilityBaselineVersion": "0.6.1", "queueStateSchemaVersion": 2, "larkCliVersion": feishu.PinnedLarkCLIVersion, "frozenCatalogVersion": "1.0.92", "officialSdk": "none", "officialSdkVersion": "",
 			"identities": []string{"bot", "user"}, "eventTransport": "official-cli", "singleInboundConnection": true, "events": feishu.FixedEventKeys, "managedEvents": feishu.CLIManagedEventKeys, "unsupportedEvents": []string{feishu.MailMessageReceivedEvent}, "fixedEventCatalog": true,
 			"inboundMessageTypes": []string{"text", "image", "file", "audio", "media", "post"}, "outboundMessageFormats": []string{"text", "markdown", "card", "image", "file"},
 			"readCapabilities": readCapabilities, "queuedWriteCapabilities": queuedWriteCapabilities,
-			"registeredCapabilities": items, "registeredCapabilityCount": len(items), "riskCounts": riskCounts, "documentWrites": []string{"create_document", "append", "overwrite", "str_replace"},
+			"registeredCapabilities": items, "registeredCapabilityCount": len(items), "riskCounts": riskCounts,
 			"intentionallyExcluded": []string{"application_management", "member_admin_role_permission_management", "credential_or_secret_management", "automation_configuration", "live_meeting_control", "urgent_phone_or_sms", "arbitrary_openapi", "background_full_crawl"},
 			"requiredScopes":        map[string]any{"bot": scopes.Bot, "user": scopes.User},
 		}})
@@ -147,7 +90,7 @@ func (call *invocation) runClient(dataRoot string, settings feishu.Settings, arg
 			if err != nil {
 				return err
 			}
-			return write(map[string]any{"status": "ok", "inbox": value, "transport": map[string]any{"profile": settings.Profile}})
+			return write(map[string]any{"status": "ok", "inbox": value, "transport": feishuprotocol.ManagedEventConsumerStatus()})
 		case "recent":
 			value, err := inbox.Recent(clientLimit(arguments[2:], 20))
 			if err != nil {
@@ -188,9 +131,9 @@ func (call *invocation) runClient(dataRoot string, settings feishu.Settings, arg
 		}
 		service := map[string]any{"running": alive, "loaded": present}
 		eventState, _ := feishu.NewEventConsumerStateStore(dataRoot).Read()
-		eventState["profile"] = settings.Profile
-		eventState["profileValid"] = true
-		eventState["desiredConnection"] = settings.Profile == feishu.ProfilePrimary
+		for key, value := range feishuprotocol.ManagedEventConsumerStatus() {
+			eventState[key] = value
+		}
 		eventState["expected"] = feishu.FixedEventKeys
 		eventState["fixedCatalogCount"] = len(feishu.FixedEventKeys)
 		return write(map[string]any{"status": "ok", "runtime": "go", "pid": map[string]any{"present": present, "alive": alive, "startedAt": startedAt}, "outbound": settings.Outbound, "service": service, "launchd": service, "eventConsumer": eventState})
@@ -210,6 +153,9 @@ func (call *invocation) runClient(dataRoot string, settings feishu.Settings, arg
 		config, err := configStore.Load()
 		if err != nil {
 			return err
+		}
+		if len(arguments) >= 4 && (arguments[1] == "set" || arguments[1] == "remove") && arguments[2] == "message" && containsString(config.DirectAllowedAliases, arguments[3]) {
+			return errors.New("configuration_desktop_required: 远程操作者目标不能由普通 CLI 改绑或删除")
 		}
 		switch arguments[1] {
 		case "directory":
@@ -283,11 +229,8 @@ func (call *invocation) runClient(dataRoot string, settings feishu.Settings, arg
 			return errors.New("targets action must be init, list, set, or remove")
 		}
 	case "send":
-		if !settings.Outbound.Enabled {
-			return errors.New("outbound messaging is disabled")
-		}
-		if !settings.Actionbox.Enabled {
-			return errors.New("actionbox is required for governed outbound messaging")
+		if clientHasFlag(arguments[1:], "--dry-run") {
+			return errors.New("product_preview_retired: use the official tool's supported preview command")
 		}
 		config, err := feishu.NewClientConfigStore(dataRoot).Load()
 		if err != nil {
@@ -308,23 +251,7 @@ func (call *invocation) runClient(dataRoot string, settings feishu.Settings, arg
 		}
 		var target feishu.MessageTarget
 		if targetName != "" || targetGroupName != "" {
-			kind := feishu.PersonDirectory
-			name := targetName
-			enabled := settings.Directory.Enabled
-			if targetGroupName != "" {
-				kind, name, enabled = feishu.GroupDirectory, targetGroupName, settings.GroupDirectory.Enabled
-			}
-			if !enabled {
-				return errors.New("requested directory feature is disabled")
-			}
-			resolution, resolveErr := feishu.NewDirectoryService(capabilityService).Resolve(call.ctx, kind, name, config)
-			if resolveErr != nil {
-				return resolveErr
-			}
-			if resolution.Status != "resolved" {
-				return write(feishu.PublicResult(map[string]any{"status": resolution.Status, "submitted": false, "resolution": resolution}))
-			}
-			target = resolution.Target
+			return errors.New("legacy_directory_resolution_retired: resolve the target using its Skill")
 		} else {
 			target, err = config.ResolveMessageTarget(targetValue)
 			if err != nil {
@@ -397,8 +324,6 @@ func (call *invocation) runClient(dataRoot string, settings feishu.Settings, arg
 		}
 		view, _ := capabilityService.Status(prepared.Operation.ID)
 		return write(feishu.PublicResult(map[string]any{"status": "pending", "operation": view, "nextAction": operationPendingNextAction(view)}))
-	case "doc":
-		return call.runDocumentClient(dataRoot, capabilityService, arguments[1:], write)
 	case "capability":
 		if len(arguments) < 2 {
 			return errors.New("missing capability action")
@@ -446,10 +371,7 @@ func (call *invocation) runClient(dataRoot string, settings feishu.Settings, arg
 			return errors.New("read capability must not enter actionbox")
 		}
 		if clientHasFlag(arguments[3:], "--dry-run") {
-			if err := feishu.ValidateCapabilityInput(definition.ID, call.validationInput(definition, input)); err != nil {
-				return err
-			}
-			return write(map[string]any{"status": "dry_run", "capability": definition.ID, "submitted": false})
+			return errors.New("product_preview_retired: use the official tool's supported preview command")
 		}
 		prepared, err := call.prepare(capabilityService, call.ctx, definition.ID, input, "codex")
 		if err != nil {
@@ -511,16 +433,28 @@ func (call *invocation) nativeDoctor(dataRoot string, settings feishu.Settings, 
 	instanceDetail := "not running"
 	if present && alive {
 		instanceDetail = "running"
+	} else if instanceErr == nil {
+		instanceErr = errors.New("managed Feishu process is not running")
 	}
 	add("managed_process", instanceErr, instanceDetail)
+	eventState, eventErr := feishu.NewEventConsumerStateStore(dataRoot).Read()
+	connection, _ := eventState["connection"].(map[string]any)
+	events, _ := eventState["events"].(map[string]any)
+	if eventErr == nil && (!alive || connection["state"] != "connected") {
+		eventErr = errors.New("Feishu message and card listeners are not connected")
+	}
+	for _, key := range feishu.CLIManagedEventKeys {
+		item, _ := events[key].(map[string]any)
+		if eventErr == nil && item["status"] != "running" {
+			eventErr = errors.New("Feishu message or card listener is not running")
+		}
+	}
+	add("event_consumers", eventErr, "message and card listeners connected")
 	_, manifestErr := feishu.LoadCapabilityManifest()
 	add("capability_registry", manifestErr, "versioned fixed capabilities")
 	_, scopeErr := feishu.RequiredPermissionScopes()
 	add("permission_contract", scopeErr, "frozen bot and user scopes")
-	credentialErr := error(nil)
-	if settings.Profile == feishu.ProfilePrimary || settings.Outbound.Enabled {
-		_, credentialErr = feishu.LoadOfficialCredentials()
-	}
+	_, credentialErr := feishu.LoadOfficialCredentials()
 	add("credentials", credentialErr, "secure platform credential store")
 	larkProbe := feishu.ProbeLarkCLI(call.ctx, runner.Binary)
 	var larkErr error
@@ -539,7 +473,7 @@ func (call *invocation) nativeDoctor(dataRoot string, settings feishu.Settings, 
 	if !ok {
 		health = "failed"
 	}
-	return map[string]any{"ok": ok, "health": health, "runtime": "go", "checks": checks, "status": map[string]any{"profile": settings.Profile, "outbound": settings.Outbound, "docbox": settings.Docbox, "actionbox": settings.Actionbox}}
+	return map[string]any{"ok": ok, "health": health, "runtime": "go", "checks": checks, "status": map[string]any{"profile": feishuprotocol.ManagedEventProfile, "outbound": settings.Outbound, "actionbox": settings.Actionbox}}
 }
 
 // Kept for compatibility tests and explicit one-shot client operation. The
@@ -579,23 +513,18 @@ func (call *invocation) clientAggregateSnapshot(dataRoot string, settings feishu
 		"feishuInbound":  {State: "unavailable"},
 		"feishuOutbound": {State: "unavailable"},
 		"larkCLI":        {State: "disabled"},
-		"outbox":         {State: switchState(settings.Outbound.Enabled)},
-		"docbox":         {State: switchState(settings.Docbox.Enabled)},
-		"actionbox":      {State: switchState(settings.Actionbox.Enabled)},
+		"outbox":         {State: "ready"},
+		"actionbox":      {State: "ready"},
 	}
-	if settings.Profile != feishu.ProfilePrimary {
-		capabilities["feishuInbound"] = feishuprotocol.CapabilityHealth{State: "disabled"}
-	} else if inboundConnected {
+	if inboundConnected {
 		capabilities["feishuInbound"] = feishuprotocol.CapabilityHealth{State: "ready"}
 	} else if alive {
 		capabilities["feishuInbound"] = feishuprotocol.CapabilityHealth{State: "degraded"}
 	}
-	if settings.Outbound.Enabled && alive {
+	if alive {
 		capabilities["feishuOutbound"] = feishuprotocol.CapabilityHealth{State: "ready"}
-	} else if settings.Outbound.Enabled {
-		capabilities["feishuOutbound"] = feishuprotocol.CapabilityHealth{State: "degraded"}
 	} else {
-		capabilities["feishuOutbound"] = feishuprotocol.CapabilityHealth{State: "disabled"}
+		capabilities["feishuOutbound"] = feishuprotocol.CapabilityHealth{State: "degraded"}
 	}
 	probe := feishu.ProbeLarkCLI(call.ctx, strings.TrimSpace(os.Getenv("LARK_CLI_BIN")))
 	capabilities["larkCLI"] = feishuprotocol.CapabilityHealth{State: probe.State, Detail: probe.Detail}
@@ -604,16 +533,11 @@ func (call *invocation) clientAggregateSnapshot(dataRoot string, settings feishu
 	message := "飞书服务未运行。"
 	if alive {
 		availability, message = "ready", ""
-		if !settings.Outbound.Enabled {
-			availability, message = "unavailable", "飞书服务尚未启用主动出站。"
-		} else if settings.Outbound.DryRun {
-			availability = "dryRun"
-		}
 	}
 	return feishuprotocol.Snapshot{
 		RuntimeKind: "go", Availability: availability, Message: message,
 		ProcessState: processState, Configured: configured, ProcessPID: pid, ProcessRunning: alive,
-		Profile: settings.Profile, ProfileValid: settings.Profile == feishu.ProfilePrimary || settings.Profile == feishu.ProfileManualOnly,
+		Profile: feishuprotocol.ManagedEventProfile, ProfileValid: true,
 		InboundConnection: inboundConnected, TargetAliases: aliases,
 		Capabilities: capabilities, Queues: publicQueueHealth(feishu.QueueHealthSnapshot(dataRoot, settings)),
 	}, nil

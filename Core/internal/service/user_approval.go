@@ -133,6 +133,11 @@ func (service *Service) handleUserApproval(ctx context.Context, method string, p
 			return nil, errors.New("approval_user_display_unavailable")
 		}
 		display := userapproval.Review{Title: "飞书用户身份操作批准", User: user, Application: application + " / " + command.Identity.Profile, Action: review.Action, Target: review.Target, Content: review.Details, Attachments: []userapproval.Attachment{}}
+		if review.Preview != nil {
+			display.Title = review.Action // Retain the exact reviewed command description in details.
+			display.Action = review.Preview.Title
+			display.Preview = &userapproval.Preview{Content: review.Preview.Content, ConfirmLabel: review.Preview.ConfirmLabel, Destructive: review.Preview.Destructive}
+		}
 		for _, file := range command.Files {
 			checksum := sha256.Sum256(file.Data)
 			name := file.DisplayName
@@ -146,6 +151,7 @@ func (service *Service) handleUserApproval(ctx context.Context, method string, p
 			return nil, err
 		}
 		review.Details = ""
+		review.Preview = nil
 		state.mu.Lock()
 		state.bindings[id] = approvalBinding{owner: owner, identity: command.Identity, review: review, policyDigest: policy, boundDigest: boundDigest}
 		state.mu.Unlock()

@@ -4,7 +4,7 @@ import "testing"
 
 func TestEventConsumerStateIsNodeCompatible(t *testing.T) {
 	store := NewEventConsumerStateStore(t.TempDir())
-	if err := store.UpdateConnection(ProfilePrimary, "connected"); err != nil {
+	if err := store.UpdateConnection("connected"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.MarkReceived("im.message.receive_v1"); err != nil {
@@ -16,6 +16,9 @@ func TestEventConsumerStateIsNodeCompatible(t *testing.T) {
 	}
 	if value["schemaVersion"] != float64(3) || value["transport"] != "official-cli" || value["status"] != "connected" {
 		t.Fatalf("unexpected state: %#v", value)
+	}
+	if value["profile"] != "managed" || value["configurable"] != false || value["desiredConnection"] != true {
+		t.Fatalf("event lifecycle regained role control: %#v", value)
 	}
 	events := value["events"].(map[string]any)
 	if len(events) != len(FixedEventKeys) || events["im.message.receive_v1"].(map[string]any)["lastReceivedAt"] == nil {

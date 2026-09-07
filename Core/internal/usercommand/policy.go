@@ -15,6 +15,9 @@ func CheckPolicy(root string, review Review) (string, error) {
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root {
 		return "", errors.New("approval_policy_unavailable")
 	}
+	if err := capabilitypolicy.CheckSession(root); err != nil {
+		return "", err
+	}
 	policy, err := capabilitypolicy.NewStore(root).Load()
 	if err != nil {
 		return "", errors.New("approval_policy_unavailable")

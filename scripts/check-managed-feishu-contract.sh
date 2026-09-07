@@ -39,5 +39,10 @@ print('Pinned source archive verified and isolated')
 PY
 source_root="$(node -p "require(process.argv[1]).source.root" "$repo_root/runtime/lark-skills.json")"
 KSF_USERCOMMAND_PINNED_SOURCE="$temporary/$source_root" \
+    node --test "$repo_root/scripts/test-lark-skills-adapter.mjs"
+KSF_SKILLS_SOURCE="$temporary/$source_root/skills" \
+    python3 -B "$repo_root/scripts/test-lark-skill-python.py"
+node --test "$repo_root/scripts/test-lark-skills-upgrade.mjs"
+KSF_USERCOMMAND_PINNED_SOURCE="$temporary/$source_root" \
     bash "$repo_root/scripts/verify-execution-contract.sh" "$binary"
 echo "PASS fixed official CLI execution contract"

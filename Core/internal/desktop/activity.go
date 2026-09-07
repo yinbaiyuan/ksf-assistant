@@ -48,6 +48,7 @@ type snapshotWaiter struct {
 }
 
 type UserInputTarget struct {
+	ObservationEpoch       uint64
 	ThreadID               string
 	TurnID                 string
 	OwnerClientID          string
@@ -79,23 +80,26 @@ type ActivityClient struct {
 	endpoint   string
 	clientType string
 
-	mu              sync.Mutex
-	writeMu         sync.Mutex
-	connection      net.Conn
-	clientID        string
-	started         bool
-	sequence        int
-	availability    string
-	followedBy      map[taskKey]map[string]bool
-	owners          map[taskKey]string
-	observations    map[taskKey]domain.TaskObservation
-	pendingOwners   map[string]taskKey
-	ownerWaiters    map[string]chan string
-	requestWaiters  map[string]chan error
-	responseWaiters map[string]chan ipcCallResponse
-	candidateKeys   map[taskKey]bool
-	states          map[taskKey]map[string]any
-	snapshotWaiters map[snapshotKey][]snapshotWaiter
+	mu                   sync.Mutex
+	writeMu              sync.Mutex
+	connection           net.Conn
+	clientID             string
+	started              bool
+	sequence             int
+	availability         string
+	followedBy           map[taskKey]map[string]bool
+	connectionGeneration uint64
+	observationCache     map[taskKey]*observationCache
+	observationCounters  ObservationCounters
+	owners               map[taskKey]string
+	observations         map[taskKey]domain.TaskObservation
+	pendingOwners        map[string]taskKey
+	ownerWaiters         map[string]chan string
+	requestWaiters       map[string]chan error
+	responseWaiters      map[string]chan ipcCallResponse
+	candidateKeys        map[taskKey]bool
+	states               map[taskKey]map[string]any
+	snapshotWaiters      map[snapshotKey][]snapshotWaiter
 }
 
 func DefaultEndpoint(home string) string {
@@ -293,6 +297,9 @@ func (client *ActivityClient) Close() {
 	connection := client.connection
 	client.connection = nil
 	client.started = false
+	client.states = map[taskKey]map[string]any{}
+	client.owners = map[taskKey]string{}
+	client.connectionGeneration++
 	client.mu.Unlock()
 	if connection != nil {
 		_ = connection.Close()
@@ -455,6 +462,7 @@ func (client *ActivityClient) handle(payload []byte) {
 			client.mu.Lock()
 			if owner := client.owners[key]; owner == "" || owner == source {
 				client.states[key] = state
+				client.cachePushedObservation(key, state, source, revision)
 			}
 			matched := []snapshotWaiter{}
 			waiterKeys := []snapshotKey{{task: key}}
@@ -1110,6 +1118,8 @@ func (client *ActivityClient) connectionEnded(connection net.Conn) {
 		client.availability = "offline"
 		client.observations = map[taskKey]domain.TaskObservation{}
 		client.owners = map[taskKey]string{}
+		client.states = map[taskKey]map[string]any{}
+		client.connectionGeneration++
 		client.pendingOwners = map[string]taskKey{}
 		for id, waiter := range client.ownerWaiters {
 			delete(client.ownerWaiters, id)

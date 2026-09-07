@@ -134,8 +134,28 @@ func (transport *ServiceTransport) executeMessage(ctx context.Context, capabilit
 		if err != nil {
 			return err
 		}
+		// Cancelled/expired reviews with no execution can be prepared afresh.
+		// Keep the old audit record; never reprepare an attempted or uncertain effect.
+		if (view.Status == OperationExpired || view.Status == OperationCancelled) && view.AttemptCount == 0 && ledger.Phase == "queued" {
+			prepared, err := operations.PrepareBoundMessage(capabilityID, input, "core-service-transport")
+			if err != nil {
+				return err
+			}
+			ledger.OperationID, ledger.UpdatedAt = prepared.Operation.ID, time.Now().UTC()
+			if err := writePrivateJSON(path, ledger); err != nil {
+				return err
+			}
+			if prepared.Operation.Status == OperationAwaitingConfirmation {
+				return &TransportAuthorizationError{Prepared: prepared}
+			}
+			view = prepared.Operation
+		}
 		if view.Status == OperationAwaitingConfirmation {
-			return &TransportAuthorizationError{Prepared: PreparedOperation{Operation: view}}
+			prepared, err := operations.renewBoundMessageConfirmation(view.ID)
+			if err != nil {
+				return err
+			}
+			return &TransportAuthorizationError{Prepared: prepared}
 		}
 		if view.Status == OperationSucceeded {
 			record, err := operations.load(ledger.OperationID)
@@ -255,4 +275,32 @@ func (transport *ServiceTransport) persistSentBinding(messageID string, target M
 		}
 		return writePrivateJSON(path, transportBinding{Target: target, Writable: format == "card", OperationID: operationID})
 	})
+}
+
+// A repeated explicit delivery request may need a fresh desktop review after the
+// previous host lost its response. Keep the operation and frozen input; invalidate
+// the prior challenge without approving or dispatching any external effect.
+func (service *OperationService) renewBoundMessageConfirmation(id string) (PreparedOperation, error) {
+	var prepared PreparedOperation
+	err := service.update(id, func(record *OperationRecord) error {
+		if record.InputProfile != serviceMessageInputProfile || record.Status != OperationAwaitingConfirmation || record.ChallengeExpiresAt == nil || !service.now().Before(*record.ChallengeExpiresAt) {
+			return errors.New("confirmation_not_pending")
+		}
+		policy, err := service.policy.Load()
+		if err != nil {
+			return err
+		}
+		if policy.Revision != record.PolicyRevision || policy.Decision(CapabilityDefinition{ID: record.CapabilityID, Risk: record.Risk}) != CapabilityConfirmEach {
+			return errors.New("capability_policy_changed")
+		}
+		token, err := randomSecret(24)
+		if err != nil {
+			return err
+		}
+		record.ChallengeHash = secretHash(token)
+		record.UpdatedAt = service.now().UTC()
+		prepared = PreparedOperation{Operation: publicOperation(*record), Challenge: token}
+		return nil
+	})
+	return prepared, err
 }

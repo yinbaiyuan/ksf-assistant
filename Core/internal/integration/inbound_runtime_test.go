@@ -157,6 +157,7 @@ func TestProjectDesktopTaskLinkTracksCompletedResultOnce(t *testing.T) {
 	}
 	link := TaskLink{TurnState: "completed", TurnOwner: "none", ActionRequired: "none", Phase: "已完成", Detail: "修复已经完成。", Extra: map[string]json.RawMessage{}}
 	link.SetExtraString("lastDeliveredTurnId", "turn-complete")
+	link.SetExtraString("latestInputTurnId", "turn-complete")
 	if desktopProjectionRequiresSync(link, projection) {
 		t.Fatal("an already synchronized terminal turn would be patched repeatedly")
 	}

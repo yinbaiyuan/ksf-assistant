@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"ksfassistant/core/internal/capabilitypolicy"
 	"ksfassistant/core/internal/userapproval"
 )
 
@@ -20,6 +21,15 @@ func fakeAuthCLI(t *testing.T, body string) CapabilityExecutor {
 	}
 	root := t.TempDir()
 	binary := filepath.Join(root, "fake-lark")
+	// Streaming-login fixtures include the successful application preflight.
+	if strings.Contains(body, "login") && !strings.Contains(body, "\nscopes)") {
+		contract, err := RequiredPermissionScopes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload, _ := json.Marshal(map[string]any{"appId": "cli_fixture", "brand": "feishu", "tokenType": "user", "userScopes": contract.User})
+		body = "if [ \"$4\" = scopes ]; then printf '%s' '" + string(payload) + "'; exit; fi\n" + body
+	}
 	if err := os.WriteFile(binary, []byte("#!/bin/sh\n"+body), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -164,11 +174,14 @@ esac`)
 func TestAuthSessionUsesStreamingLoginAndNoSecretPersistence(t *testing.T) {
 	runner := fakeAuthCLI(t, `printf '%s\n' "$@" >> args
 case "$4" in
-login) printf '{"event":"device_authorization","verification_uri_complete":"https://accounts.feishu.cn/oauth?user_code=ABC-123","user_code":"ABC-123"}\n'; while [ ! -f complete ]; do sleep 0.02; done; printf '{"event":"authorization_complete","user_open_id":"ou_private","scope":"im:message"}\n' ;;
-status) printf '{"appId":"cli_fixture","brand":"feishu","identities":{"user":{"available":true,"verified":true,"scope":"im:message"}}}' ;;
-scopes) printf '{"userScopes":[]}' ;;
+login) printf '{"event":"device_authorization","verification_uri_complete":"https://accounts.feishu.cn/oauth?user_code=ABC-123","user_code":"ABC-123"}\n'; while [ ! -f complete ]; do sleep 0.02; done; printf '{"event":"authorization_complete","user_open_id":"ou_private","scope":"contact:user.base:readonly"}\n' ;;
+status) printf '{"appId":"cli_fixture","brand":"feishu","identities":{"user":{"available":true,"verified":true,"scope":"contact:user.base:readonly"}}}' ;;
+oldscopes) printf '{"userScopes":[]}' ;;
 *) exit 1 ;;
 esac`)
+	if err := capabilitypolicy.SignOut(runner.DataRoot); err != nil {
+		t.Fatal(err)
+	}
 	start, err := StartUserAuth(context.Background(), runner, runner.DataRoot, "required")
 	if err != nil || start["status"] != "pending" || start["userCode"] != "ABC-123" {
 		t.Fatalf("start: %#v %v", start, err)
@@ -184,6 +197,9 @@ esac`)
 	case <-currentUserAuthSession(runner.DataRoot).done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("fake authorization did not complete")
+	}
+	if capabilitypolicy.CheckSession(runner.DataRoot) != nil {
+		t.Fatal("early check left completed OAuth signed out")
 	}
 	finish, err := FinishUserAuthFlow(context.Background(), runner, runner.DataRoot, "")
 	if err != nil || finish["status"] != "authorized" {
@@ -240,10 +256,16 @@ func TestAuthEventParserRejectsUntrustedURLsSecretsAndFalseSuccess(t *testing.T)
 	}
 }
 
-func TestAutomaticAppCreationFailsBeforeAnyProcessStarts(t *testing.T) {
+func TestAppCreationPreservesExistingConfigurationBeforeProcessStart(t *testing.T) {
 	runner := fakeAuthCLI(t, `touch unexpected-process`)
+	if err := os.MkdirAll(os.Getenv("LARKSUITE_CLI_CONFIG_DIR"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(os.Getenv("LARKSUITE_CLI_CONFIG_DIR"), "config.json"), []byte("existing-or-malformed"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	_, err := StartAppConfiguration(context.Background(), runner, runner.DataRoot, "default", true)
-	if err == nil || !strings.Contains(err.Error(), "接入已有应用") {
+	if err == nil || !strings.Contains(err.Error(), "不会覆盖") {
 		t.Fatalf("automatic app creation admitted: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(runner.DataRoot, "unexpected-process")); !os.IsNotExist(err) {
@@ -281,7 +303,7 @@ func TestAuthSessionHasTenMinuteCeilingAndCanceledStartReapsChild(t *testing.T) 
 	if maximumAuthSessionDuration != 10*time.Minute {
 		t.Fatal("auth session lifetime contract changed")
 	}
-	runner := fakeAuthCLI(t, `if [ "$4" = status ]; then printf '{"brand":"feishu","appId":"cli_fixture","identities":{"user":{"available":false}}}'; else sleep 30; fi`)
+	runner := fakeAuthCLI(t, `if [ "$4" = status ]; then printf '{"brand":"feishu","appId":"cli_fixture","identities":{"user":{"available":false}}}'; elif [ "$4" = login ]; then sleep 30; fi`)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	result := make(chan error, 1)
@@ -329,6 +351,28 @@ func TestAuthProfileMustMatchManagedFeishuToolchain(t *testing.T) {
 	for _, expected := range []string{"LARKSUITE_CLI_PROFILE=default", "LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1", "LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1", "LARKSUITE_CLI_REMOTE_META=off"} {
 		if !contains(authEnvironment(), expected) {
 			t.Fatalf("missing managed environment %s", expected)
+		}
+	}
+}
+
+func TestAuthorizationPreflightDistinguishesApplicationGapsFromUnknownEvidence(t *testing.T) {
+	for _, test := range []struct{ payload, code string }{
+		{`{}`, "application_permissions_unverified"},
+		{`{"appId":"cli_other","brand":"feishu","tokenType":"user","userScopes":[]}`, "application_permissions_unverified"},
+		{`{"appId":"cli_fixture","brand":"feishu","tokenType":"user","userScopes":null}`, "application_permissions_unverified"},
+		{`{"appId":"cli_fixture","brand":"feishu","tokenType":"user","userScopes":[]}`, "application_permissions_missing"},
+	} {
+		runner := fakeAuthCLI(t, `case "$4" in
+status) printf '{"appId":"cli_fixture","brand":"feishu","identities":{"user":{"available":false}}}' ;;
+scopes) printf '%s' '`+test.payload+`' ;;
+login) touch unexpected-login; exit 1 ;;
+esac`)
+		_, err := StartUserAuth(context.Background(), runner, runner.DataRoot, "required")
+		if err == nil || err.Error() != test.code {
+			t.Fatalf("wrong preflight: %v want %s", err, test.code)
+		}
+		if _, err := os.Stat(filepath.Join(runner.DataRoot, "unexpected-login")); !os.IsNotExist(err) {
+			t.Fatal("invalid application preflight started OAuth")
 		}
 	}
 }

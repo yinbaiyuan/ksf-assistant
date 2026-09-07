@@ -92,7 +92,7 @@ func TestWorkRepositoryRejectsLegacySymlinkWithoutMovingSource(t *testing.T) {
 
 func TestWorkRepositoryPendingHeadsUseCreatedAtForFIFO(t *testing.T) {
 	root := t.TempDir()
-	repo := newWorkRepository(root, "docbox")
+	repo := newWorkRepository(root, "actionbox")
 	now := time.Now().UTC()
 	if err := repo.enqueue("DOC-Z", map[string]any{"id": "DOC-Z"}, "same", "lark-cli", "standard", "never", now); err != nil {
 		t.Fatal(err)

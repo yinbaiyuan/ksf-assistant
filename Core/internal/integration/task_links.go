@@ -419,32 +419,22 @@ func (store TaskLinkStore) Update(taskKey string, patch func(*TaskLink)) (TaskLi
 // desktop client and Feishu card callbacks. A linked card is marked pending
 // before the local state is committed so a transient Feishu failure can be
 // reconciled by the long-lived bridge.
-func (store TaskLinkStore) Release(taskKey string) (TaskLink, error) {
-	return store.Update(taskKey, func(link *TaskLink) {
-		link.LinkState = "released"
-		link.TurnState = "idle"
-		link.TurnOwner = "none"
-		link.ActionRequired = "none"
-		link.Phase = "已断开"
-		link.Detail = "任务连接已释放。"
-		if TaskLinkCardMessageID(*link) != "" {
-			link.SetExtraValue("cardSyncPending", true)
-		}
-	})
+func releaseTaskLink(link *TaskLink) {
+	link.LinkState = "released"
+	link.TurnState = "idle"
+	link.TurnOwner = "none"
+	link.ActionRequired = "none"
+	link.Phase = "已断开"
+	link.Detail = "任务连接已释放。"
+	if TaskLinkCardMessageID(*link) != "" {
+		link.SetExtraValue("cardSyncPending", true)
+	}
 }
-
+func (store TaskLinkStore) Release(taskKey string) (TaskLink, error) {
+	return store.Update(taskKey, releaseTaskLink)
+}
 func (store TaskLinkStore) ReleaseByID(id string) (TaskLink, error) {
-	return store.UpdateByID(id, func(link *TaskLink) {
-		link.LinkState = "released"
-		link.TurnState = "idle"
-		link.TurnOwner = "none"
-		link.ActionRequired = "none"
-		link.Phase = "已断开"
-		link.Detail = "任务连接已释放。"
-		if TaskLinkCardMessageID(*link) != "" {
-			link.SetExtraValue("cardSyncPending", true)
-		}
-	})
+	return store.UpdateByID(id, releaseTaskLink)
 }
 
 // UpdateByID updates an exact historical record, including released links.
@@ -608,6 +598,11 @@ func PublicLinks(links []TaskLink) []PublicTaskLink {
 
 func projectTaskLink(link TaskLink, now time.Time) PublicTaskLink {
 	state := effectiveTaskLinkState(link, now)
+	// Keep the durable identity for an idempotent retry, but don't advertise
+	// a connection until Feishu has acknowledged the root card.
+	if state == "active" && link.RootMessageID == "" {
+		state = "pending"
+	}
 	remaining := 0
 	if state == "active" {
 		remaining = max(0, int(link.ExpiresAt.Sub(now).Seconds()))

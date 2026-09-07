@@ -11,6 +11,7 @@ import (
 	"ksfassistant/core/internal/feishuprotocol"
 	"ksfassistant/core/internal/feishutypes"
 	"ksfassistant/core/internal/integration"
+	"ksfassistant/core/internal/privateipc"
 )
 
 type integrationFeishuPort struct{ service *Service }
@@ -26,7 +27,17 @@ func (port integrationFeishuPort) call(ctx context.Context, method string, reque
 	if port.service.managedFeishuSupervisor == nil {
 		return errors.New("KSFAssistant Feishu service unavailable")
 	}
-	return port.service.managedFeishuSupervisor.Call(ctx, method, request, result)
+	err := port.service.managedFeishuSupervisor.Call(ctx, method, request, result)
+	var rpc *privateipc.RPCError
+	if errors.As(err, &rpc) && rpc.Code == -32064 {
+		var data struct {
+			RetryAfterMs int64 `json:"retryAfterMs"`
+		}
+		if json.Unmarshal(rpc.Data, &data) == nil && data.RetryAfterMs > 0 {
+			return &cardRetryError{err: err, delay: time.Duration(data.RetryAfterMs) * time.Millisecond}
+		}
+	}
+	return err
 }
 
 func (port integrationFeishuPort) Record(event string, fields map[string]any) error {
@@ -145,7 +156,7 @@ func (service *Service) composeIntegrationSnapshot(snapshot domain.FeishuSnapsho
 	if service.integrationRuntime != nil {
 		health := service.integrationRuntime.Health()
 		snapshot.Capabilities["businessIntegration"] = domain.CapabilityHealth{State: health.State, Detail: health.Detail}
-		if health.State != "ready" {
+		if !service.integrationRuntime.CanCreateTaskLink() {
 			snapshot.TaskLinkReady = false
 			snapshot.ReadinessBlockers = append(snapshot.ReadinessBlockers, "businessIntegration")
 		}
@@ -154,5 +165,19 @@ func (service *Service) composeIntegrationSnapshot(snapshot domain.FeishuSnapsho
 		snapshot.TaskLinkReady = false
 		snapshot.ReadinessBlockers = append(snapshot.ReadinessBlockers, "businessIntegration")
 	}
+	for _, blocker := range snapshot.ReadinessBlockers {
+		if blocker == "taskCardWriteDisabled" || blocker == "taskCardWriteDryRun" {
+			snapshot.TaskLinkReady = false
+		}
+	}
 	return snapshot
 }
+
+type cardRetryError struct {
+	err   error
+	delay time.Duration
+}
+
+func (e *cardRetryError) Error() string             { return e.err.Error() }
+func (e *cardRetryError) Unwrap() error             { return e.err }
+func (e *cardRetryError) RetryDelay() time.Duration { return e.delay }

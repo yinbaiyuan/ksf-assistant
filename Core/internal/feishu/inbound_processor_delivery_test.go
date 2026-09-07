@@ -42,6 +42,7 @@ func waitDeliveryDrained(t *testing.T, processor *InboundProcessor) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
+		_ = processor.Recover(context.Background())
 		items, err := processor.workbox.Pending()
 		if err == nil && len(items) == 0 {
 			return
@@ -153,7 +154,13 @@ func TestDeliveryUsesFreshAuthorizationAtEveryAttempt(t *testing.T) {
 	var attempts atomic.Int32
 	processor, err := NewInboundProcessor(root, DefaultSettings(), func(ctx context.Context, message InboundMessage) error {
 		attempts.Add(1)
-		if err := NewClientConfigStore(root).Save(DefaultClientConfig()); err != nil {
+		config, err := NewClientConfigStore(root).Load()
+		if err != nil {
+			return err
+		}
+		config.MessageTargets = map[string]MessageTarget{}
+		config.DirectAllowedAliases = nil
+		if err := NewClientConfigStore(root).Save(config); err != nil {
 			return err
 		}
 		return errors.New("ACK lost")

@@ -95,7 +95,7 @@ var compatibilityCommands = map[string]compatibilitySpec{
 
 func needsAction(command string) bool {
 	switch command {
-	case "profile", "auth", "targets", "doc", "capability", "operation", "policy", "events", "message", "knowledge", "calendar", "task", "sheets", "base", "meeting", "note", "minutes", "workflow", "task-link":
+	case "profile", "auth", "targets", "capability", "operation", "policy", "events", "message", "knowledge", "calendar", "task", "sheets", "base", "meeting", "note", "minutes", "workflow", "task-link":
 		return true
 	}
 	return false
@@ -146,8 +146,6 @@ func baseCommandSchema(request Request) (commandSpec, error) {
 	switch key {
 	case "help", "version", "status", "snapshot", "doctor", "permissions", "capabilities", "events/catalog", "events/status", "profile/show", "profile/catalog", "targets/init", "targets/list", "policy/read", "task-link/protocol", "task-link/list":
 		return spec(0, "", "", "", ""), nil
-	case "profile/set":
-		return spec(1, "", "", "", ""), nil
 	case "auth/configure-existing":
 		return spec(0, "profile", "", "payload-file", "payload-file"), nil
 	case "auth/start-config":
@@ -158,6 +156,10 @@ func baseCommandSchema(request Request) (commandSpec, error) {
 		return spec(0, "device-code", "", "", ""), nil
 	case "auth/ensure-current-user":
 		return spec(0, "", "", "", ""), nil
+	case "events/review", "task-link/sync-review", "task-link/diagnostics":
+		return spec(0, "", "", "", ""), nil
+	case "events/retry", "task-link/sync-retry":
+		return spec(0, "id", "", "", "id"), nil
 	case "events/recent":
 		return spec(0, "limit", "", "", ""), nil
 	case "events/get":
@@ -180,10 +182,6 @@ func baseCommandSchema(request Request) (commandSpec, error) {
 		return spec(0, "name", "", "", "name"), nil
 	case "send":
 		return spec(0, "target target-name target-group-name format id source", "dry-run async", "media-file content-file text-file", ""), nil
-	case "doc/create":
-		return spec(0, "target format", "dry-run async", "content-file", "content-file"), nil
-	case "doc/update":
-		return spec(0, "target format mode", "dry-run async", "content-file pattern-file", "target content-file"), nil
 	case "capability/catalog":
 		return spec(0, "domain", "", "", ""), nil
 	case "capability/get":
@@ -309,9 +307,6 @@ func validate(request Request, checkPayload bool) error {
 			return errors.New("input extension has no corresponding file payload")
 		}
 	}
-	if request.Command == "profile" && request.Action == "set" && request.Positionals[0] != "primary" && request.Positionals[0] != "manual-only" {
-		return errors.New("invalid profile")
-	}
 	if request.Command == "targets" && (request.Action == "set" || request.Action == "remove") {
 		category := request.Positionals[0]
 		if category != "message" && category != "document" {
@@ -333,7 +328,7 @@ func validate(request Request, checkPayload bool) error {
 		}
 	}
 	if request.Command == "result" || request.Command == "recent" {
-		allowed := []string{"outbox", "docbox", "actionbox"}
+		allowed := []string{"outbox", "actionbox"}
 		if request.Command == "recent" {
 			allowed = append(allowed, "messages", "audit")
 		}

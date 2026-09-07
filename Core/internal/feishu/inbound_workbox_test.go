@@ -26,7 +26,7 @@ func TestInboundWorkIsRecoveredAfterHandlerFailure(t *testing.T) {
 	if err := processor.Handle(context.Background(), "im.message.receive_v1", payload); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 	items, err := processor.workbox.Pending()
 	if err != nil || len(items) != 1 {
 		t.Fatalf("work was not retained: %v %#v", err, items)
@@ -69,7 +69,7 @@ func TestCardDeliveryFailureRemainsPendingAndCanRecover(t *testing.T) {
 	deliveryConfig(t, root)
 	var attempts atomic.Int32
 	processor, err := NewInboundProcessor(root, DefaultSettings(), nil, func(context.Context, InboundCardAction) error {
-		if attempts.Add(1) <= 3 {
+		if attempts.Add(1) <= 1 {
 			return errors.New("Core ACK unavailable")
 		}
 		return nil
@@ -88,19 +88,19 @@ func TestCardDeliveryFailureRemainsPendingAndCanRecover(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(items) == 1 && items[0].AttemptCount == 3 {
+		if len(items) == 1 && items[0].AttemptCount == 1 {
 			work = items[0]
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if work.ID == "" || work.Status != "pending" || work.LastError != "core_ack_unavailable" || len(work.Payload) == 0 {
+	if work.ID == "" || work.Status != "pending" || work.LastError != "temporary_failure" || len(work.Payload) == 0 {
 		t.Fatalf("card delivery was discarded instead of deferred: %#v", work)
 	}
 	if err := processor.Recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if attempts.Load() != 3 {
+	if attempts.Load() != 1 {
 		t.Fatal("future retry was executed early")
 	}
 	past := time.Now().Add(-time.Second)
@@ -112,7 +112,7 @@ func TestCardDeliveryFailureRemainsPendingAndCanRecover(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitDeliveryDrained(t, processor)
-	if attempts.Load() != 4 {
+	if attempts.Load() != 2 {
 		t.Fatalf("card ACK was not retried: %d", attempts.Load())
 	}
 }

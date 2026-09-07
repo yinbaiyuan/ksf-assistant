@@ -29,6 +29,12 @@ manifest, not an independently edited authority. Generate its replacement from t
 Core directory with `go run ./internal/feishucommands/cataloggen`; its stdout is the
 replacement JSON. `TestStaticCatalogMatchesRuntimeManifest` detects drift.
 
+The legacy event `profile catalog` is read-only and contains no selectable roles;
+`profile show` remains a compatibility query for service-managed connection intent.
+`profile set` is no longer valid in either argv or typed requests. This change does
+not affect the separate official CLI authentication profile `default`, authorization
+commands, message/card inbound consumers or their readiness and ownership gates.
+
 Ordinary private inputs remain bounded to 4 MiB in total. `send --media-file`
 accepts the previous 30 MiB maximum, including a file supplied via stdin. Parsing
 and logical request validation are independent of transport frame size. The

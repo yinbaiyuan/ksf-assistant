@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"ksfassistant/core/internal/feishuprotocol"
 )
 
 type EventConsumerStateStore struct{ path string }
@@ -13,13 +15,15 @@ func NewEventConsumerStateStore(dataRoot string) EventConsumerStateStore {
 	return EventConsumerStateStore{path: filepath.Join(dataRoot, "logs", "event-consumer-state.json")}
 }
 
-func (store EventConsumerStateStore) UpdateConnection(profile, state string) error {
+func (store EventConsumerStateStore) UpdateConnection(state string) error {
 	return store.update(func(value map[string]any, now string) {
 		status := state
 		if state == "disconnected" {
 			status = "stopped"
 		}
-		value["profile"] = profile
+		for key, status := range feishuprotocol.ManagedEventConsumerStatus() {
+			value[key] = status
+		}
 		value["status"] = status
 		value["errorCode"] = ""
 		connection, _ := value["connection"].(map[string]any)

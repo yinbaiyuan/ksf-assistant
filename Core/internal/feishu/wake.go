@@ -30,7 +30,7 @@ func StartWakeServer(dataRoot string, handlers map[string]func()) (*WakeServer, 
 	kinds := []string{}
 	for kind, handler := range handlers {
 		kind, handler := kind, handler
-		if !contains([]string{"outbox", "docbox", "actionbox"}, kind) || handler == nil {
+		if !contains([]string{"outbox", "actionbox"}, kind) || handler == nil {
 			_ = listener.Close()
 			return nil, errors.New("invalid wake handler")
 		}

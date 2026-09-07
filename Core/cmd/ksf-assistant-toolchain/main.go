@@ -87,6 +87,10 @@ func run(arguments []string, output io.Writer) int {
 
 func failure(output io.Writer, code string) int {
 	code = safeFailureCode(code)
+	if code == "feishu_login_required" {
+		_ = json.NewEncoder(output).Encode(map[string]any{"schemaVersion": 1, "ok": false, "error": map[string]string{"code": code, "message": "已退出飞书接入，请在 KSFAssistant 中登录飞书后再使用。"}})
+		return 1
+	}
 	_ = json.NewEncoder(output).Encode(map[string]any{"schemaVersion": 1, "ok": false, "error": map[string]string{"code": code, "message": fmt.Sprintf("Toolchain action failed (%s). No credentials are included.", code)}})
 	return 1
 }

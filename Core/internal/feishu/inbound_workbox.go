@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"ksfassistant/core/internal/retrypolicy"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,18 +14,21 @@ import (
 )
 
 type inboundWork struct {
-	SchemaVersion int             `json:"schemaVersion"`
-	ID            string          `json:"id"`
-	EventKey      string          `json:"eventKey"`
-	Payload       json.RawMessage `json:"payload,omitempty"`
-	PayloadHash   string          `json:"payloadFingerprint,omitempty"`
-	CreatedAt     time.Time       `json:"createdAt"`
-	CompletedAt   *time.Time      `json:"completedAt,omitempty"`
-	AttemptCount  int             `json:"attemptCount,omitempty"`
-	LastError     string          `json:"lastError,omitempty"`
-	NextAttemptAt *time.Time      `json:"nextAttemptAt,omitempty"`
-	Status        string          `json:"status,omitempty"`
-	Existing      bool            `json:"-"`
+	SchemaVersion  int             `json:"schemaVersion"`
+	ID             string          `json:"id"`
+	EventKey       string          `json:"eventKey"`
+	Payload        json.RawMessage `json:"payload,omitempty"`
+	PayloadHash    string          `json:"payloadFingerprint,omitempty"`
+	CreatedAt      time.Time       `json:"createdAt"`
+	CompletedAt    *time.Time      `json:"completedAt,omitempty"`
+	AttemptCount   int             `json:"attemptCount,omitempty"`
+	LastError      string          `json:"lastError,omitempty"`
+	NextAttemptAt  *time.Time      `json:"nextAttemptAt,omitempty"`
+	Status         string          `json:"status,omitempty"`
+	FailureStage   string          `json:"failureStage,omitempty"`
+	RetryStartedAt *time.Time      `json:"retryStartedAt,omitempty"`
+	RetryBase      int             `json:"retryBase,omitempty"`
+	Existing       bool            `json:"-"`
 }
 
 type InboundWorkbox struct{ root string }
@@ -133,7 +137,7 @@ func (box *InboundWorkbox) Pending() ([]inboundWork, error) {
 		if err != nil || missing || (work.SchemaVersion != 1 && work.SchemaVersion != 2 && work.SchemaVersion != 3) || work.ID == "" {
 			return nil, errors.New("invalid_persisted_inbound_work")
 		}
-		if work.Status == "failed" || work.Status == "completed" {
+		if work.Status == "failed" || work.Status == "completed" || work.Status == "needs_review" {
 			continue
 		}
 		if !json.Valid(work.Payload) {
@@ -191,6 +195,16 @@ func (box *InboundWorkbox) Ready(now time.Time) ([]inboundWork, error) {
 	now = now.UTC()
 	result := make([]inboundWork, 0, len(items))
 	for _, item := range items {
+		start := item.CreatedAt
+		if item.RetryStartedAt != nil {
+			start = *item.RetryStartedAt
+		}
+		if retrypolicy.Exhausted(item.BudgetAttempts(), start, now) {
+			if err := box.Pause(item, "retry_budget_exhausted", "budget", 0); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if item.NextAttemptAt != nil && item.NextAttemptAt.After(now) {
 			continue
 		}
@@ -216,4 +230,14 @@ func (box *InboundWorkbox) Recover(ctx context.Context, dispatch func(context.Co
 		}
 	}
 	return nil
+}
+
+func (w inboundWork) BudgetAttempts() int { return w.AttemptCount - w.RetryBase }
+func (box *InboundWorkbox) Pause(w inboundWork, code, stage string, attempts int) error {
+	w.Status = "needs_review"
+	w.AttemptCount += attempts
+	w.LastError = code
+	w.FailureStage = stage
+	w.NextAttemptAt = nil
+	return writePrivateJSON(filepath.Join(box.root, w.ID+".json"), w)
 }

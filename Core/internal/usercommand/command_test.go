@@ -367,7 +367,7 @@ func TestReviewedCapabilitiesExistInFrozenPublicCatalog(t *testing.T) {
 	if err := json.Unmarshal(data, &catalog); err != nil {
 		t.Fatal(err)
 	}
-	ids := map[string]bool{"docbox.version": true}
+	ids := map[string]bool{"drive.file.version.create": true}
 	for _, item := range catalog.Catalog {
 		ids[item.ID] = true
 	}

@@ -21,7 +21,7 @@ func allowFixtureBusinessCommands() *UserApprovalGate {
 func TestBusinessWriteWithoutDesktopNeverStartsProcess(t *testing.T) {
 	runner, logPath, _ := fakeApprovedBusinessRunner(t, "denied")
 	runner.UserApproval = nil
-	definition := CapabilityDefinition{ID: "docbox.create", Identity: "user", Risk: "write", Command: []string{"docs", "+create"}}
+	definition := CapabilityDefinition{ID: "docs.shortcut.create", Identity: "user", Risk: "write", Command: []string{"docs", "+create"}}
 	_, err := runner.run(context.Background(), definition, []string{"docs", "+create", "--doc-format", "markdown", "--content", "-"}, []byte("private body"), nil, time.Second)
 	if err == nil || err.Error() != "approval_desktop_unavailable" || isUncertainExecutionError(err) {
 		t.Fatalf("unexpected approval result: %v", err)
@@ -117,7 +117,7 @@ func TestBusinessApprovalRechecksUserIdentityBeforeConsume(t *testing.T) {
 		}
 		return original(ctx, method, input, output)
 	})
-	_, err := runner.documentCreate(context.Background(), DocumentRequest{Identity: "user", Content: DocumentContent{Format: "markdown", Text: "fixture"}})
+	_, err := runFixtureDocumentCreate(context.Background(), runner, "fixture")
 	if err == nil || err.Error() != "user_command_identity_changed" {
 		t.Fatalf("identity change: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestBusinessApprovalRechecksIdentityImmediatelyBeforeExecution(t *testing.T
 		}
 		return original(ctx, method, input, output)
 	})
-	_, err := runner.documentCreate(context.Background(), DocumentRequest{Identity: "user", Content: DocumentContent{Format: "markdown", Text: "fixture"}})
+	_, err := runFixtureDocumentCreate(context.Background(), runner, "fixture")
 	if err == nil || err.Error() != "user_command_identity_changed" {
 		t.Fatalf("late identity change: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestBusinessApprovalHoldsAuthorizationLeaseOnlyAfterDecision(t *testing.T) 
 		}
 		return original(ctx, method, input, output)
 	})
-	if _, err := runner.documentCreate(context.Background(), DocumentRequest{Identity: "user", Content: DocumentContent{Format: "markdown", Text: "fixture"}}); err != nil {
+	if _, err := runFixtureDocumentCreate(context.Background(), runner, "fixture"); err != nil {
 		t.Fatal(err)
 	}
 	if !consumed {
@@ -196,33 +196,11 @@ func TestBusinessApprovalHoldsAuthorizationLeaseOnlyAfterDecision(t *testing.T) 
 	release()
 }
 
-func TestDocboxApprovalRejectsVersionBeforeAnyWrite(t *testing.T) {
-	runner, logPath, requests := fakeApprovedBusinessRunner(t, "denied")
-	root, err := filepath.EvalSymlinks(runner.DataRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runner.DataRoot, runner.WorkingDirectory = root, root
-	request := DocumentRequest{ID: "DOC-denied-version", Type: "document_task", Action: "update_document", Identity: "user", Target: &DocumentTarget{Kind: "docx_token", Value: "doc_fixture"}, Content: DocumentContent{Format: "markdown", Text: "replacement"}, Instruction: "test", ExplicitAuthorization: true, Source: "test", VersionPolicy: "official_before_update", UpdateMode: "append", CreatedAt: time.Now().UTC()}
-	id, input := documentCapabilityInput(request)
-	ctx, operationID := reviewRunningBoundary(t, root, id, input)
-	request.OperationID = operationID
-	result := executeDocumentRequest(ctx, runner, request, false)
-	if result.Status != "failed" || result.FailurePhase != "approval" || *requests != 1 {
-		t.Fatalf("version approval failed: %#v count=%d", result, *requests)
-	}
-	calls, err := os.ReadFile(logPath)
-	if err != nil || strings.Count(string(calls), "write") != 1 {
-		t.Fatalf("expected only preflight read, got %q %v", calls, err)
-	}
-}
-
 func TestBusinessUserWriteApprovalAndRejection(t *testing.T) {
 	for _, state := range []string{"approved", "denied"} {
 		t.Run(state, func(t *testing.T) {
 			runner, logPath, requests := fakeApprovedBusinessRunner(t, state)
-			request := DocumentRequest{Identity: "user", Content: DocumentContent{Format: "markdown", Text: "plain content"}}
-			_, err := runner.documentCreate(context.Background(), request)
+			_, err := runFixtureDocumentCreate(context.Background(), runner, "plain content")
 			data, _ := os.ReadFile(logPath)
 			if *requests != 1 {
 				t.Fatalf("requests=%d err=%v", *requests, err)
@@ -247,7 +225,7 @@ func TestBusinessApprovalDoesNotHoldGateMutex(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	_, err := runner.documentCreate(ctx, DocumentRequest{Identity: "user", Content: DocumentContent{Format: "markdown", Text: "body"}})
+	_, err := runFixtureDocumentCreate(ctx, runner, "body")
 	if err == nil || errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("gate callback locked itself: %v", err)
 	}
@@ -263,17 +241,6 @@ func TestBusinessReadsAndBotDoNotRequestDesktopApproval(t *testing.T) {
 			}
 			if *requests != 0 {
 				t.Fatal("read requested desktop approval")
-			}
-			if identity == "bot" {
-				request := DocumentRequest{Action: "update_document", Identity: "bot", Target: &DocumentTarget{Kind: "wiki_token", Value: "wiki_fixture"}, Content: DocumentContent{Format: "markdown", Text: "fixture"}, Source: "test"}
-				id, input := documentCapabilityInput(request)
-				ctx, _ := reviewRunningBoundary(t, runner.DataRoot, id, input)
-				if _, err := runner.documentUpdate(ctx, request); err != nil {
-					t.Fatal(err)
-				}
-				if *requests != 0 {
-					t.Fatal("bot write requested user approval")
-				}
 			}
 		})
 	}
@@ -295,7 +262,7 @@ func TestBusinessApprovalRechecksPolicyBeforeConsume(t *testing.T) {
 		}
 		return original(ctx, method, input, output)
 	})
-	_, err := runner.documentCreate(context.Background(), DocumentRequest{Identity: "user", Content: DocumentContent{Format: "markdown", Text: "fixture"}})
+	_, err := runFixtureDocumentCreate(context.Background(), runner, "fixture")
 	if err == nil || err.Error() != "approval_policy_changed" {
 		t.Fatalf("policy change: %v", err)
 	}
@@ -325,7 +292,7 @@ func TestBusinessApprovalRechecksPolicyAfterConsume(t *testing.T) {
 		}
 		return original(ctx, method, input, output)
 	})
-	_, err := runner.documentCreate(context.Background(), DocumentRequest{Identity: "user", Content: DocumentContent{Format: "markdown", Text: "fixture"}})
+	_, err := runFixtureDocumentCreate(context.Background(), runner, "fixture")
 	if err == nil || err.Error() != "approval_policy_denied" || outcome != "not_started" {
 		t.Fatalf("late policy rejection: %v, outcome=%s", err, outcome)
 	}
@@ -342,18 +309,16 @@ func TestBusinessGateRejectionTerminatesQueuedWritesWithoutReplay(t *testing.T) 
 				runner.UserApproval = nil
 			}
 			settings := enableCapabilityWrites(t, runner.DataRoot)
-			settings.Docbox.Enabled, settings.Docbox.DryRun = true, false
 			if err := NewSettingsStore(runner.DataRoot).Save(settings); err != nil {
 				t.Fatal(err)
 			}
 			service := NewCapabilityService(runner.DataRoot, UnifiedCapabilityExecutor{LongTail: runner, DataRoot: runner.DataRoot}, nil)
 			policy, _ := service.ReadPolicy()
-			policy.CapabilityOverrides["docs.service.document.create"] = CapabilityConfirmEach
+			policy.CapabilityOverrides["docs.shortcut.create"] = CapabilityConfirmEach
 			if _, err := service.UpdatePolicy(policy, policy.Revision); err != nil {
 				t.Fatal(err)
 			}
-			request := DocumentRequest{ID: "DOC-approval", Type: "document_task", Action: "create_document", Identity: "user", Content: DocumentContent{Format: "markdown", Text: "fixture"}, Instruction: "fixture", ExplicitAuthorization: true, Source: "test", CreatedAt: time.Now().UTC()}
-			id, input := documentCapabilityInput(request)
+			id, input := "docs.shortcut.create", map[string]any{"content": "fixture", "doc-format": "markdown"}
 			prepared, err := service.Prepare(context.Background(), id, input, "test")
 			if err != nil {
 				t.Fatal(err)
@@ -397,4 +362,8 @@ func TestBusinessUnknownSemanticsNeverExecute(t *testing.T) {
 	if _, err := os.Stat(logPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("unknown semantics executed")
 	}
+}
+
+func runFixtureDocumentCreate(ctx context.Context, runner CapabilityExecutor, body string) (map[string]any, error) {
+	return runner.run(ctx, CapabilityDefinition{ID: "docs.shortcut.create", Identity: "user", Risk: "write", Command: []string{"docs", "+create"}}, []string{"docs", "+create", "--doc-format", "markdown", "--content", "-"}, []byte(body), nil, time.Second)
 }

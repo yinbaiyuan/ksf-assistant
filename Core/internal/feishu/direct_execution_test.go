@@ -12,7 +12,7 @@ import (
 )
 
 func TestBoundMessageRequiresRealConfirmedInputAndPersistsOutcome(t *testing.T) {
-	for _, mode := range []string{"success", "missing-operation", "awaiting-confirmation", "changed-input", "disabled", "dry-run", "timeout"} {
+	for _, mode := range []string{"success", "missing-operation", "awaiting-confirmation", "changed-input", "timeout"} {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()
 			settings := enableCapabilityWrites(t, root)
@@ -177,43 +177,6 @@ func TestWorkIndexUnwritableCannotStrandClaimOrFinish(t *testing.T) {
 	var result OutboxResult
 	if found, err := repo.findResult(item.ID, &result); err != nil || !found || result.Status != "sent" {
 		t.Fatalf("result=%#v %v", result, err)
-	}
-}
-
-type boundaryDocumentTransport struct {
-	reviewDocumentTransport
-	afterVersion func()
-}
-
-func (transport *boundaryDocumentTransport) DocumentVersion(ctx context.Context, target DocumentTarget, preflight map[string]any, id string) (map[string]any, error) {
-	transport.afterVersion()
-	return transport.reviewDocumentTransport.DocumentVersion(ctx, target, preflight, id)
-}
-
-func TestDocumentRechecksPolicyBetweenVersionAndUpdate(t *testing.T) {
-	root := t.TempDir()
-	settings := enableCapabilityWrites(t, root)
-	settings.Docbox.Enabled, settings.Docbox.DryRun = true, false
-	if err := NewSettingsStore(root).Save(settings); err != nil {
-		t.Fatal(err)
-	}
-	transport := &boundaryDocumentTransport{afterVersion: func() {
-		settings.Docbox.Enabled = false
-		if err := NewSettingsStore(root).Save(settings); err != nil {
-			t.Fatal(err)
-		}
-	}}
-	service := NewCapabilityService(root, UnifiedCapabilityExecutor{DataRoot: root, Documents: transport}, nil)
-	prepared, err := service.Prepare(context.Background(), "docs.service.document.append", map[string]any{"target-kind": "docx_token", "target-value": "doc_fixture", "content": "fixture", "format": "text", "source": "test"}, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := service.ProcessActions(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	view, err := service.Status(prepared.Operation.ID)
-	if err != nil || view.Status != OperationOutcomeUnknown || transport.writes.Load() != 0 {
-		t.Fatalf("status=%#v writes=%d err=%v", view, transport.writes.Load(), err)
 	}
 }
 

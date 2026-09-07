@@ -94,11 +94,11 @@ func capabilitiesEnvelope() (any, error) {
 		return nil, err
 	}
 	return map[string]any{"status": "ok", "capabilities": map[string]any{
-		"bridgeVersion": "2.0.0", "packageVersion": "1.2.0", "capabilityVersion": "2.0.0", "stabilityBaselineVersion": "0.6.1", "queueStateSchemaVersion": 2, "skillCompatibility": "phase2_pending", "larkCliVersion": feishu.PinnedLarkCLIVersion, "frozenCatalogVersion": "1.0.92", "officialSdk": "none", "officialSdkVersion": "",
+		"bridgeVersion": "2.0.0", "packageVersion": "1.2.0", "capabilityVersion": "2.0.0", "stabilityBaselineVersion": "0.6.1", "queueStateSchemaVersion": 2, "larkCliVersion": feishu.PinnedLarkCLIVersion, "frozenCatalogVersion": "1.0.92", "officialSdk": "none", "officialSdkVersion": "",
 		"identities": []string{"bot", "user"}, "eventTransport": "official-cli", "singleInboundConnection": true, "events": feishu.FixedEventKeys, "managedEvents": feishu.CLIManagedEventKeys, "unsupportedEvents": []string{feishu.MailMessageReceivedEvent}, "fixedEventCatalog": true,
 		"inboundMessageTypes": []string{"text", "image", "file", "audio", "media", "post"}, "outboundMessageFormats": []string{"text", "markdown", "card", "image", "file"},
 		"readCapabilities": readCapabilities, "queuedWriteCapabilities": queuedWriteCapabilities,
-		"registeredCapabilities": items, "registeredCapabilityCount": len(items), "riskCounts": riskCounts, "documentWrites": []string{"create_document", "append", "overwrite", "str_replace"},
+		"registeredCapabilities": items, "registeredCapabilityCount": len(items), "riskCounts": riskCounts,
 		"intentionallyExcluded": []string{"application_management", "member_admin_role_permission_management", "credential_or_secret_management", "automation_configuration", "live_meeting_control", "urgent_phone_or_sms", "arbitrary_openapi", "background_full_crawl"},
 		"requiredScopes":        map[string]any{"bot": scopes.Bot, "user": scopes.User},
 	}}, nil

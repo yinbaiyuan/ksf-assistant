@@ -129,7 +129,7 @@ func (box *Actionbox) Submit(request ActionRequest) error {
 	if definition.Risk == "read" {
 		return errors.New("read_capability_must_not_enter_actionbox")
 	}
-	if definition.Queue != "actionbox" && !(box.operations != nil && definition.Queue == "docbox") {
+	if definition.Queue != "actionbox" {
 		return errors.New("capability_requires_" + definition.Queue)
 	}
 	if definition.Identity != request.Identity {

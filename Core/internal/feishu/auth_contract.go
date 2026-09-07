@@ -153,7 +153,7 @@ func ReadAuthStatus(ctx context.Context, runner CapabilityExecutor, dataRoot str
 }
 
 func readCLIAuthStatus(ctx context.Context, runner CapabilityExecutor) (feishuprotocol.AuthStatus, error) {
-	status := emptyAuthStatus("unauthorized")
+	status := emptyAuthStatus("unknown")
 	raw, err := runner.RunAuthJSON(ctx, []string{"auth", "status", "--verify", "--json"}, nil, 15*time.Second)
 	if err != nil {
 		return status, err
@@ -162,36 +162,73 @@ func readCLIAuthStatus(ctx context.Context, runner CapabilityExecutor) (feishupr
 	status.ProfileValid = raw["brand"] == "feishu" && strings.TrimSpace(appID) != ""
 	identities := raw["identities"].(map[string]any)
 	user := identities["user"].(map[string]any)
-	status.IdentityValid = user["available"] == true && user["verified"] == true
-	if status.IdentityValid && status.ProfileValid {
-		status.Status = "authorized"
+	observation := cliUserAuthState(user)
+	status.IdentityValid = observation == "authorized"
+	if status.ProfileValid || observation == "failed" {
+		status.Status = observation
 	}
 	if !status.ProfileValid {
 		status.MissingCapabilities = append(status.MissingCapabilities, "应用配置待验证")
 	}
 	granted := stringList(user["scope"])
 	status.GrantedScopeCount = len(comparePermissionScopes(nil, granted).Excess)
-	contract, err := RequiredPermissionScopes()
-	if err != nil {
-		return status, errors.New("权限注册表不可用")
-	}
-	if len(comparePermissionScopes(contract.User, granted).Missing) > 0 {
+	required := []string{"contact:user.base:readonly"}
+	if len(comparePermissionScopes(required, granted).Missing) > 0 {
 		status.MissingCapabilities = append(status.MissingCapabilities, "用户授权范围")
 	}
 	scopes, err := runner.RunAuthJSON(ctx, []string{"auth", "scopes", "--json"}, nil, 15*time.Second)
 	if err != nil {
 		status.MissingCapabilities = append(status.MissingCapabilities, "应用权限待验证")
-	} else if len(comparePermissionScopes(contract.User, stringList(scopes["userScopes"])).Missing) > 0 {
+	} else if len(comparePermissionScopes(required, stringList(scopes["userScopes"])).Missing) > 0 {
 		status.MissingCapabilities = append(status.MissingCapabilities, "应用功能权限")
 	}
 	return status, nil
 }
 
+func cliUserAuthState(user map[string]any) string {
+	if user["verified"] == false || user["status"] == "verify_failed" {
+		return "failed"
+	}
+	available, known := user["available"].(bool)
+	if !known {
+		return "unknown"
+	}
+	if !available {
+		if user["status"] == "missing" && user["verified"] != true {
+			return "unauthorized"
+		}
+		return "unknown"
+	}
+	status, _ := user["status"].(string)
+	if user["verified"] == true && (status == "" || status == "ready" || status == "needs_refresh") {
+		return "authorized"
+	}
+	return "unknown"
+}
+
 func LogoutUserAuth(ctx context.Context, runner CapabilityExecutor, dataRoot string) (feishuprotocol.AuthStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return emptyAuthStatus("unknown"), err
+	}
 	CancelUserAuthFlow(dataRoot)
 	_, err := runner.RunAuthJSON(ctx, []string{"auth", "logout", "--json"}, nil, 30*time.Second)
 	if err != nil {
-		return emptyAuthStatus("failed"), err
+		return emptyAuthStatus("unknown"), err
 	}
-	return readCLIAuthStatus(ctx, runner)
+	unknown := emptyAuthStatus("unknown")
+	unknown.MissingCapabilities = []string{"退出结果尚未确认，请重新检查用户授权"}
+	raw, err := runner.RunAuthJSON(ctx, []string{"auth", "status", "--verify", "--json"}, nil, 15*time.Second)
+	if err != nil {
+		return unknown, nil
+	}
+	identities, _ := raw["identities"].(map[string]any)
+	user, _ := identities["user"].(map[string]any)
+	appID, _ := raw["appId"].(string)
+	profileValid := raw["brand"] == "feishu" && strings.TrimSpace(appID) != ""
+	if !profileValid || cliUserAuthState(user) != "unauthorized" {
+		return unknown, nil
+	}
+	status := emptyAuthStatus("unauthorized")
+	status.ProfileValid = profileValid
+	return status, nil
 }

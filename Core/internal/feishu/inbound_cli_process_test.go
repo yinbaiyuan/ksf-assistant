@@ -109,3 +109,80 @@ func TestCLIInboundRefusesForeignBusWithoutStoppingIt(t *testing.T) {
 		t.Fatal("foreign bus stopped")
 	}
 }
+
+func TestCLIInboundRecoversOwnedConsumerExit(t *testing.T) {
+	runner := fakeEventCLI(t)
+	script, err := os.ReadFile(runner.Binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script = []byte(strings.Replace(string(script), "  read ignored", `  if [ "$key" = "im.message.receive_v1" ] && [ ! -f "$root/failed-once" ]; then
+   : > "$root/failed-once"
+   sleep 0.2
+   exit 1
+  fi
+  read ignored`, 1))
+	if err := os.WriteFile(runner.Binary, script, 0700); err != nil {
+		t.Fatal(err)
+	}
+	connected := make(chan struct{}, 4)
+	inbound, _ := NewOfficialInbound(runner, nil, func(context.Context, string, []byte) error { return nil }, func(state string) {
+		if state == "connected" {
+			connected <- struct{}{}
+		}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer inbound.Close()
+	done := make(chan error, 1)
+	go func() { done <- inbound.Start(ctx) }()
+	for count := 0; count < 2; count++ {
+		select {
+		case <-connected:
+		case err := <-done:
+			t.Fatalf("owned consumer was never recovered: %v", err)
+		case <-time.After(6 * time.Second):
+			t.Fatal("reconnection did not become ready")
+		}
+	}
+}
+
+func TestCLIInboundSurvivesOneFailedStatusProbe(t *testing.T) {
+	runner := fakeEventCLI(t)
+	script, err := os.ReadFile(runner.Binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script = []byte(strings.Replace(string(script), " status)\n", " status)\n  if [ -f \"$root/fail-probe\" ]; then rm -f \"$root/fail-probe\"; exit 1; fi\n", 1))
+	if err := os.WriteFile(runner.Binary, script, 0700); err != nil {
+		t.Fatal(err)
+	}
+	states := make(chan string, 10)
+	inbound, _ := NewOfficialInbound(runner, nil, func(context.Context, string, []byte) error { return nil }, func(state string) { states <- state })
+	defer inbound.Close()
+	done := make(chan error, 1)
+	go func() { done <- inbound.Start(context.Background()) }()
+	connected := 0
+	timer := time.NewTimer(15 * time.Second)
+	defer timer.Stop()
+	for connected < 2 {
+		select {
+		case state := <-states:
+			if state == "connected" {
+				connected++
+				if connected == 1 {
+					if err := os.WriteFile(filepath.Join(runner.DataRoot, "fail-probe"), nil, 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+		case err := <-done:
+			t.Fatalf("single probe failure stopped the listeners: %v", err)
+		case <-timer.C:
+			t.Fatal("listener health did not recover")
+		}
+	}
+	if _, err := os.Stat(filepath.Join(runner.DataRoot, "stopped")); !os.IsNotExist(err) {
+		t.Fatal("healthy consumers were restarted")
+	}
+}

@@ -24,7 +24,14 @@ type Attachment struct {
 	SHA256 string `json:"sha256"`
 }
 
+type Preview struct {
+	Content      string `json:"content"`
+	ConfirmLabel string `json:"confirmLabel"`
+	Destructive  bool   `json:"destructive"`
+}
+
 type Review struct {
+	Preview     *Preview     `json:"preview,omitempty"`
 	ID          string       `json:"id"`
 	Title       string       `json:"title"`
 	User        string       `json:"user"`
@@ -129,6 +136,13 @@ func (broker *Broker) Request(owner context.Context, digest string, review Revie
 	}
 	if strings.ContainsRune(review.Content, 0) || !utf8.ValidString(review.Content) || len(review.Attachments) > 1000 {
 		return "", errors.New("approval_invalid_request")
+	}
+	if preview := review.Preview; preview != nil {
+		if len(preview.Content) > 256*1024 || !utf8.ValidString(preview.Content) || strings.ContainsRune(preview.Content, 0) || len([]rune(preview.ConfirmLabel)) > 8 || strings.TrimSpace(preview.ConfirmLabel) == "" || strings.ContainsAny(preview.ConfirmLabel, "\x00\r\n") {
+			return "", errors.New("approval_invalid_request")
+		}
+		copy := *preview
+		review.Preview = &copy
 	}
 	for _, attachment := range review.Attachments {
 		if attachment.Name == "" || len(attachment.Name) > 4096 || strings.ContainsRune(attachment.Name, 0) || !utf8.ValidString(attachment.Name) || attachment.Size < 0 || !digestPattern.MatchString(attachment.SHA256) {

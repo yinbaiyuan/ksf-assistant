@@ -80,7 +80,26 @@ func Evaluate(command Command) (Review, error) {
 			return Review{}, ErrUnsupported
 		}
 		review.NeedsApproval = review.Identity == "user" && review.Risk != "read"
-		review.Target, review.Details = describe(command, parsed)
+		var preview string
+		review.Target, review.Details, preview = describeParts(command, parsed)
+		title := review.Action
+		for _, entry := range legacySpecifications {
+			if entry.path == parsed.spec.path {
+				title = entry.action
+				break
+			}
+		}
+		if title == review.Action && parsed.path[0] != "api" {
+			title = "执行飞书操作 · " + parsed.spec.path
+		}
+		label := "执行"
+		for _, verb := range []string{"发送", "回复", "删除", "撤回", "更新", "修改", "创建", "添加", "移除", "上传", "移动", "复制", "提交", "取消", "退出", "转发"} {
+			if strings.HasPrefix(title, verb) {
+				label = verb
+				break
+			}
+		}
+		review.Preview = &ApprovalPreview{Title: title, Content: preview, ConfirmLabel: label, Destructive: review.Risk == "destructive"}
 		if review.Target == "" {
 			return Review{}, errors.New("user_command_target_unresolved")
 		}
@@ -91,7 +110,12 @@ func Evaluate(command Command) (Review, error) {
 }
 
 func describe(command Command, parsed parsed) (string, string) {
-	var targets, details []string
+	target, details, _ := describeParts(command, parsed)
+	return target, details
+}
+
+func describeParts(command Command, parsed parsed) (string, string, string) {
+	var targets, details, preview []string
 	if parsed.path[0] == "api" {
 		targets = append(targets, parsed.path[2])
 	}
@@ -111,6 +135,16 @@ func describe(command Command, parsed parsed) (string, string) {
 		}
 		line := key + ": " + strings.Join(values, " | ")
 		details = append(details, line)
+		// Do not reparse flattened text: user content can itself look like metadata.
+		// Targets remain visible separately. JSON bodies and every non-target
+		// parameter stay in the preview, including permission/scope changes.
+		if !includes(parsed.spec.targets, key) || includes("data params", key) {
+			label := map[string]string{"text": "正文", "content": "内容", "data": "修改参数", "params": "作用范围", "command": "修改方式", "doc-format": "格式"}[key]
+			if label == "" {
+				label = key
+			}
+			preview = append(preview, label+"：\n"+strings.Join(values, " | "))
+		}
 		if repeatable(flag) || strings.HasSuffix(key, "-ids") {
 			count := 0
 			for _, value := range values {
@@ -163,6 +197,8 @@ func describe(command Command, parsed parsed) (string, string) {
 	if len(targets) == 0 {
 		targets = append(targets, "命令 "+parsed.spec.path+"（明确参数及当前授权范围见详情）")
 	}
+	// Artifact effects below must stay visible.
+	artifactStart := len(details)
 	if parsed.spec.descriptor.Artifacts {
 		details = append(details, "本地输出：执行成功后按冻结计划发布；冲突拒绝、不覆盖，失败或未知结果不发布。")
 	}
@@ -175,7 +211,8 @@ func describe(command Command, parsed parsed) (string, string) {
 			details = append(details, "明确下载目标: "+target.Path)
 		}
 	}
-	return strings.Join(targets, "\n"), strings.Join(details, "\n")
+	preview = append(preview, details[artifactStart:]...)
+	return strings.Join(targets, "\n"), strings.Join(details, "\n"), strings.Join(preview, "\n\n")
 }
 
 var dynamicDocumentResource = regexp.MustCompile(`(?is)!\s*\[|<\s*[/!?a-z]`)

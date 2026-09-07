@@ -101,14 +101,6 @@ func (repo workRepository) validateLegacyPending(item WorkItemV4) error {
 		}
 		_, err := boundQueueInput(operations, request.OperationID, "im.sdk.message.send", outboxCapabilityInput(repo.dataRoot, request))
 		return err
-	case "docbox":
-		var request DocumentRequest
-		if err := json.Unmarshal(item.Request, &request); err != nil {
-			return err
-		}
-		id, input := documentCapabilityInput(request)
-		_, err := boundQueueInput(operations, request.OperationID, id, input)
-		return err
 	}
 	return errors.New("unknown_queue")
 }

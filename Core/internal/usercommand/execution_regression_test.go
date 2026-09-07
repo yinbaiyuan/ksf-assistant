@@ -116,7 +116,7 @@ func TestFrozenUploadAllEffectsAndOriginalBasename(t *testing.T) {
 func TestStringReplacementUsesOverwritePolicy(t *testing.T) {
 	command := frozenTest(t, "user", "docs", "+update", "--doc", "fixture", "--command", "str_replace", "--pattern", "old", "--content", "new", "--doc-format", "markdown")
 	review, err := Evaluate(command)
-	if err != nil || review.Risk != "destructive" || !contains(review.CapabilityIDs, "docs.service.document.overwrite") {
+	if err != nil || review.Risk != "destructive" || !contains(review.CapabilityIDs, "docs.shortcut.overwrite") {
 		t.Fatalf("replacement policy: %+v %v", review, err)
 	}
 }

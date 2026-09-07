@@ -1,6 +1,6 @@
 {
   "name": "ksfassistant-windows",
-  "version": "0.11.0-preview.3",
+  "version": "0.11.0-preview.4",
   "private": true,
   "description": "Windows system-tray host for KSFAssistant",
   "author": "KSFAssistant contributors",

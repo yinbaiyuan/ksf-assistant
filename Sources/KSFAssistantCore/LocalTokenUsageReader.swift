@@ -11,23 +11,14 @@ public struct LocalTokenUsageReader {
         let date: Date
         let totalTokens: Int64
         let breakdown: CumulativeBreakdown?
+        var inherited = false
+        var request = false
     }
 
     private struct TokenDelta {
         let date: Date
         let totalTokens: Int64
         let breakdown: TokenUsageBreakdown?
-    }
-
-    private struct SessionMetadata {
-        let id: String
-        let parentID: String?
-    }
-
-    private struct SessionRecord {
-        let url: URL
-        let identity: String
-        let metadata: SessionMetadata?
     }
 
     private struct UsageAccumulator {
@@ -126,14 +117,15 @@ public struct LocalTokenUsageReader {
         }
 
         let startOfDay = calendar.startOfDay(for: day)
-        guard let files = sessionFiles(modifiedOnOrAfter: startOfDay) else { return nil }
+        guard let files = sessionFiles() else { return nil }
 
+        let sources = TurnCatalog(paths: Dictionary(uniqueKeysWithValues: files.map { (sessionIdentity(for: $0), $0) }))
         var usage = UsageAccumulator()
-        for lineage in sessionLineages(for: files) {
+        for file in files where modified(file, onOrAfter: startOfDay) {
             usage.merge(tokensUsed(
-                in: lineage,
+                in: file,
                 from: startOfDay,
-                to: endOfDay
+                to: endOfDay, sources: sources
             ))
         }
 
@@ -171,15 +163,16 @@ public struct LocalTokenUsageReader {
             dayStarts.append(start)
         }
 
-        guard let files = sessionFiles(modifiedOnOrAfter: earliestStart) else { return nil }
+        guard let files = sessionFiles() else { return nil }
 
+        let sources = TurnCatalog(paths: Dictionary(uniqueKeysWithValues: files.map { (sessionIdentity(for: $0), $0) }))
         var usageByDate: [String: UsageAccumulator] = [:]
-        for lineage in sessionLineages(for: files) {
+        for file in files where modified(file, onOrAfter: earliestStart) {
             let fileUsage = tokensUsedByDay(
-                in: lineage,
+                in: file,
                 from: earliestStart,
                 to: end,
-                calendar: calendar
+                calendar: calendar, sources: sources
             )
             for (date, usage) in fileUsage {
                 var accumulated = usageByDate[date] ?? UsageAccumulator()
@@ -199,7 +192,7 @@ public struct LocalTokenUsageReader {
         }
     }
 
-    private func sessionFiles(modifiedOnOrAfter earliestDate: Date) -> [URL]? {
+    private func sessionFiles() -> [URL]? {
         let keys: Set<URLResourceKey> = [
             .isRegularFileKey,
             .contentModificationDateKey,
@@ -225,7 +218,7 @@ public struct LocalTokenUsageReader {
                       values.isRegularFile != false
                 else { continue }
                 let modifiedAt = values.contentModificationDate ?? .distantPast
-                guard modifiedAt >= earliestDate else { continue }
+                // Keep old source files discoverable for fork provenance.
                 let candidate = (fileURL, values.fileSize ?? 0, modifiedAt)
                 let identity = sessionIdentity(for: fileURL)
                 if let existing = selected[identity],
@@ -242,6 +235,36 @@ public struct LocalTokenUsageReader {
         return selected.values.map(\.url).sorted { $0.path < $1.path }
     }
 
+    private func modified(_ url: URL, onOrAfter date: Date) -> Bool {
+        guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]) else { return false }
+        return (values.contentModificationDate ?? .distantPast) >= date
+    }
+
+    private final class TurnCatalog {
+        let paths: [String: URL]
+        var loaded: [String: Set<String>] = [:]
+        init(paths: [String: URL]) { self.paths = paths }
+        func turns(_ id: String) -> Set<String>? {
+            if let known = loaded[id] { return known }
+            loaded[id] = []
+            guard let url = paths[id], let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
+            var result: Set<String> = []
+            let context = Data(#""turn_context""#.utf8)
+            let started = Data(#""task_started""#.utf8)
+            for line in data.split(separator: 0x0A) {
+                let bytes = Data(line)
+                guard bytes.range(of: context) != nil || bytes.range(of: started) != nil,
+                      let object = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+                      let payload = object["payload"] as? [String: Any],
+                      object["type"] as? String == "turn_context" || (object["type"] as? String == "event_msg" && payload["type"] as? String == "task_started"),
+                      let turnID = payload["turn_id"] as? String, !turnID.isEmpty else { continue }
+                result.insert(turnID)
+            }
+            loaded[id] = result
+            return result
+        }
+    }
+
     private func sessionIdentity(for fileURL: URL) -> String {
         let stem = fileURL.deletingPathExtension().lastPathComponent
         let suffix = String(stem.suffix(36))
@@ -252,87 +275,6 @@ public struct LocalTokenUsageReader {
         return stem
     }
 
-    private func sessionLineages(for files: [URL]) -> [[URL]] {
-        let records = files.map { fileURL in
-            SessionRecord(
-                url: fileURL,
-                identity: sessionIdentity(for: fileURL),
-                metadata: sessionMetadata(in: fileURL)
-            )
-        }
-        var metadataByID: [String: SessionMetadata] = [:]
-        for record in records {
-            if let metadata = record.metadata {
-                metadataByID[metadata.id] = metadata
-            }
-        }
-
-        var groups: [String: [URL]] = [:]
-        for record in records {
-            let key: String
-            if let metadata = record.metadata {
-                key = lineageRoot(for: metadata.id, metadataByID: metadataByID)
-            } else {
-                key = record.identity
-            }
-            groups[key, default: []].append(record.url)
-        }
-        return groups.keys.sorted().compactMap { groups[$0] }
-    }
-
-    private func lineageRoot(
-        for id: String,
-        metadataByID: [String: SessionMetadata]
-    ) -> String {
-        var current = id
-        var seen: Set<String> = []
-        while !current.isEmpty, !seen.contains(current) {
-            seen.insert(current)
-            guard let metadata = metadataByID[current],
-                  let parentID = metadata.parentID,
-                  !parentID.isEmpty
-            else {
-                return current
-            }
-            current = parentID
-        }
-        return id
-    }
-
-    private func sessionMetadata(in fileURL: URL) -> SessionMetadata? {
-        guard let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe) else {
-            return nil
-        }
-        var lineStart = data.startIndex
-        for _ in 0..<32 where lineStart < data.endIndex {
-            let lineEnd = data[lineStart...].firstIndex(of: 0x0A) ?? data.endIndex
-            let lineData = Data(data[lineStart..<lineEnd])
-            guard lineData.range(of: Data(#""session_meta""#.utf8)) != nil,
-                  let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
-                  object["type"] as? String == "session_meta",
-                  let payload = object["payload"] as? [String: Any],
-                  let id = payload["id"] as? String,
-                  !id.isEmpty
-            else {
-                guard lineEnd < data.endIndex else { break }
-                lineStart = data.index(after: lineEnd)
-                continue
-            }
-
-            var parentID = payload["parent_thread_id"] as? String
-                ?? payload["forked_from_id"] as? String
-            if parentID == nil,
-               let source = payload["source"] as? [String: Any],
-               let subagent = source["subagent"] as? [String: Any],
-               let spawn = subagent["thread_spawn"] as? [String: Any]
-            {
-                parentID = spawn["parent_thread_id"] as? String
-            }
-            return SessionMetadata(id: id, parentID: parentID)
-        }
-        return nil
-    }
-
     public static func dateString(for date: Date, calendar: Calendar = .current) -> String {
         let parts = calendar.dateComponents([.year, .month, .day], from: date)
         guard let year = parts.year, let month = parts.month, let day = parts.day else {
@@ -341,22 +283,22 @@ public struct LocalTokenUsageReader {
         return String(format: "%04d-%02d-%02d", year, month, day)
     }
 
-    private func tokensUsed(in fileURLs: [URL], from start: Date, to end: Date) -> UsageAccumulator {
+    private func tokensUsed(in fileURL: URL, from start: Date, to end: Date, sources: TurnCatalog) -> UsageAccumulator {
         var accumulated = UsageAccumulator()
-        for delta in tokenDeltas(in: fileURLs, from: start, to: end) {
+        for delta in tokenDeltas(from: tokenSamples(in: fileURL, from: start, to: end, sources: sources), from: start, to: end) {
             accumulated.add(totalDelta: delta.totalTokens, breakdown: delta.breakdown)
         }
         return accumulated
     }
 
     private func tokensUsedByDay(
-        in fileURLs: [URL],
+        in fileURL: URL,
         from start: Date,
         to end: Date,
-        calendar: Calendar
+        calendar: Calendar, sources: TurnCatalog
     ) -> [String: UsageAccumulator] {
         var usageByDate: [String: UsageAccumulator] = [:]
-        for delta in tokenDeltas(in: fileURLs, from: start, to: end) {
+        for delta in tokenDeltas(from: tokenSamples(in: fileURL, from: start, to: end, sources: sources), from: start, to: end) {
             let date = Self.dateString(for: delta.date, calendar: calendar)
             var usage = usageByDate[date] ?? UsageAccumulator()
             usage.add(totalDelta: delta.totalTokens, breakdown: delta.breakdown)
@@ -365,80 +307,66 @@ public struct LocalTokenUsageReader {
         return usageByDate
     }
 
-    private func tokenDeltas(in fileURLs: [URL], from start: Date, to end: Date) -> [TokenDelta] {
-        if fileURLs.count == 1, let fileURL = fileURLs.first {
-            return tokenDeltas(from: tokenSamples(in: fileURL, from: start, to: end), from: start, to: end)
-        }
-
-        var merged: [TokenSample] = []
-        for fileURL in fileURLs {
-            merged.append(contentsOf: tokenSamples(in: fileURL, from: start, to: end))
-        }
-        merged.sort {
-            if $0.date == $1.date {
-                return $0.totalTokens < $1.totalTokens
-            }
-            return $0.date < $1.date
-        }
-
-        var envelope: [TokenSample] = []
-        var maximum: Int64 = -1
-        for sample in merged {
-            guard sample.totalTokens >= maximum else { continue }
-            if sample.totalTokens == maximum,
-               let previous = envelope.last,
-               sameCumulative(previous, sample)
-            {
-                continue
-            }
-            envelope.append(sample)
-            maximum = max(maximum, sample.totalTokens)
-        }
-        return tokenDeltas(from: envelope, from: start, to: end)
-    }
-
-    private func tokenSamples(in fileURL: URL, from start: Date, to end: Date) -> [TokenSample] {
-        // Session files can remain active for days and grow very large. The token counter is
-        // cumulative, so search backward and stop after the last sample before the requested
-        // range instead of parsing historical conversation events from the beginning.
-        guard let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe) else {
-            return []
-        }
-
-        var reverseSamples: [TokenSample] = []
-        var baseline: TokenSample?
-        var searchEnd = data.endIndex
-
-        while searchEnd > data.startIndex,
-              let match = data.range(
-                of: tokenCountNeedle,
-                options: .backwards,
-                in: data.startIndex..<searchEnd
-              ) {
-            let lineStart = data[..<match.lowerBound].lastIndex(of: 0x0A)
-                .map { data.index(after: $0) }
-                ?? data.startIndex
-            let lineEnd = data[match.upperBound...].firstIndex(of: 0x0A) ?? data.endIndex
-
-            if let sample = tokenSample(from: Data(data[lineStart..<lineEnd])) {
-                if sample.date < start {
-                    baseline = sample
-                    break
-                }
-                if sample.date < end {
-                    reverseSamples.append(sample)
+    private func tokenSamples(in fileURL: URL, from start: Date, to end: Date, sources: TurnCatalog) -> [TokenSample] {
+        guard let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe) else { return [] }
+        var sessionID: String?
+        var ownerID: String?
+        var forkID: String?
+        var seenRequests: Set<String> = []
+        var samples: [TokenSample] = []
+        let metadataNeedle = Data(#""session_meta""#.utf8)
+        let recordNeedle = Data(#""token_usage_record""#.utf8)
+        let turnNeedle = Data(#""turn_context""#.utf8)
+        let startedNeedle = Data(#""task_started""#.utf8)
+        var lineStart = data.startIndex
+        // Read provenance in stream order. Fork replay timestamps are rewritten;
+        // neither a shared parent nor equal counter values proves duplicate usage.
+        while lineStart < data.endIndex {
+            let lineEnd = data[lineStart...].firstIndex(of: 0x0A) ?? data.endIndex
+            let line = Data(data[lineStart..<lineEnd])
+            if line.range(of: metadataNeedle) != nil || line.range(of: recordNeedle) != nil || line.range(of: turnNeedle) != nil || line.range(of: startedNeedle) != nil,
+               let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+               let payload = object["payload"] as? [String: Any] {
+                if object["type"] as? String == "session_meta",
+                   let id = payload["id"] as? String, !id.isEmpty {
+                    if sessionID == nil {
+                        sessionID = id
+                        forkID = payload["forked_from_id"] as? String
+                        ownerID = (forkID?.isEmpty == false) ? forkID : id
+                    } else { ownerID = id }
+                } else if (object["type"] as? String == "turn_context" || (object["type"] as? String == "event_msg" && payload["type"] as? String == "task_started")),
+                          let turnID = payload["turn_id"] as? String, !turnID.isEmpty,
+                          let forkID, let turns = sources.turns(forkID), !turns.isEmpty {
+                    ownerID = turns.contains(turnID) ? forkID : sessionID
+                } else if object["type"] as? String == "token_usage_record",
+                          let id = payload["thread_id"] as? String, !id.isEmpty {
+                    if sessionID == nil { sessionID = sessionIdentity(for: fileURL) }
+                    ownerID = id
+                    let key = id + "\0" + (payload["response_id"] as? String ?? "")
+                    if let responseID = payload["response_id"] as? String, !responseID.isEmpty,
+                       let timestamp = object["timestamp"] as? String,
+                       let usage = payload["usage"] as? [String: Any],
+                       var sample = usageSample(timestamp: timestamp, usage: usage),
+                       sample.date < end, !seenRequests.contains(key) {
+                        seenRequests.insert(key)
+                        sample.request = true
+                        sample.inherited = id != sessionID
+                        samples.append(sample)
+                    }
                 }
             }
-
-            guard lineStart > data.startIndex else { break }
-            searchEnd = lineStart
+            if line.range(of: tokenCountNeedle) != nil,
+               var sample = tokenSample(from: line), sample.date < end {
+                sample.inherited = sessionID != nil && ownerID != nil && ownerID != sessionID
+                samples.append(sample)
+            }
+            guard lineEnd < data.endIndex else { break }
+            lineStart = data.index(after: lineEnd)
         }
-
-        var samples = Array(reverseSamples.reversed())
-        if let baseline {
-            samples.insert(baseline, at: 0)
-        }
-        return samples
+        // Keep equal-timestamp events in stream order, just as the Go reader does.
+        return samples.enumerated().sorted {
+            $0.element.date == $1.element.date ? $0.offset < $1.offset : $0.element.date < $1.element.date
+        }.map(\.element)
     }
 
     private func tokenDeltas(
@@ -448,8 +376,20 @@ public struct LocalTokenUsageReader {
     ) -> [TokenDelta] {
         var previous: TokenSample?
         var deltas: [TokenDelta] = []
+        var usingRequests = false
         for sample in samples {
-            if sample.date < start {
+            if sample.request {
+                if sample.inherited { continue }
+                usingRequests = true
+                if sample.date >= start && sample.date < end {
+                    deltas.append(TokenDelta(date: sample.date, totalTokens: sample.totalTokens,
+                        breakdown: breakdownDelta(current: sample, previous: nil, totalDelta: sample.totalTokens)))
+                }
+                continue
+            }
+            // After the first own request record, snapshots are a redundant view.
+            if usingRequests { continue }
+            if sample.inherited || sample.date < start {
                 previous = sample
                 continue
             }
@@ -473,20 +413,6 @@ public struct LocalTokenUsageReader {
             previous = sample
         }
         return deltas
-    }
-
-    private func sameCumulative(_ left: TokenSample, _ right: TokenSample) -> Bool {
-        guard left.totalTokens == right.totalTokens else { return false }
-        switch (left.breakdown, right.breakdown) {
-        case (nil, nil):
-            return true
-        case let (left?, right?):
-            return left.inputTokens == right.inputTokens
-                && left.cachedInputTokens == right.cachedInputTokens
-                && left.outputTokens == right.outputTokens
-        default:
-            return false
-        }
     }
 
     private func breakdownDelta(
@@ -530,12 +456,14 @@ public struct LocalTokenUsageReader {
             let payload = object["payload"] as? [String: Any],
             payload["type"] as? String == "token_count",
             let info = payload["info"] as? [String: Any],
-            let usage = info["total_token_usage"] as? [String: Any],
-            let total = usage["total_tokens"] as? NSNumber,
-            let date = parseTimestamp(timestamp)
-        else {
-            return nil
-        }
+            let usage = info["total_token_usage"] as? [String: Any]
+        else { return nil }
+        return usageSample(timestamp: timestamp, usage: usage)
+    }
+
+    private func usageSample(timestamp: String, usage: [String: Any]) -> TokenSample? {
+        guard let total = usage["total_tokens"] as? NSNumber, total.int64Value >= 0,
+              let date = parseTimestamp(timestamp) else { return nil }
         let breakdown: CumulativeBreakdown?
         if
             let input = usage["input_tokens"] as? NSNumber,

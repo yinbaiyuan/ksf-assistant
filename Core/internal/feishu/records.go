@@ -12,7 +12,7 @@ import (
 )
 
 func QueueResults(dataRoot, kind, id string, limit int) ([]map[string]any, error) {
-	if !contains([]string{"outbox", "docbox", "actionbox"}, kind) {
+	if !contains([]string{"outbox", "actionbox"}, kind) {
 		return nil, errors.New("unsupported result kind")
 	}
 	repository := newWorkRepository(dataRoot, kind)
@@ -32,7 +32,7 @@ func RecentRecords(dataRoot, kind string, limit int) ([]map[string]any, error) {
 		kind = "actionbox"
 	}
 	switch kind {
-	case "outbox", "docbox", "actionbox":
+	case "outbox", "actionbox":
 		return newWorkRepository(dataRoot, kind).recentResults(limit)
 	case "messages":
 		return readRecentMachineAudit(dataRoot, limit)

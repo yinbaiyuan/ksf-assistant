@@ -235,18 +235,42 @@ func TestServicePrivateControlIsLocalNotBridgeWire(t *testing.T) {
 	}
 }
 
+func TestServiceEventProfileReadIsFixedAndDoesNotRewriteLegacySettings(t *testing.T) {
+	service, _ := newServiceBridgeFixture(t, "normal")
+	settings, err := service.FeishuSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Profile = "manual-only"
+	if err := (remoteSettingsStore{service}).Save(settings); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.FeishuProfile(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := result["eventConsumer"].(map[string]any)
+	if state["profile"] != "managed" || state["profileValid"] != true || state["configurable"] != false || state["desiredConnection"] != true {
+		t.Fatalf("legacy role drove read projection: %+v", result)
+	}
+	loaded, err := service.FeishuSettings()
+	if err != nil || loaded.Profile != "manual-only" {
+		t.Fatalf("compatibility read rewrote settings: %+v %v", loaded, err)
+	}
+}
+
 func TestServiceSettingsAndSetupUseRemoteBridgeWithoutCoreFiles(t *testing.T) {
 	service, _ := newServiceBridgeFixture(t, "normal")
 	settings, err := service.FeishuSettings()
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings.Profile = managedfeishu.ProfileManualOnly
+	settings.Group.Enabled = true
 	if err := (remoteSettingsStore{service}).Save(settings); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := service.FeishuSettings()
-	if err != nil || loaded.Profile != settings.Profile {
+	if err != nil || loaded.Group.Enabled != settings.Group.Enabled {
 		t.Fatalf("remote settings: %#v %v", loaded, err)
 	}
 	setup, err := service.FeishuSetup()

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"ksfassistant/core/internal/capabilitypolicy"
 	"net/url"
 	"os"
 	"os/exec"
@@ -20,12 +21,14 @@ import (
 )
 
 type userAuthSession struct {
-	mu     sync.Mutex
-	status feishuprotocol.AuthStatus
-	cancel context.CancelFunc
-	ready  chan struct{}
-	done   chan struct{}
-	err    error
+	configurationID        string
+	configurationStartedAt time.Time
+	mu                     sync.Mutex
+	status                 feishuprotocol.AuthStatus
+	cancel                 context.CancelFunc
+	ready                  chan struct{}
+	done                   chan struct{}
+	err                    error
 }
 
 const maximumAuthSessionDuration = 10 * time.Minute
@@ -66,11 +69,26 @@ func startUserAuthSession(ctx context.Context, runner CapabilityExecutor, dataRo
 	if err != nil {
 		return emptyAuthStatus("failed"), errors.New("权限注册表不可用")
 	}
+	application, scopeErr := runner.RunAuthJSON(ctx, []string{"auth", "scopes", "--json"}, nil, 15*time.Second)
+	if scopeErr != nil {
+		return emptyAuthStatus("failed"), errors.New("application_permissions_unverified")
+	}
 	profile, err := runner.RunAuthJSON(ctx, []string{"auth", "status", "--json"}, nil, 10*time.Second)
 	appID, _ := profile["appId"].(string)
 	if err != nil || profile["brand"] != "feishu" || strings.TrimSpace(appID) == "" {
 		return emptyAuthStatus("failed"), errors.New("请先接入 default 配置的飞书应用，再发起用户授权")
 	}
+	if application["appId"] != appID || application["brand"] != "feishu" || application["tokenType"] != "user" {
+		return emptyAuthStatus("failed"), errors.New("application_permissions_unverified")
+	}
+	if !validPermissionScopeValue(application["userScopes"]) {
+		return emptyAuthStatus("failed"), errors.New("application_permissions_unverified")
+	}
+	requested, requestErr := loginPermissionScopes(stringList(application["userScopes"]))
+	if requestErr != nil {
+		return emptyAuthStatus("failed"), requestErr
+	}
+	_ = contract
 	userAuthSessions.Lock()
 	if existing := userAuthSessions.items[dataRoot]; existing != nil {
 		select {
@@ -91,10 +109,10 @@ func startUserAuthSession(ctx context.Context, runner CapabilityExecutor, dataRo
 		return emptyAuthStatus("failed"), err
 	}
 	processCtx, cancel := context.WithTimeout(context.Background(), maximumAuthSessionDuration)
-	session := &userAuthSession{status: emptyAuthStatus("pending"), cancel: cancel, ready: make(chan struct{}), done: make(chan struct{})}
+	session := &userAuthSession{status: emptyAuthStatus("pending"), cancel: cancel, ready: make(chan struct{}), done: make(chan struct{}), configurationStartedAt: time.Now()}
 	session.status.Flow = "user-oauth"
 	session.status.ProfileValid = true
-	command := exec.Command(runner.Binary, "--profile", "default", "auth", "login", "--scope", strings.Join(contract.User, " "), "--json")
+	command := exec.Command(runner.Binary, "--profile", "default", "auth", "login", "--scope", strings.Join(requested, " "), "--json")
 	command.Env = authEnvironment()
 	command.Dir = runner.WorkingDirectory
 	command.Stderr = io.Discard
@@ -145,6 +163,16 @@ func startUserAuthSession(ctx context.Context, runner CapabilityExecutor, dataRo
 		close(processExited)
 		<-watcherStopped
 		closeProcessTree(tree)
+		// The OAuth completion event owns finalization. An early status query
+		// must not be the only opportunity to activate the product session.
+		if streamErr == nil && waitErr == nil && completed && processCtx.Err() == nil {
+			verified, verifyErr := readCLIAuthStatus(processCtx, runner)
+			if verifyErr != nil || processCtx.Err() != nil || !verified.IdentityValid || !verified.ProfileValid || len(verified.MissingCapabilities) > 0 {
+				streamErr = errors.New("authorization_not_verified")
+			} else {
+				streamErr = capabilitypolicy.SignIn(dataRoot)
+			}
+		}
 		session.mu.Lock()
 		if streamErr != nil || waitErr != nil || !completed || processCtx.Err() != nil {
 			session.err = errors.New("授权未完成或已过期，请重新发起授权")
@@ -296,7 +324,16 @@ func finishUserAuthSession(ctx context.Context, runner CapabilityExecutor, dataR
 		if err != nil {
 			return emptyAuthStatus("failed"), err
 		}
-		return readCLIAuthStatus(ctx, runner)
+		release, err := userapproval.TryExecutionLease(dataRoot)
+		if err != nil {
+			return emptyAuthStatus("unknown"), err
+		}
+		defer release()
+		status, err := readCLIAuthStatus(ctx, runner)
+		if err == nil && status.IdentityValid && status.ProfileValid && len(status.MissingCapabilities) == 0 {
+			err = capabilitypolicy.SignIn(dataRoot)
+		}
+		return status, err
 	default:
 		return session.snapshot(), nil
 	}

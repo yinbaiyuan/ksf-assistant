@@ -22,7 +22,7 @@ func TestReadAndBotCommandsRespectDisabledWithoutDesktop(t *testing.T) {
 			if _, err := store.Save(policy, policy.Revision); err != nil {
 				t.Fatal(err)
 			}
-			definition := CapabilityDefinition{ID: "docbox.fetch", Identity: identity, Risk: "read", Command: []string{"docs", "+fetch"}}
+			definition := CapabilityDefinition{ID: "docs.shortcut.fetch", Identity: identity, Risk: "read", Command: []string{"docs", "+fetch"}}
 			_, err = runner.run(context.Background(), definition, []string{"docs", "+fetch", "--doc", "doc_fixture"}, nil, nil, time.Second)
 			if err == nil || err.Error() != "approval_policy_denied" {
 				t.Fatalf("disabled %s: %v", identity, err)
@@ -62,7 +62,7 @@ func TestReadAndBotConfirmEachCannotBeSilentlyAllowed(t *testing.T) {
 			if _, err := store.Save(policy, policy.Revision); err != nil {
 				t.Fatal(err)
 			}
-			definition := CapabilityDefinition{ID: "docbox.fetch", Identity: identity, Risk: "read", Command: []string{"docs", "+fetch"}}
+			definition := CapabilityDefinition{ID: "docs.shortcut.fetch", Identity: identity, Risk: "read", Command: []string{"docs", "+fetch"}}
 			_, err = runner.run(context.Background(), definition, []string{"docs", "+fetch", "--doc", "doc_fixture"}, nil, nil, time.Second)
 			if err == nil || err.Error() != "user_command_confirmation_required" {
 				t.Fatalf("confirm_each bypassed: %v", err)

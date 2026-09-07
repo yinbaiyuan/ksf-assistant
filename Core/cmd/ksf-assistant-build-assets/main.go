@@ -216,7 +216,7 @@ func writeSBOM(repoRoot string) error {
 	if err := readJSON(filepath.Join(repoRoot, "Windows", "package-lock.json"), &lock); err != nil {
 		return err
 	}
-	packages := []spdxPackage{{SPDXID: "SPDXRef-Application", Name: "KSFAssistant", VersionInfo: "0.11.0-preview.3", DownloadLocation: "NOASSERTION", FilesAnalyzed: false, LicenseConcluded: "MIT", LicenseDeclared: "MIT"}}
+	packages := []spdxPackage{{SPDXID: "SPDXRef-Application", Name: "KSFAssistant", VersionInfo: "0.11.0-preview.4", DownloadLocation: "NOASSERTION", FilesAnalyzed: false, LicenseConcluded: "MIT", LicenseDeclared: "MIT"}}
 	for _, module := range modules {
 		if module.Path == "ksfassistant/core" {
 			continue

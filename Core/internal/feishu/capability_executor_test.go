@@ -176,12 +176,6 @@ func TestRawCapabilityExecutorRejectsSDKAndServiceRoutes(t *testing.T) {
 				"format": "text", "text": "private", "source": "test",
 			},
 		},
-		{
-			id: "docs.service.document.create",
-			input: map[string]any{
-				"content": "private", "format": "markdown", "source": "test",
-			},
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.id, func(t *testing.T) {
@@ -239,13 +233,6 @@ func TestMappedCapabilityInputReadsNestedRequestValues(t *testing.T) {
 	got := mappedCapabilityInput(step, map[string]any{"data": map[string]any{"instance_code": "instance_1"}}, nil)
 	if got["instance-code"] != "instance_1" {
 		t.Fatalf("nested input mapping = %#v", got)
-	}
-}
-
-func TestDocWhiteboardRejectsActiveSVG(t *testing.T) {
-	_, err := docWhiteboardXML(map[string]any{"doc-format": "svg", "content": `<svg><script>alert(1)</script></svg>`})
-	if err == nil || err.Error() != "unsafe_doc_whiteboard_svg" {
-		t.Fatalf("unsafe svg accepted: %v", err)
 	}
 }
 

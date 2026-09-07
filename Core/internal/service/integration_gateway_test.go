@@ -562,3 +562,15 @@ func TestIntegrationGatewayConcurrentComposeDoesNotMutateCachedSnapshot(t *testi
 		t.Errorf("composition mutated cached projection: %#v", cached)
 	}
 }
+
+func TestTaskCardRuntimeWriteBlockersSurviveSnapshotComposition(t *testing.T) {
+	service := gatewayBridgeFixture(t, func(service *Service) {
+		service.integrationRuntime = gatewayRuntime(t, service.feishuDataRoot, &gatewayMessagePort{})
+	})
+	for _, blocker := range []string{"taskCardWriteDisabled", "taskCardWriteDryRun"} {
+		snapshot := service.composeIntegrationSnapshot(domain.FeishuSnapshot{Availability: "ready", ReadinessBlockers: []string{blocker}})
+		if snapshot.TaskLinkReady {
+			t.Fatalf("write blocker %s ignored", blocker)
+		}
+	}
+}

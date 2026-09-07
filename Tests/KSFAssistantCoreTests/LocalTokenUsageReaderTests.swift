@@ -339,7 +339,7 @@ final class LocalTokenUsageReaderTests: XCTestCase {
         XCTAssertEqual(history?.last?.breakdown?.totalTokens, 40)
     }
 
-    func testMirroredSubagentLineageIsCountedOnce() throws {
+    func testIndependentSubagentsCountEvenWithMatchingCounters() throws {
         let fileManager = FileManager.default
         let root = fileManager.temporaryDirectory
             .appendingPathComponent("ksf-assistant-\(UUID().uuidString)", isDirectory: true)
@@ -383,13 +383,13 @@ final class LocalTokenUsageReaderTests: XCTestCase {
         let usage = LocalTokenUsageReader(sessionRoot: root, fileManager: fileManager)
             .readToday(now: now, calendar: calendar)
 
-        XCTAssertEqual(usage?.tokens, 400)
-        XCTAssertEqual(usage?.breakdown?.regularInputTokens, 200)
-        XCTAssertEqual(usage?.breakdown?.cachedInputTokens, 120)
-        XCTAssertEqual(usage?.breakdown?.outputTokens, 80)
+        XCTAssertEqual(usage?.tokens, 700)
+        XCTAssertEqual(usage?.breakdown?.regularInputTokens, 350)
+        XCTAssertEqual(usage?.breakdown?.cachedInputTokens, 210)
+        XCTAssertEqual(usage?.breakdown?.outputTokens, 140)
     }
 
-    func testMirroredLineageKeepsThePreviousDayBaseline() throws {
+    func testSeparateCountersKeepTheirPreviousDayBaselines() throws {
         let fileManager = FileManager.default
         let root = fileManager.temporaryDirectory
             .appendingPathComponent("ksf-assistant-\(UUID().uuidString)", isDirectory: true)
@@ -423,8 +423,42 @@ final class LocalTokenUsageReaderTests: XCTestCase {
         let usage = LocalTokenUsageReader(sessionRoot: root, fileManager: fileManager)
             .readToday(now: now, calendar: calendar)
 
-        XCTAssertEqual(usage?.tokens, 80)
-        XCTAssertEqual(usage?.breakdown?.totalTokens, 80)
+        XCTAssertEqual(usage?.tokens, 130)
+        XCTAssertEqual(usage?.breakdown?.totalTokens, 130)
+    }
+
+    func testSharedAccountingContract() throws {
+        struct Fixture: Decodable {
+            struct File: Decodable { let id: String; let lines: [String]; let modifiedAt: String? }
+            let name: String
+            let through: String
+            let zone: String
+            let expected: [Int64]
+            let files: [File]
+        }
+        let fixtureURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Fixtures/token-accounting.json")
+        let fixtures = try JSONDecoder().decode([Fixture].self, from: Data(contentsOf: fixtureURL))
+        for fixture in fixtures {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = try XCTUnwrap(TimeZone(identifier: fixture.zone))
+            let through = try XCTUnwrap(ISO8601DateFormatter().date(from: fixture.through))
+            for file in fixture.files {
+                try writeSession(at: root.appendingPathComponent("rollout-\(file.id).jsonl"),
+                                 lines: file.lines, modifiedAt: try file.modifiedAt.map { try XCTUnwrap(ISO8601DateFormatter().date(from: $0)) } ?? through)
+            }
+            let reader = LocalTokenUsageReader(sessionRoot: root)
+            let days = try XCTUnwrap(reader.readHistory(through: through, dayCount: fixture.expected.count, calendar: calendar))
+            XCTAssertEqual(days.map(\.tokens), fixture.expected, fixture.name)
+            XCTAssertEqual(days.map { $0.breakdown?.totalTokens }, fixture.expected.map { Optional($0) }, fixture.name)
+            for (offset, expected) in fixture.expected.enumerated() {
+                let day = try XCTUnwrap(calendar.date(byAdding: .day, value: offset - fixture.expected.count + 1, to: through))
+                XCTAssertEqual(reader.read(on: day, calendar: calendar)?.tokens, expected, fixture.name)
+            }
+        }
     }
 
     func testMissingSessionRootReturnsUnavailable() {
@@ -468,7 +502,7 @@ final class LocalTokenUsageReaderTests: XCTestCase {
         guard let parentID else {
             return #"{"type":"session_meta","payload":{"id":"\#(id)","source":"vscode"}}"#
         }
-        return #"{"type":"session_meta","payload":{"id":"\#(id)","parent_thread_id":"\#(parentID)","forked_from_id":"\#(parentID)","source":{"subagent":{"thread_spawn":{"parent_thread_id":"\#(parentID)"}}}}}"#
+        return #"{"type":"session_meta","payload":{"id":"\#(id)","parent_thread_id":"\#(parentID)","source":{"subagent":{"thread_spawn":{"parent_thread_id":"\#(parentID)"}}}}}"#
     }
 
     private func writeSession(at url: URL, lines: [String], modifiedAt: Date) throws {

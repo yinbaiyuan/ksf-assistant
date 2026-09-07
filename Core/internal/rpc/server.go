@@ -127,7 +127,7 @@ func (server *Server) Serve(ctx context.Context) error {
 				return nil
 			default:
 				queue := normal
-				if call.Method == "dashboard/read" {
+				if call.Method == "dashboard/read" || call.Method == "feishu/configuration/read" {
 					queue = reads
 				}
 				select {
@@ -174,6 +174,35 @@ func (server *Server) handle(parent context.Context, line []byte) {
 
 func (server *Server) dispatch(ctx context.Context, method string, params json.RawMessage) (any, error) {
 	switch method {
+	case "feishu/auth/configure", "feishu/auth/start", "feishu/auth/finish", "feishu/auth/logout", "feishu/setup/begin", "feishu/setup/continue", "feishu/setup/activate", "feishu/setup/cancel", "feishu/settings/update", "feishu/features/update", "feishu/supervisor/restart", "feishu/service/control", "feishu/test":
+		return nil, errors.New("configuration_legacy_mutation_disabled: 请使用当前桌面的飞书配置操作")
+	}
+	switch method {
+	case "feishu/configuration/read":
+		var input struct {
+			Refresh bool `json:"refresh"`
+		}
+		if err := decodeConfigurationParams(params, &input, "refresh"); err != nil {
+			return nil, err
+		}
+		return server.service.ReadFeishuConfiguration(ctx, input.Refresh), nil
+	case "feishu/configuration/result":
+		var input struct {
+			RequestID string `json:"requestId"`
+		}
+		if err := decodeConfigurationParams(params, &input, "requestId"); err != nil {
+			return nil, err
+		}
+		return server.service.ConfigurationResult(ctx, input.RequestID)
+	case "feishu/configuration/action":
+		var input service.ConfigurationActionRequest
+		if len(params) > 16*1024 {
+			return nil, errors.New("configuration_request_too_large")
+		}
+		if err := decodeConfigurationParams(params, &input, "action", "requestId", "epoch", "revision", "contextRevision", "confirm", "appId", "appSecret", "targetAlias", "feature", "mode", "flowId"); err != nil {
+			return nil, err
+		}
+		return server.service.ApplyFeishuConfiguration(ctx, input)
 	case "userApproval/poll":
 		var input struct {
 			Interactive *bool `json:"interactive"`
@@ -375,14 +404,6 @@ func (server *Server) dispatch(ctx context.Context, method string, params json.R
 		return server.service.UpdateFeishuFeature(ctx, input)
 	case "feishu/supervisor/restart":
 		return server.service.ControlFeishuService(ctx, "restart")
-	case "feishu/profile/set":
-		var input struct {
-			Profile string `json:"profile"`
-		}
-		if err := decodeParams(params, &input); err != nil {
-			return nil, err
-		}
-		return server.service.SetFeishuProfile(ctx, input.Profile)
 	case "feishu/service/control":
 		var input struct {
 			Action string `json:"action"`

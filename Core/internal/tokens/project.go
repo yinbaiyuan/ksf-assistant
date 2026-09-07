@@ -21,8 +21,12 @@ type projectAccumulator struct {
 
 func ReadProjectUsage(projectIDs []string, threads []domain.CodexThread, projections map[string]domain.TaskProjection, trackingStartedAt, now time.Time) map[string]domain.ProjectUsageSummary {
 	metadata := map[string]domain.CodexThread{}
+	sources := newTurnCatalog(nil)
 	for _, thread := range threads {
 		metadata[thread.ID] = thread
+		if thread.Path != nil {
+			sources.paths[thread.ID] = *thread.Path
+		}
 	}
 	timelines := map[string][]transition{}
 	for threadID, projection := range projections {
@@ -56,20 +60,13 @@ func ReadProjectUsage(projectIDs []string, threads []domain.CodexThread, project
 			markIncomplete(affected, accumulators, trackingStartedAt)
 			continue
 		}
-		samples, err := tokenSamples(*thread.Path)
+		samples, err := tokenSamples(*thread.Path, sources)
 		if err != nil {
 			markIncomplete(affected, accumulators, trackingStartedAt)
 			continue
 		}
-		var previous *cumulative
-		for _, sample := range samples {
+		for _, sample := range deltas(samples) {
 			total := sample.Total
-			hadBaseline := previous != nil
-			if previous != nil && sample.Total >= previous.Total {
-				total = sample.Total - previous.Total
-			}
-			copy := sample
-			previous = &copy
 			if total <= 0 {
 				continue
 			}
@@ -82,7 +79,7 @@ func ReadProjectUsage(projectIDs []string, threads []domain.CodexThread, project
 				value = &projectAccumulator{since: binding.BoundAt}
 				accumulators[binding.ProjectID] = value
 			}
-			if !hadBaseline && binding.BoundAt.After(time.Unix(thread.CreatedAt, 0)) {
+			if !sample.HadBaseline && binding.BoundAt.After(time.Unix(thread.CreatedAt, 0)) {
 				value.uncounted++
 				if binding.BoundAt.Before(value.since) {
 					value.since = binding.BoundAt

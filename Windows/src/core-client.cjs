@@ -128,7 +128,12 @@ class CoreClient {
     if (!pending) return;
     clearTimeout(pending.timeout);
     this.pending.delete(message.id);
-    if (message.error) pending.reject(new Error(message.error.message || '核心服务调用失败'));
+    if (message.error) {
+      const error = new Error(message.error.message || '核心服务调用失败');
+      error.code = message.error.code;
+      error.data = message.error.data;
+      pending.reject(error);
+    }
     else pending.resolve(message.result);
   }
 

@@ -13,6 +13,11 @@ var ErrInactiveTaskLink = errors.New("inactive_task_link")
 func (runtime *Runtime) Store() TaskLinkStore { return runtime.links }
 
 func (runtime *Runtime) CreateTaskLink(ctx context.Context, request CreateTaskLinkRequest) (PublicTaskLink, error) {
+	done, admissionErr := runtime.admitOperation(ctx)
+	if admissionErr != nil {
+		return PublicTaskLink{}, admissionErr
+	}
+	defer done()
 	unlock := runtime.lockActions("task:" + taskKey(request.ThreadID))
 	defer unlock()
 	if runtime.watchCtx.Err() != nil {
@@ -53,6 +58,9 @@ func (runtime *Runtime) CreateTaskLink(ctx context.Context, request CreateTaskLi
 		if err != nil {
 			return PublicTaskLink{}, err
 		}
+		if strings.TrimSpace(messageID) == "" {
+			return PublicTaskLink{}, errors.New("task card delivery was not acknowledged")
+		}
 		link, err = runtime.links.UpdateActiveByID(link.ID, func(value *TaskLink) {
 			value.RootMessageID = messageID
 			value.MessageIDs = appendUnique(value.MessageIDs, messageID)
@@ -68,6 +76,11 @@ func (runtime *Runtime) CreateTaskLink(ctx context.Context, request CreateTaskLi
 }
 
 func (runtime *Runtime) Release(ctx context.Context, taskKey string) (PublicTaskLink, error) {
+	done, admissionErr := runtime.admitOperation(ctx)
+	if admissionErr != nil {
+		return PublicTaskLink{}, admissionErr
+	}
+	defer done()
 	unlock := runtime.lockActions("task:" + taskKey)
 	defer unlock()
 	if runtime.watchCtx.Err() != nil {
@@ -95,6 +108,11 @@ func (runtime *Runtime) Release(ctx context.Context, taskKey string) (PublicTask
 }
 
 func (runtime *Runtime) Interrupt(ctx context.Context, taskKey string) (PublicTaskLink, error) {
+	done, admissionErr := runtime.admitOperation(ctx)
+	if admissionErr != nil {
+		return PublicTaskLink{}, admissionErr
+	}
+	defer done()
 	unlock := runtime.lockActions("task:" + taskKey)
 	defer unlock()
 	if runtime.watchCtx.Err() != nil {

@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -238,12 +240,49 @@ func (server *bridgeRPCServer) HandlePrivateRPC(ctx context.Context, method stri
 			return nil, err
 		}
 		return feishu.NewSettingsStore(server.dataRoot).Load()
+	case feishuprotocol.MethodSettingsCompareAndSwap:
+		var request struct {
+			Expected *feishu.Settings `json:"expected"`
+			Settings *feishu.Settings `json:"settings"`
+		}
+		if err := decodeBridgeParams(params, &request); err != nil {
+			return nil, err
+		}
+		if request.Expected == nil || request.Settings == nil {
+			return nil, privateipc.NewError(-32602, "expected and settings are required")
+		}
+		if request.Expected.Version != 2 || request.Settings.Version != 2 {
+			return nil, errors.New("configuration_action_retired")
+		}
+		store := feishu.NewSettingsStore(server.dataRoot)
+		if err := store.CompareAndSwap(*request.Expected, *request.Settings); err != nil {
+			if errors.Is(err, feishu.ErrSettingsConflict) {
+				return nil, privateipc.NewError(-32064, "feishu_settings_changed")
+			}
+			return nil, err
+		}
+		settings, err := store.Load()
+		if err != nil {
+			return nil, err
+		}
+		server.mu.Lock()
+		server.settings = settings
+		server.mu.Unlock()
+		return settings, nil
 	case feishuprotocol.SettingsWrite:
 		var settings feishu.Settings
 		if err := decodeBridgeParams(params, &settings); err != nil {
 			return nil, err
 		}
-		if err := feishu.NewSettingsStore(server.dataRoot).Save(settings); err != nil {
+		if settings.Version != 2 {
+			return nil, errors.New("configuration_action_retired")
+		}
+		store := feishu.NewSettingsStore(server.dataRoot)
+		if err := store.Save(settings); err != nil {
+			return nil, err
+		}
+		settings, err := store.Load()
+		if err != nil {
 			return nil, err
 		}
 		server.mu.Lock()
@@ -261,22 +300,33 @@ func (server *bridgeRPCServer) HandlePrivateRPC(ctx context.Context, method stri
 			return nil, err
 		}
 		return setup, feishu.NewSetupStore(server.dataRoot).Save(setup)
-	case feishuprotocol.MethodMessageTest:
+	case feishuprotocol.MethodMessageTest, "bridge/message/test/result":
 		var request struct {
 			TargetAlias string `json:"targetAlias"`
+			RequestID   string `json:"requestId"`
+			Confirm     bool   `json:"confirm"`
 		}
 		if err := decodeBridgeParams(params, &request); err != nil {
 			return nil, err
 		}
-		return map[string]bool{"sent": true}, transportRPCError(server.sendTest(ctx, request.TargetAlias))
-	case feishuprotocol.MethodProfileSet:
-		var request struct {
-			Profile string `json:"profile"`
+		if request.RequestID == "" || len(request.RequestID) > 128 {
+			return nil, errors.New("test_request_invalid")
 		}
-		if err := decodeBridgeParams(params, &request); err != nil {
-			return nil, err
+		if method == "bridge/message/test/result" {
+			server.mu.RLock()
+			transport := server.transport
+			server.mu.RUnlock()
+			if transport == nil {
+				return nil, errors.New("test_transport_unavailable")
+			}
+			messageID, outcome, err := transport.MessageReceipt(testMessageKey(request.RequestID))
+			return map[string]string{"messageId": messageID, "outcome": outcome}, err
 		}
-		return server.setProfile(request.Profile)
+		if !request.Confirm {
+			return nil, errors.New("test_confirmation_required")
+		}
+		result, err := server.sendTest(ctx, request.TargetAlias, request.RequestID)
+		return result, transportRPCError(err)
 	case feishuprotocol.MethodPermissionsRead:
 		if err := requireNoBridgeParams(params); err != nil {
 			return nil, err
@@ -290,8 +340,30 @@ func (server *bridgeRPCServer) HandlePrivateRPC(ctx context.Context, method stri
 		if err := requireNoBridgeParams(params); err != nil {
 			return nil, err
 		}
-		feishu.CancelUserAuthFlow(server.dataRoot)
-		return feishuprotocol.AuthStatus{SchemaVersion: 1, Status: "cancelled", Identity: "user", Profile: "default", MissingCapabilities: []string{}}, nil
+		return nil, privateipc.NewError(-32602, "取消操作必须指定当前配置会话")
+	case feishuprotocol.MethodConfigurationEvidence:
+		if err := requireNoBridgeParams(params); err != nil {
+			return nil, err
+		}
+		evidence, err := feishu.ReadConfigurationEvidence(ctx, server.authRunner(), server.dataRoot)
+		evidence.ServiceVersion = version
+		probe := feishu.ProbeLarkCLI(ctx, server.authRunner().Binary)
+		evidence.CLIVersion, evidence.CLIState = probe.Version, probe.State
+		return evidence, err
+	case feishuprotocol.MethodConfigurationFlow:
+		if err := requireNoBridgeParams(params); err != nil {
+			return nil, err
+		}
+		return feishu.ReadConfigurationFlow(server.dataRoot), nil
+	case feishuprotocol.MethodConfigurationCancel:
+		var request feishuprotocol.ConfigurationCancelRequest
+		if err := decodeBridgeParams(params, &request); err != nil {
+			return nil, err
+		}
+		if request.FlowID == "" || request.Kind != "app" && request.Kind != "user" {
+			return nil, privateipc.NewError(-32602, "取消操作必须指定有效的配置会话")
+		}
+		return feishu.CancelConfigurationFlow(server.dataRoot, request.FlowID, request.Kind)
 	case feishuprotocol.MethodAuthStatus:
 		if err := requireNoBridgeParams(params); err != nil {
 			return nil, err
@@ -334,16 +406,33 @@ func (server *bridgeRPCServer) HandlePrivateRPC(ctx context.Context, method stri
 			return nil, err
 		}
 		return server.attachQR(result)
+	case feishuprotocol.MethodAuthConfigFinish:
+		if err := requireNoBridgeParams(params); err != nil {
+			return nil, err
+		}
+		result, err := feishu.FinishAppConfiguration(ctx, server.authRunner(), server.dataRoot)
+		if err != nil {
+			return nil, err
+		}
+		return server.attachQR(result)
 	case feishuprotocol.MethodAuthFinish:
 		if err := requireNoBridgeParams(params); err != nil {
 			return nil, err
 		}
 		return feishu.FinishUserAuthFlow(ctx, server.authRunner(), server.dataRoot, "")
 	case feishuprotocol.MethodAuthEnsureUser:
-		if err := requireNoBridgeParams(params); err != nil {
+		var request feishu.OperatorBindingExpectation
+		if err := decodeBridgeParams(params, &request); err != nil {
 			return nil, err
 		}
-		return feishu.EnsureCurrentUser(ctx, server.authRunner(), feishu.NewClientConfigStore(server.dataRoot))
+		if !request.Valid() {
+			return nil, privateipc.NewError(-32602, "verified application and identity context are required")
+		}
+		result, err := feishu.EnsureCurrentUserWithExpected(ctx, server.authRunner(), feishu.NewClientConfigStore(server.dataRoot), request)
+		if errors.Is(err, feishu.ErrOperatorContextConflict) || errors.Is(err, feishu.ErrClientConfigConflict) {
+			return nil, privateipc.NewError(-32065, "feishu_operator_context_changed")
+		}
+		return result, err
 	case feishuprotocol.MethodSettingsReload:
 		if err := requireNoBridgeParams(params); err != nil {
 			return nil, err
@@ -487,16 +576,13 @@ func (server *bridgeRPCServer) snapshot(ctx context.Context) feishuprotocol.Snap
 	queueHealth := feishu.QueueHealthSnapshot(server.dataRoot, settings)
 	capabilities := map[string]feishuprotocol.CapabilityHealth{
 		"feishuInbound": {State: "unavailable"}, "feishuOutbound": {State: "unavailable"},
-		"larkCLI": {State: "disabled"}, "outbox": {State: switchState(settings.Outbound.Enabled)}, "docbox": {State: switchState(settings.Docbox.Enabled)}, "actionbox": {State: switchState(settings.Actionbox.Enabled)},
+		"larkCLI": {State: "disabled"}, "outbox": {State: "ready"}, "actionbox": {State: "ready"},
 	}
 	if bindingState != "" {
 		capabilities["cardBindings"] = feishuprotocol.CapabilityHealth{State: bindingState, Detail: bindingDetail}
 	}
 	if messages != nil {
 		capabilities["feishuOutbound"] = feishuprotocol.CapabilityHealth{State: "ready"}
-	}
-	if settings.Profile != feishu.ProfilePrimary {
-		capabilities["feishuInbound"] = feishuprotocol.CapabilityHealth{State: "disabled"}
 	}
 	probe := feishu.ProbeLarkCLI(ctx, strings.TrimSpace(os.Getenv("LARK_CLI_BIN")))
 	capabilities["larkCLI"] = feishuprotocol.CapabilityHealth{State: probe.State, Detail: probe.Detail}
@@ -513,21 +599,16 @@ func (server *bridgeRPCServer) snapshot(ctx context.Context) feishuprotocol.Snap
 	eventState, _ := feishu.NewEventConsumerStateStore(server.dataRoot).Read()
 	connection, _ := eventState["connection"].(map[string]any)
 	connected := messages != nil && eventState["transport"] == "official-cli" && strings.TrimSpace(stringValue(connection["state"])) == "connected"
-	if settings.Profile == feishu.ProfilePrimary && connected {
+	if connected {
 		capabilities["feishuInbound"] = feishuprotocol.CapabilityHealth{State: "ready"}
-	} else if settings.Profile == feishu.ProfilePrimary && messages != nil {
+	} else if messages != nil {
 		capabilities["feishuInbound"] = feishuprotocol.CapabilityHealth{State: "degraded", Detail: "official CLI consumers are not ready"}
 	}
-	if settings.Outbound.Enabled && messages == nil {
+	if messages == nil {
 		capabilities["outbox"] = feishuprotocol.CapabilityHealth{State: "degraded", Detail: "Feishu outbound unavailable"}
 	}
 	if capabilities["larkCLI"].State != "ready" {
-		if settings.Docbox.Enabled {
-			capabilities["docbox"] = feishuprotocol.CapabilityHealth{State: "degraded", Detail: "fixed lark-cli capability unavailable"}
-		}
-		if settings.Actionbox.Enabled {
-			capabilities["actionbox"] = feishuprotocol.CapabilityHealth{State: "degraded", Detail: "fixed lark-cli capability unavailable"}
-		}
+		capabilities["actionbox"] = feishuprotocol.CapabilityHealth{State: "degraded", Detail: "fixed lark-cli capability unavailable"}
 	}
 	for name, health := range queueHealth {
 		if health.State == "degraded" {
@@ -538,7 +619,7 @@ func (server *bridgeRPCServer) snapshot(ctx context.Context) feishuprotocol.Snap
 	if messages == nil {
 		blockers = append(blockers, "feishuOutbound")
 	}
-	if settings.Profile == feishu.ProfilePrimary && !connected {
+	if !connected {
 		blockers = append(blockers, "feishuInbound")
 	}
 	if probe.State != "ready" {
@@ -547,11 +628,8 @@ func (server *bridgeRPCServer) snapshot(ctx context.Context) feishuprotocol.Snap
 	availability, message := "ready", ""
 	if messages == nil {
 		availability, message = "unavailable", "飞书凭据缺失或传输尚未连接。"
-	} else if !settings.Outbound.Enabled {
-		availability, message = "unavailable", "飞书服务尚未启用主动出站。"
-	} else if settings.Outbound.DryRun {
-		availability = "dryRun"
-	} else if settings.Profile == feishu.ProfilePrimary && !connected {
+
+	} else if !connected {
 		availability, message = "degraded", "飞书事件消费者尚未就绪。"
 	} else if probe.State != "ready" {
 		availability, message = "degraded", "固定版官方 CLI 尚未通过验证。"
@@ -562,7 +640,7 @@ func (server *bridgeRPCServer) snapshot(ctx context.Context) feishuprotocol.Snap
 	return feishuprotocol.Snapshot{
 		Revision: server.revision.Add(1), RuntimeKind: "go", Availability: availability, Message: message,
 		ProcessState: "running", Configured: messages != nil, ProcessPID: os.Getpid(), ProcessRunning: true,
-		Profile: settings.Profile, ProfileValid: settings.Profile == feishu.ProfilePrimary || settings.Profile == feishu.ProfileManualOnly,
+		Profile: feishuprotocol.ManagedEventProfile, ProfileValid: true,
 		InboundConnection: connected, TargetAliases: aliases,
 		ReadinessBlockers: blockers, Capabilities: capabilities,
 		Queues: publicQueueHealth(queueHealth),
@@ -577,40 +655,47 @@ func publicQueueHealth(values map[string]feishu.QueueHealth) map[string]feishupr
 	return result
 }
 
-func (server *bridgeRPCServer) sendTest(ctx context.Context, alias string) error {
+func testMessageKey(requestID string) string {
+	sum := sha256.Sum256([]byte(requestID))
+	return "ksfassistant-test-" + hex.EncodeToString(sum[:16])
+}
+func (server *bridgeRPCServer) sendTest(ctx context.Context, alias, requestID string) (feishuprotocol.MessageResult, error) {
 	server.mu.RLock()
-	messages := server.messages
+	transport := server.transport
 	server.mu.RUnlock()
-	if messages == nil {
-		return privateipc.NewError(-32062, "Feishu outbound unavailable")
+	if transport == nil {
+		return feishuprotocol.MessageResult{}, errors.New("test_not_submitted_transport_unavailable")
+	}
+	evidence, err := feishu.ReadConfigurationEvidence(ctx, server.authRunner(), server.dataRoot)
+	if err != nil || evidence.OperatorState != "present" || evidence.OperatorAlias != alias || alias == "" {
+		return feishuprotocol.MessageResult{}, errors.New("test_not_submitted_self_unverified")
 	}
 	config, err := feishu.NewClientConfigStore(server.dataRoot).Load()
 	if err != nil {
-		return err
+		return feishuprotocol.MessageResult{}, err
 	}
 	target, err := config.ResolveMessageTarget(alias)
-	if err != nil {
-		return err
+	if err != nil || target.Type != "open_id" {
+		return feishuprotocol.MessageResult{}, errors.New("test_not_submitted_self_unverified")
 	}
-	_, err = server.transport.Message(ctx, false, feishuprotocol.MessageRequest{TargetType: target.Type, TargetID: target.ID, Format: "text", Content: "KSFAssistant 飞书服务连接测试成功", IdempotencyKey: "ksfassistant-test-" + time.Now().UTC().Format("20060102150405")})
-	return err
-}
-
-func (server *bridgeRPCServer) setProfile(profile string) (map[string]any, error) {
-	store := feishu.NewSettingsStore(server.dataRoot)
-	settings, err := store.Load()
-	if err != nil {
-		return nil, err
+	result, err := transport.Message(ctx, false, feishuprotocol.MessageRequest{TargetType: target.Type, TargetID: target.ID, Format: "text", Content: "【KSFAssistant 接入验收】这是一条由本人确认发送的连接测试消息，无需回复。", IdempotencyKey: testMessageKey(requestID)})
+	var authorization *feishu.TransportAuthorizationError
+	if errors.As(err, &authorization) {
+		// The configuration confirmation covers this exact fixed self-test only.
+		confirmed, confirmErr := server.capability.Confirm(ctx, authorization.Prepared.Operation.ID, authorization.Prepared.Challenge)
+		if confirmErr != nil {
+			return result, confirmErr
+		}
+		result.MessageID, _ = confirmed.Result["messageID"].(string)
+		if confirmed.Operation.Status != feishu.OperationSucceeded {
+			return result, errors.New("test_result_unknown")
+		}
+		err = nil
 	}
-	previous := settings.Profile
-	settings.Profile = profile
-	if err := store.Save(settings); err != nil {
-		return nil, err
+	if err == nil && result.MessageID == "" {
+		err = errors.New("test_receipt_missing")
 	}
-	server.mu.Lock()
-	server.settings = settings
-	server.mu.Unlock()
-	return map[string]any{"status": "updated", "previousProfile": previous, "profile": profile}, nil
+	return result, err
 }
 
 func decodeBridgeParams(raw json.RawMessage, target any) error {
@@ -623,6 +708,11 @@ func decodeBridgeParams(raw json.RawMessage, target any) error {
 func transportRPCError(err error) error {
 	var authorization *feishu.TransportAuthorizationError
 	if !errors.As(err, &authorization) {
+		var retry interface{ RetryDelay() time.Duration }
+		if err != nil && errors.As(err, &retry) && retry.RetryDelay() > 0 {
+			data, _ := json.Marshal(map[string]any{"retryAfterMs": retry.RetryDelay().Milliseconds()})
+			return &privateipc.RPCError{Code: -32064, Message: err.Error(), Data: data}
+		}
 		return err
 	}
 	data, encodeErr := json.Marshal(map[string]any{"status": "authorization_required", "operation": authorization.Prepared.Operation, "challenge": authorization.Prepared.Challenge, "submitted": false, "nextAction": "confirm"})

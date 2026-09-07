@@ -1,5 +1,7 @@
 # TODO-FEISHU-GO-001: 将飞书桥从 Node 完整迁移到 Go
 
+> 历史迁移记录：2026-09-07 已移除 docbox 和旧文档写入适配器；当前边界见 [遗留飞书能力清理](../architecture/feishu-legacy-retirement.md)。
+
 Target: KSFAssistant `0.10.0-preview.1` public preview.
 
 ## Goal

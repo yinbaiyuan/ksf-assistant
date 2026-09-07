@@ -178,7 +178,10 @@ func TestServiceTransportParentSenderInheritsOperationWithoutNestedClaim(t *test
 	gate := make(chan struct{})
 	close(gate)
 	service, _ := reviewSDKService(t, root, gate, time.Second, 1)
-	config := DefaultClientConfig()
+	config, err := NewClientConfigStore(root).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
 	config.MessageTargets["fixture"] = MessageTarget{Type: "open_id", ID: "ou_fixture_0"}
 	config.DirectAllowedAliases = []string{"fixture"}
 	if err := NewClientConfigStore(root).Save(config); err != nil {
@@ -186,7 +189,6 @@ func TestServiceTransportParentSenderInheritsOperationWithoutNestedClaim(t *test
 	}
 	scheduler := NewWorkScheduler(root)
 	scheduler.RegisterCapabilityService(service)
-	scheduler.RegisterDocbox(NewDocbox(root), CapabilityExecutor{}, false)
 	scheduler.RegisterOutbox(NewOutbox(root), transport, false)
 	if err := scheduler.dispatchAvailable(context.Background()); err != nil {
 		t.Fatal(err)
@@ -300,7 +302,10 @@ func TestServiceTransportAndSchedulerShareGlobalFourSlots(t *testing.T) {
 	defer releaseOnce.Do(func() { close(clientGate) })
 	client := &transportClientFixture{gate: clientGate, started: make(chan struct{}, 5)}
 	root, transport := newTransportFixture(t, client)
-	config := DefaultClientConfig()
+	config, err := NewClientConfigStore(root).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for index := 0; index < 5; index++ {
 		alias := fmt.Sprintf("fixture-%d", index)
 		config.MessageTargets[alias] = MessageTarget{Type: "open_id", ID: fmt.Sprintf("ou_fixture_%d", index)}
@@ -314,7 +319,6 @@ func TestServiceTransportAndSchedulerShareGlobalFourSlots(t *testing.T) {
 	service, _ := reviewSDKService(t, root, parentGate, 2*time.Second, 4)
 	scheduler := NewWorkScheduler(root)
 	scheduler.RegisterCapabilityService(service)
-	scheduler.RegisterDocbox(NewDocbox(root), CapabilityExecutor{}, false)
 	scheduler.RegisterOutbox(NewOutbox(root), transport, false)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -353,5 +357,55 @@ func TestServiceTransportAndSchedulerShareGlobalFourSlots(t *testing.T) {
 	}
 	if client.calls.Load() != 5 {
 		t.Fatal(client.calls.Load())
+	}
+}
+
+func TestPendingTransportConfirmationCanBeReviewedAgainWithoutSending(t *testing.T) {
+	client := &transportClientFixture{}
+	_, transport := newTransportFixture(t, client)
+	request := feishuprotocol.MessageRequest{TargetType: "open_id", TargetID: "ou_fixture", Format: "card", Content: `{"elements":[]}`, IdempotencyKey: "pending-review"}
+	_, firstErr := transport.Message(context.Background(), false, request)
+	_, secondErr := transport.Message(context.Background(), false, request)
+	var first, second *TransportAuthorizationError
+	if !errors.As(firstErr, &first) || !errors.As(secondErr, &second) || second.Prepared.Challenge == "" {
+		t.Fatalf("retry lost review challenge: %v", secondErr)
+	}
+	if first.Prepared.Operation.ID != second.Prepared.Operation.ID || first.Prepared.Challenge == second.Prepared.Challenge || client.calls.Load() != 0 {
+		t.Fatal("review changed operation or sent a message")
+	}
+	service := NewCapabilityService(transport.root, &recordingCapabilityServiceExecutor{}, nil)
+	service.SetMessageTransport(transport)
+	if _, err := service.Confirm(context.Background(), first.Prepared.Operation.ID, first.Prepared.Challenge); err == nil {
+		t.Fatal("stale review accepted")
+	}
+	if _, err := service.Confirm(context.Background(), second.Prepared.Operation.ID, second.Prepared.Challenge); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := transport.Message(context.Background(), false, request); err != nil || client.calls.Load() != 1 {
+		t.Fatalf("confirmed retry duplicated send: %v", err)
+	}
+}
+
+func TestCancelledUnsentTransportCanPrepareANewReview(t *testing.T) {
+	client := &transportClientFixture{}
+	_, transport := newTransportFixture(t, client)
+	request := feishuprotocol.MessageRequest{TargetType: "open_id", TargetID: "ou_fixture", Format: "card", Content: `{"elements":[]}`, IdempotencyKey: "cancelled-review"}
+	_, err := transport.Message(context.Background(), false, request)
+	var first *TransportAuthorizationError
+	if !errors.As(err, &first) {
+		t.Fatal(err)
+	}
+	operations := NewOperationService(transport.root, NewCapabilityPolicyStore(transport.root), nil)
+	if _, err := operations.Cancel(first.Prepared.Operation.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, err = transport.Message(context.Background(), false, request)
+	var second *TransportAuthorizationError
+	if !errors.As(err, &second) || second.Prepared.Challenge == "" || second.Prepared.Operation.ID == first.Prepared.Operation.ID || client.calls.Load() != 0 {
+		t.Fatalf("new review missing: %v", err)
+	}
+	prior, err := operations.Status(first.Prepared.Operation.ID)
+	if err != nil || prior.Status != OperationCancelled {
+		t.Fatal("cancelled audit record changed")
 	}
 }

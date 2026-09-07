@@ -101,8 +101,8 @@ button { color: inherit; }
 .metric-value { margin-top: 2px; font-size: 18px; font-weight: 660; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .metric-cost { margin-top: 1px; color: var(--text-secondary); font-size: 11px; font-variant-numeric: tabular-nums; }
 .token-cost-row { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 12px; border-top: 1px solid var(--divider); }
-.token-cost-row span { min-width: 0; display: flex; flex-direction: column; }
-.token-cost-row small { color: var(--text-secondary); font-size: 11px; }
+.token-cost-row span { min-width: 0; display: flex; align-items: baseline; gap: 6px; }
+.token-cost-row small { color: var(--text-secondary); font-size: 11px; white-space: nowrap; }
 .token-cost-row strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .token-cost-row b { flex: none; font-size: 14px; font-variant-numeric: tabular-nums; }
 .support-copy { margin: -6px 2px 12px; color: var(--text-tertiary); font-size: 11px; line-height: 1.45; }
@@ -209,6 +209,45 @@ button { color: inherit; }
 .feishu-credentials input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent); }
 .feishu-auth { display: grid; justify-items: center; gap: 8px; margin-top: 10px; }
 .feishu-auth img { width: 220px; height: 220px; image-rendering: pixelated; background: white; }
+.feishu-page { display: grid; gap: 10px; min-width: 0; }
+.feishu-flow { display: grid; gap: 9px; min-width: 0; }
+body:has(.feishu-page) { overflow-y: auto; }
+.feishu-page .button { white-space: normal; overflow-wrap: anywhere; }
+.feishu-feature-row .setting-copy, .feishu-facts dt { min-width: 0; overflow-wrap: anywhere; }
+.feishu-page h2, .feishu-page h3, .feishu-page p { margin: 0; }
+.feishu-overview { padding: 2px 2px 0; }
+.feishu-overview h2 { font-size: 13px; font-weight: 650; }
+.feishu-facts { display: grid; gap: 6px; margin: 9px 0 0; font-size: 11px; }
+.feishu-facts > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.feishu-facts dt { color: var(--text-secondary); }
+.feishu-facts dd { margin: 0; text-align: right; font-weight: 600; overflow-wrap: anywhere; }
+.feishu-page .feishu-step { display: grid; gap: 9px; width: 100%; min-width: 0; padding: 12px; margin: 0; }
+.feishu-step h2 { font-size: 13px; line-height: 1.35; font-weight: 650; }
+.feishu-step > .button, .feishu-step > select { width: 100%; max-width: none; }
+.feishu-step .feishu-primary { min-height: 34px; }
+.feishu-step .setting-description, .feishu-disclosure-body { overflow-wrap: anywhere; }
+.feishu-step .feishu-auth { margin: 0; }
+.feishu-step .feishu-auth img { width: 176px; height: 176px; max-width: 100%; }
+.feishu-step-error { color: var(--danger); font-size: 11px; line-height: 1.45; }
+.feishu-disclosure { min-width: 0; border-top: 1px solid var(--divider); }
+.feishu-disclosure > summary { padding: 11px 0; cursor: pointer; font-size: 12px; font-weight: 600; }
+.feishu-disclosure > summary:hover { color: var(--accent); }
+.feishu-diagnostic-summary { display: block; margin-top: 4px; color: var(--text-secondary); font-size: 11px; font-weight: 400; overflow-wrap: anywhere; }
+.feishu-overview .success { color: var(--success); }
+.feishu-overview .warning { color: var(--warning); }
+.feishu-disclosure-body { display: grid; gap: 9px; padding: 0 0 10px; }
+.feishu-disclosure-body .detail-actions { flex-wrap: wrap; margin-top: 8px; }
+.feishu-disclosure-body > select { width: 100%; max-width: none; }
+.feishu-diagnostics { min-width: 0; padding: 0 2px; }
+.feishu-toolchain { display: grid; gap: 7px; padding-top: 10px; border-top: 1px solid var(--divider); }
+.feishu-toolchain h3 { font-size: 12px; }
+.feishu-toolchain .detail-actions { margin-top: 0; }
+.feishu-step .feishu-credentials { margin-top: 0; }
+.feishu-credentials label { font-size: 11px; color: var(--text-secondary); }
+@media (forced-colors: active) {
+  .feishu-disclosure { border-color: CanvasText; }
+  .feishu-page .button.primary { border-color: Highlight; }
+}
 .pricing-current { margin-bottom: 10px; }
 .pricing-list { overflow: hidden; }
 .pricing-row { display: flex; align-items: center; gap: 8px; padding: 9px 11px; }
@@ -260,3 +299,23 @@ select { min-height: 32px; max-width: 154px; padding: 4px 28px 4px 8px; border: 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+.feishu-auth-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-block: 8px; }
+
+.feishu-logout { display: flex; justify-content: center; padding: 12px 0; }
+.feishu-logout .button { background: transparent; border: 0; box-shadow: none; color: var(--danger); }
+
+/* Authentication remains inside the connection surface; reads never add a step. */
+.feishu-page .feishu-step { border-top: 1px solid var(--divider); padding: 12px 0 0; justify-items: center; }
+.feishu-step > .button { width: auto; min-width: 100px; }
+.feishu-flow { display: grid; justify-items: center; gap: 8px; width: 100%; text-align: center; }
+.feishu-login-links { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; }
+.feishu-login-links .feishu-text { background: transparent; border-color: transparent; color: var(--accent); padding: 2px 4px; }
+.feishu-self-test { display: grid; justify-items: center; gap: 6px; padding-top: 12px; border-top: 1px solid var(--divider); text-align: center; }
+.feishu-wait { min-height: 22px; display: flex; align-items: center; justify-content: center; gap: 6px; }
+.feishu-spinner { width: 12px; height: 12px; border: 2px solid var(--divider); border-top-color: var(--text-secondary); border-radius: 50%; animation: feishu-spin 1s linear infinite; }
+.feishu-refreshing svg { animation: feishu-spin 1s linear infinite; }
+@keyframes feishu-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .feishu-spinner, .feishu-refreshing svg { animation: none; } }
+
+.feishu-versions { text-align: center; margin: 0; }

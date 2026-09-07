@@ -131,7 +131,12 @@ func (inbound *OfficialInbound) runConsumers(ctx context.Context) error {
 						announced = true
 						ready <- key
 					}
-					if strings.Contains(line, "drop") || strings.Contains(line, "reconnecting") {
+					// The official bus owns network reconnection. A reconnect notice
+					// does not mean events were dropped or our consumers exited.
+					if strings.Contains(line, "reconnecting") {
+						_ = NewDiagnosticLog(inbound.runner.DataRoot).Record(SupervisorDiagnostic{Code: "cli_event_bus_reconnecting", Component: "event-consumers", SafeSummary: "official event bus is reconnecting"})
+					}
+					if strings.Contains(line, "drop") {
 						select {
 						case failures <- errors.New("cli_event_delivery_diagnostic"):
 						default:
@@ -203,6 +208,7 @@ func (inbound *OfficialInbound) runConsumers(ctx context.Context) error {
 	inbound.observer("connected")
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
+	statusFailures := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -212,13 +218,24 @@ func (inbound *OfficialInbound) runConsumers(ctx context.Context) error {
 		case <-ticker.C:
 			current, err := inbound.busStatus(ctx)
 			if err != nil {
-				return err
+				statusFailures++
+				if statusFailures == 1 {
+					inbound.observer("reconnecting")
+				}
+				if statusFailures >= 3 {
+					return errors.New("cli_event_status_unavailable")
+				}
+				continue
 			}
 			if current.PID != ownedBus {
 				return errors.New("cli_event_bus_replaced")
 			}
 			if err := verifyOwnedCLIConsumers(current, pids); err != nil {
 				return err
+			}
+			if statusFailures > 0 {
+				statusFailures = 0
+				inbound.observer("connected")
 			}
 		}
 	}

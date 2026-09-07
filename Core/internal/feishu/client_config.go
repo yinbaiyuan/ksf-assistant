@@ -13,6 +13,8 @@ import (
 
 const ClientConfigSchemaVersion = 4
 
+var ErrClientConfigConflict = errors.New("client_config_changed: 配置已被其他操作修改，请重新读取后确认；未覆盖当前配置")
+
 type MessageTarget struct {
 	Type string `json:"type"`
 	ID   string `json:"id"`
@@ -24,6 +26,8 @@ type DocumentTarget struct {
 }
 
 type ClientConfig struct {
+	baselineFingerprint  [sha256.Size]byte
+	baselinePresent      bool
 	SchemaVersion        int                        `json:"schemaVersion"`
 	LaunchdLabel         string                     `json:"launchdLabel"`
 	WindowsTaskName      string                     `json:"windowsTaskName"`
@@ -128,21 +132,45 @@ func (store ClientConfigStore) Path() string { return store.path }
 
 func (store ClientConfigStore) Load() (ClientConfig, error) {
 	config := DefaultClientConfig()
-	missing, err := readPrivateJSON(store.path, &config)
+	var data json.RawMessage
+	missing, err := readPrivateJSON(store.path, &data)
 	if missing {
 		return config, nil
 	}
 	if err != nil {
 		return ClientConfig{}, err
 	}
-	return config, config.normalize()
+	if err := json.Unmarshal(data, &config); err != nil {
+		return ClientConfig{}, err
+	}
+	config.baselineFingerprint = sha256.Sum256(data)
+	config.baselinePresent = true
+	return config, nil
 }
 
 func (store ClientConfigStore) Save(config ClientConfig) error {
+	return store.saveWithGuard(config, nil)
+}
+
+func (store ClientConfigStore) saveWithGuard(config ClientConfig, guard func(ClientConfig, *ClientConfig) error) error {
 	if err := config.normalize(); err != nil {
 		return err
 	}
-	return withProcessFileLock(store.path+".lock", func() error { return writePrivateJSON(store.path, config) })
+	return withProcessFileLock(store.path+".lock", func() error {
+		current, err := store.Load()
+		if err != nil {
+			return err
+		}
+		if current.baselinePresent != config.baselinePresent || current.baselineFingerprint != config.baselineFingerprint {
+			return ErrClientConfigConflict
+		}
+		if guard != nil {
+			if err := guard(current, &config); err != nil {
+				return err
+			}
+		}
+		return writePrivateJSON(store.path, config)
+	})
 }
 
 func (config ClientConfig) SetMessageTarget(alias string, target MessageTarget) error {

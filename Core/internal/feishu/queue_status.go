@@ -23,9 +23,8 @@ func QueueHealthSnapshot(dataRoot string, settings Settings) map[string]QueueHea
 		name    string
 		enabled bool
 	}{
-		{name: "outbox", enabled: settings.Outbound.Enabled},
-		{name: "docbox", enabled: settings.Docbox.Enabled},
-		{name: "actionbox", enabled: settings.Actionbox.Enabled},
+		{name: "outbox", enabled: true},
+		{name: "actionbox", enabled: true},
 	} {
 		result[item.name] = readQueueHealth(dataRoot, item.name, item.enabled)
 	}
@@ -55,8 +54,6 @@ func repositoryLegacyQueuePath(dataRoot, name string) string {
 	switch name {
 	case "outbox":
 		return NewOutbox(dataRoot).queuePath()
-	case "docbox":
-		return NewDocbox(dataRoot).queuePath()
 	default:
 		return NewActionbox(dataRoot).queuePath()
 	}
