@@ -43,13 +43,23 @@ test('pricing settings fall back safely and keep at most twenty custom plans', (
     outputMicroUsdPerMillion: index,
   }));
   const value = sanitize({ selectedPricingPlanId: 'bad\nplan', customPricingPlans });
-  assert.equal(value.selectedPricingPlanId, 'openai:gpt-5.6-sol');
+  assert.equal(value.selectedPricingPlanId, 'openai:gpt-6-astra');
   assert.equal(value.customPricingPlans.length, 20);
   assert.equal(value.customPricingPlans[0].builtIn, false);
 });
 
 test('deleted selected custom pricing plan falls back to the default', () => {
-  assert.equal(sanitize({ selectedPricingPlanId: 'custom:deleted', customPricingPlans: [] }).selectedPricingPlanId, 'openai:gpt-5.6-sol');
+  assert.equal(sanitize({ selectedPricingPlanId: 'custom:deleted', customPricingPlans: [] }).selectedPricingPlanId, 'openai:gpt-6-astra');
+});
+
+test('Astra is the fresh default and both new and existing selections persist', (t) => {
+  const filePath = settingsFixture(t);
+  const store = new ConfigStore(filePath);
+  assert.equal(store.get().selectedPricingPlanId, 'openai:gpt-6-astra');
+  for (const id of ['openai:gpt-5.6-sol', 'openai:gpt-6-astra']) {
+    store.update({ selectedPricingPlanId: id });
+    assert.equal(new ConfigStore(filePath).get().selectedPricingPlanId, id);
+  }
 });
 
 test('settings reject control characters', () => {

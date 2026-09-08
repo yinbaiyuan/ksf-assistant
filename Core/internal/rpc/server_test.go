@@ -100,7 +100,7 @@ func TestServerPublishesPricingCatalog(t *testing.T) {
 	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Result.DefaultPlanID != "openai:gpt-5.6-sol" || len(response.Result.Plans) != 8 || response.Result.Plans[7].ID != "custom:a" {
+	if response.Result.DefaultPlanID != "openai:gpt-6-astra" || len(response.Result.Plans) != 9 || response.Result.Plans[8].ID != "custom:a" {
 		t.Fatalf("unexpected pricing catalog: %#v", response.Result)
 	}
 }

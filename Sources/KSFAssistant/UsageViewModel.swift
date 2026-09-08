@@ -14,7 +14,7 @@ enum UsageDisplayStatus: Equatable {
 
 @MainActor
 final class UsageViewModel: ObservableObject {
-    static let defaultPricingPlanID = "openai:gpt-5.6-sol"
+    static let defaultPricingPlanID = "openai:gpt-6-astra"
 
     @Published private(set) var snapshot: UsageSnapshot?
     @Published private(set) var status: UsageDisplayStatus
@@ -609,7 +609,6 @@ final class UsageViewModel: ObservableObject {
                 )
                 try self.taskOpener.openTask(id: created.threadId)
                 do {
-                    try await Task.sleep(nanoseconds: 700_000_000)
                     try await self.coreService.submitTask(
                         threadID: created.threadId,
                         cwd: self.ksfRootPath,
@@ -617,7 +616,7 @@ final class UsageViewModel: ObservableObject {
                     )
                     self.projectTaskCreationErrors[project.id] = nil
                 } catch {
-                    self.projectTaskCreationErrors[project.id] = self.taskCreationErrorMessage(for: error)
+                    self.projectTaskCreationErrors[project.id] = "任务已创建，但未确认启动。请在 Codex 中查看并继续。"
                 }
                 await self.refreshSharedDashboard()
             } catch {
@@ -1162,7 +1161,10 @@ final class UsageViewModel: ObservableObject {
             return "任务已创建，但 Codex 未能打开它。"
         }
         guard let codexError = error as? CodexUsageError else {
-            return "暂时无法连接 Codex，新任务未创建。"
+            if error is CoreServiceError || error is JSONRPCPipeConnection.Failure {
+                return "新任务创建未完成：\(error.localizedDescription)"
+            }
+            return "新任务创建未完成，请重试。"
         }
         switch codexError {
         case .codexMissing:

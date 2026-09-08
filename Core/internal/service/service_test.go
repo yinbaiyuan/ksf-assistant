@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"ksfassistant/core/internal/corebridge"
 	"ksfassistant/core/internal/desktop"
@@ -347,5 +348,30 @@ func TestKSFAssistantSupportRootUsesTheCurrentUserConfigurationDirectory(t *test
 	root := ksfAssistantSupportRoot(home)
 	if !filepath.IsAbs(root) || filepath.Base(root) != "KSFAssistant" {
 		t.Fatalf("unexpected KSFAssistant support root: %q", root)
+	}
+}
+
+func TestPreparedTaskSubmissionIsBoundAndConsumedOnce(t *testing.T) {
+	request := SubmitTaskRequest{ThreadID: "draft", HostID: "local", CWD: "/project", Prompt: "exact input"}
+	service := &Service{preparedTasks: map[string]preparedTask{"draft": {cwd: request.CWD, prompt: request.Prompt, expiresAt: time.Now().Add(time.Minute)}}}
+	mismatch := request
+	mismatch.Prompt = "different input"
+	if err := service.consumePreparedTask(mismatch); err == nil {
+		t.Fatal("accepted changed input")
+	}
+	mismatch = request
+	mismatch.HostID = "remote"
+	if err := service.consumePreparedTask(mismatch); err == nil {
+		t.Fatal("accepted another host")
+	}
+	if err := service.consumePreparedTask(request); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.consumePreparedTask(request); err == nil {
+		t.Fatal("allowed duplicate dispatch")
+	}
+	service.preparedTasks["draft"] = preparedTask{cwd: request.CWD, prompt: request.Prompt, expiresAt: time.Now().Add(-time.Second)}
+	if err := service.consumePreparedTask(request); err == nil {
+		t.Fatal("accepted expired draft")
 	}
 }

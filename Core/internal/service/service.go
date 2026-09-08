@@ -98,6 +98,11 @@ type SubmitTaskRequest struct {
 	Prompt   string `json:"prompt"`
 }
 
+type preparedTask struct {
+	cwd, prompt string
+	expiresAt   time.Time
+}
+
 type PrepareLaunchRequest struct {
 	ProjectID string `json:"projectId"`
 	KSFRoot   string `json:"ksfRoot"`
@@ -143,6 +148,7 @@ type Service struct {
 	lastServerHistoryAt     time.Time
 	lastServerHistory       []domain.DailyUsageBucket
 	trackingAt              map[string]time.Time
+	preparedTasks           map[string]preparedTask
 }
 
 type projectSourceCache struct {
@@ -321,11 +327,41 @@ func (service *Service) CreateTask(ctx context.Context, request CreateTaskReques
 	if err != nil {
 		return nil, err
 	}
-	return map[string]string{"threadId": threadID, "name": name, "prompt": prompt, "submission": "desktop-required"}, nil
+	service.mu.Lock()
+	if service.preparedTasks == nil {
+		service.preparedTasks = map[string]preparedTask{}
+	}
+	for id, task := range service.preparedTasks {
+		if !time.Now().Before(task.expiresAt) {
+			delete(service.preparedTasks, id)
+		}
+	}
+	service.preparedTasks[threadID] = preparedTask{cwd: root, prompt: prompt, expiresAt: time.Now().Add(10 * time.Minute)}
+	service.mu.Unlock()
+	return map[string]string{"threadId": threadID, "name": name, "prompt": prompt, "submission": "desktop-prepared-context"}, nil
 }
 
 func (service *Service) SubmitTask(ctx context.Context, request SubmitTaskRequest) error {
-	return service.desktop.StartTurn(ctx, request.ThreadID, request.HostID, request.CWD, request.Prompt)
+	if err := service.consumePreparedTask(request); err != nil {
+		return err
+	}
+	return service.desktop.StartPreparedTurn(ctx, request.ThreadID, request.HostID, request.CWD, request.Prompt)
+}
+
+func (service *Service) consumePreparedTask(request SubmitTaskRequest) error {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	task, ok := service.preparedTasks[request.ThreadID]
+	if !ok || !time.Now().Before(task.expiresAt) {
+		return errors.New("任务启动状态已失效或已提交，请在 Codex 中查看并继续")
+	}
+	if (request.HostID != "" && request.HostID != "local") || request.CWD != task.cwd || request.Prompt != task.prompt {
+		return errors.New("任务启动参数与已准备的任务不一致")
+	}
+	// Reserve the one allowed dispatch before crossing IPC. A lost reply must
+	// never cause a second turn, including after a repeated host request.
+	delete(service.preparedTasks, request.ThreadID)
+	return nil
 }
 
 func (service *Service) CreateTaskLink(ctx context.Context, request TaskLinkRequest) (domain.FeishuTaskLink, error) {

@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"testing"
@@ -542,4 +543,122 @@ func mustJSON(t *testing.T, value any) []byte {
 		t.Fatal(err)
 	}
 	return payload
+}
+
+func TestPreparedTurnWaitsForOwnerAndSendsVisibleFirstMessageOnce(t *testing.T) {
+	for _, rejected := range []bool{false, true} {
+		t.Run(fmt.Sprint(rejected), func(t *testing.T) {
+			clientSide, serverSide := net.Pipe()
+			defer clientSide.Close()
+			defer serverSide.Close()
+			client := New("test")
+			client.connection = clientSide
+			client.started = true
+			client.clientID = "assistant"
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			result := make(chan error, 1)
+			go func() {
+				result <- client.startPreparedTurn(ctx, "draft", "local", "/project", "第一句话\n保留原文")
+			}()
+			discovery := readTestFrame(t, serverSide)
+			client.handle(mustJSON(t, map[string]any{"type": "response", "requestId": discovery["requestId"], "result": map[string]any{}}))
+			discovery = readTestFrame(t, serverSide)
+			if discovery["method"] != "thread-owner-discovery" {
+				t.Fatal("dispatched before Desktop was ready")
+			}
+			client.handle(mustJSON(t, map[string]any{"type": "response", "requestId": discovery["requestId"], "result": map[string]any{"handledByClientId": "desktop"}}))
+			request := readTestFrame(t, serverSide)
+			if request["method"] != "thread-follower-start-turn" || request["targetClientId"] != "desktop" {
+				t.Fatalf("incorrect dispatch: %#v", request)
+			}
+			turnStart := request["params"].(map[string]any)["turnStart"].(map[string]any)
+			input := turnStart["request"].(map[string]any)
+			items := input["input"].([]any)
+			if len(input) != 3 || len(items) != 1 || items[0].(map[string]any)["type"] != "text" || items[0].(map[string]any)["text"] != "第一句话\n保留原文" {
+				t.Fatalf("first message missing, changed, repeated, or settings overridden: %#v", input)
+			}
+			if turnStart["context"].(map[string]any)["inheritThreadSettings"] != true {
+				t.Fatal("did not inherit Desktop settings")
+			}
+			reply := map[string]any{"type": "response", "requestId": request["requestId"], "result": map[string]any{}}
+			if rejected {
+				reply["resultType"] = "error"
+				reply["error"] = "no-client-found"
+			}
+			client.handle(mustJSON(t, reply))
+			if err := <-result; (err != nil) != rejected {
+				t.Fatalf("result: %v", err)
+			}
+			if len(client.ownerWaiters) != 0 || len(client.requestWaiters) != 0 {
+				t.Fatal("request waiters leaked")
+			}
+		})
+	}
+}
+
+func TestPreparedTurnCancellationCleansOwnerWaiter(t *testing.T) {
+	clientSide, serverSide := net.Pipe()
+	defer clientSide.Close()
+	defer serverSide.Close()
+	client := New("test")
+	client.connection = clientSide
+	client.started = true
+	client.clientID = "assistant"
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		result <- client.startPreparedTurn(ctx, "draft", "local", "/project", "第一句话\n保留原文")
+	}()
+	readTestFrame(t, serverSide)
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation: %v", err)
+	}
+	if len(client.ownerWaiters) != 0 {
+		t.Fatal("owner waiter leaked")
+	}
+}
+
+func TestTaskControlIgnoresObservationBroadcasts(t *testing.T) {
+	client := New("test")
+	client.controlOnly = true
+	client.handle(mustJSON(t, map[string]any{"type": "broadcast", "sourceClientId": "observer", "method": "thread-stream-following-changed", "params": map[string]any{"conversationId": "draft", "hostId": "local", "following": true}}))
+	if len(client.pendingOwners) != 0 || len(client.followedBy) != 0 {
+		t.Fatal("control channel started observation discovery")
+	}
+}
+
+func TestPreparedTurnRetriesUnansweredDiscoveryBeforeDispatch(t *testing.T) {
+	clientSide, serverSide := net.Pipe()
+	defer clientSide.Close()
+	defer serverSide.Close()
+	client := New("test")
+	client.connection = clientSide
+	client.started = true
+	client.clientID = "assistant"
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		result <- client.startPreparedTurn(ctx, "draft", "local", "/project", "第一句话\n保留原文")
+	}()
+	first := readTestFrame(t, serverSide) // The first query gets no reply during navigation.
+	second := readTestFrame(t, serverSide)
+	if first["method"] != "thread-owner-discovery" || second["method"] != first["method"] || second["requestId"] == first["requestId"] {
+		t.Fatal("did not retry only the read-only query")
+	}
+	client.handle(mustJSON(t, map[string]any{"type": "response", "requestId": second["requestId"], "result": map[string]any{"handledByClientId": "desktop"}}))
+	start := readTestFrame(t, serverSide)
+	if start["method"] != "thread-follower-start-turn" {
+		t.Fatal("did not start after ownership resolved")
+	}
+	client.handle(mustJSON(t, map[string]any{"type": "response", "requestId": start["requestId"], "result": map[string]any{}}))
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	if len(client.ownerWaiters) != 0 {
+		t.Fatal("timed-out query left a waiter")
+	}
 }

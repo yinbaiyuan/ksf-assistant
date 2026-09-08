@@ -20,7 +20,7 @@ const state = {
   historyServerError: '',
   historySummary: null,
   selectedHistoryDate: null,
-  pricingCatalog: { defaultPlanId: 'openai:gpt-5.6-sol', plans: [] },
+  pricingCatalog: { defaultPlanId: 'openai:gpt-6-astra', plans: [] },
   pricingDraft: null,
   feishuConfiguration: null,
   feishuConfigurationGeneration: 0,
@@ -241,7 +241,7 @@ function selectedPricingPlan() {
 }
 
 function compactPricingName(plan) {
-  return plan ? [plan.model, plan.variant].filter(Boolean).join(' · ') : 'GPT-5.6 Sol';
+  return plan ? [plan.model, plan.variant].filter(Boolean).join(' · ') : 'GPT-6 Astra';
 }
 
 function renderPricingOptions() {
@@ -430,7 +430,7 @@ function renderSettingsPage() {
       <div class="setting"><div class="setting-title">运行组件</div><div class="component-status-list"><div class="component-status"><span>核心服务</span><strong>${state.dashboard?.coreVersion ? '运行中' : '不可用'}</strong></div><div class="component-status"><span>飞书服务</span><strong>${escapeHTML(feishuComponentStatusText(feishu))}</strong></div></div><div class="setting-description">退出 KSFAssistant 将停止核心服务、飞书服务及其子进程。</div></div>
       <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">KSF 知识库</div><div class="setting-description">KSF 是可选增强能力；未配置不影响额度、Token、任务状态和飞书。</div></div><button class="button" type="button" data-action="choose-ksf">${settings.ksfRoot ? '更换' : '选择目录'}</button></div><div class="setting-path">${escapeHTML(settings.ksfRoot || '未接入')}</div></div>
       <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">飞书</div><div class="setting-description">${escapeHTML(feishuConfigurationPresentation().title)}</div></div><button class="button" type="button" data-action="feishu-settings">配置</button></div></div>
-      <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">API 估算价格</div><div class="setting-description">${escapeHTML(selectedPricingPlan()?.displayName || 'GPT-5.6 Sol')}</div></div><button class="button" type="button" data-action="pricing">管理价格方案</button></div></div>
+      <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">API 估算价格</div><div class="setting-description">${escapeHTML(selectedPricingPlan()?.displayName || 'GPT-6 Astra')}</div></div><button class="button" type="button" data-action="pricing">管理价格方案</button></div></div>
       <div class="setting"><div class="setting-head"><div class="setting-copy"><label class="setting-title" for="launch-login">登录时启动</label><div class="setting-description">登录 Windows 后在系统托盘中启动。</div></div><input id="launch-login" class="switch" type="checkbox" data-field="launch-login" ${settings.launchAtLogin ? 'checked' : ''}></div></div>
       <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">版本</div><div class="setting-description">Windows 0.11.0-preview.1 · 核心服务 ${escapeHTML(state.dashboard?.coreVersion || '—')}</div></div></div></div>
     </section>

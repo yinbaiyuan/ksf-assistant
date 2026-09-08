@@ -21,6 +21,17 @@ Explicit foreign ownership excludes replay even when the source is missing. Reso
 
 Production Go history is recomputed from logs and held in memory for ten seconds. This correction needs no schema migration and does not modify Codex logs or old standalone Swift history caches. Deploying the new Core allows the next fresh scan to recompute available history. Logs that no longer exist cannot be recovered by this change.
 
+## API estimate
+
+API cost estimation uses the selected catalog plan, independently of the model
+that executed a task. The default is GPT-6 Astra, verified against the
+[OpenAI API pricing page](https://developers.openai.com/api/docs/pricing) on
+2026-09-08: $10 ordinary input, $1 cached input and $50 output per million tokens.
+These are Standard short-context rates. The three-category aggregate estimate
+does not include cache-write charges, long-context premiums, Fast mode or tools.
+Explicit saved pricing choices remain selectable across upgrades; changing the
+estimate does not change Codex's execution model or the account's billed usage.
+
 ## Verification
 
 `Tests/Fixtures/token-accounting.json` is a shared synthetic contract. It covers independent/nested agents, coincident counters, child resets, natural midnight boundaries, fork replay with rewritten timestamps, missing fork sources, nested forks, inherited context, legacy prefixes preceding foreign metadata, live turns without renewed metadata, ancestors outside the daily scan window, legacy logs, partial JSONL tails, request usage missing from snapshots, request deduplication, request-only logs, malformed records and format upgrades. Go checks local daily/history and project accounting; Swift checks daily/history against the same values. Existing cases cover active/archive copies and component reclassification.

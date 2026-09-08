@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	DefaultPlanID                   = "openai:gpt-5.6-sol"
+	DefaultPlanID                   = "openai:gpt-6-astra"
 	MaxCustomPlans                  = 20
 	MaxRateMicroUSDPerMillion int64 = 1_000_000_000
 	priceDenominator                = 1_000_000
@@ -24,6 +24,9 @@ func builtInPlans() []domain.PricingPlan {
 		verifiedAt  = "2026-09-03"
 	)
 	return []domain.PricingPlan{
+		// The estimator prices three aggregate token categories at Standard short-context rates.
+		// Cache-write charges and long-context premiums require per-request data and are not included.
+		builtIn("openai:gpt-6-astra", "OpenAI API", "GPT-6 Astra", "", 10_000_000, 1_000_000, 50_000_000, "https://developers.openai.com/api/docs/pricing", "2026-09-08"),
 		builtIn("openai:gpt-5.6-sol", "OpenAI API", "GPT-5.6 Sol", "", 4_000_000, 400_000, 20_000_000, openAIURL, verifiedAt),
 		builtIn("openai:gpt-5.6-terra", "OpenAI API", "GPT-5.6 Terra", "", 2_000_000, 200_000, 12_000_000, openAIURL, verifiedAt),
 		builtIn("openai:gpt-5.6-luna", "OpenAI API", "GPT-5.6 Luna", "", 200_000, 20_000, 1_200_000, openAIURL, verifiedAt),

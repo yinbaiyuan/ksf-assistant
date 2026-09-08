@@ -66,7 +66,7 @@ Windows 的 Electron 仍使用自身的 Node 环境；“不携带独立 Node �
 
 ### 项目任务创建与执行
 
-用户选择项目后，Core 校验 KSF 根目录、读取项目目录并生成任务名称和提示词，再通过 App Server 创建草稿。返回值明确标记 `desktop-required`；宿主随后通过 `task/submit` 调用 Desktop IPC 提交执行。创建草稿与开始执行是两个步骤，不能把创建成功当作任务已经运行。
+用户选择项目后，Core 校验 KSF 根目录、读取项目目录并生成任务名称和提示词，再通过独立 App Server 创建任务并用 `thread/inject_items` 保存任务名称、目录等初始化信息。Core 等待该进程退出、释放会话写入权后，返回 `desktop-prepared-context`。宿主打开对应任务，再调用 `task/submit`；Core 通过独立控制连接等待 Desktop 接管，通过正常文本输入提交完整首条指令，使用户消息和回复均进入桌面记录，指令只提交一次。提交只允许匹配的准备记录消费一次，超时不重放。创建与开始执行是两个步骤，不能把创建成功当作任务已经运行。
 
 项目程序启动是另一条链路：Core 准备结构化启动动作，平台宿主负责在可见终端中执行，并保持用户触发和项目路径边界。实现入口见 [service.go](../Core/internal/service/service.go)、[launch.go](../Core/internal/service/launch.go) 和平台宿主。
 

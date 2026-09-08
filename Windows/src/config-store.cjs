@@ -7,10 +7,11 @@ const DEFAULTS = Object.freeze({
   selectedFeishuTargetAlias: '',
   pinnedProjectIds: [],
   launchAtLogin: false,
-  selectedPricingPlanId: 'openai:gpt-5.6-sol',
+  selectedPricingPlanId: 'openai:gpt-6-astra',
   customPricingPlans: [],
 });
 const BUILTIN_PRICING_IDS = new Set([
+  'openai:gpt-6-astra',
   'openai:gpt-5.6-sol',
   'openai:gpt-5.6-terra',
   'openai:gpt-5.6-luna',

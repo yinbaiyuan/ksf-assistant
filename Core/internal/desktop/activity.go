@@ -77,8 +77,9 @@ type PendingUserInputDefinition struct {
 type UserInputSession struct{ client *ActivityClient }
 
 type ActivityClient struct {
-	endpoint   string
-	clientType string
+	endpoint    string
+	clientType  string
+	controlOnly bool
 
 	mu                   sync.Mutex
 	writeMu              sync.Mutex
@@ -201,7 +202,18 @@ func (client *ActivityClient) ReconcileCandidates(threadIDs []string) {
 	}
 }
 
-func (client *ActivityClient) StartTurn(ctx context.Context, threadID, hostID, cwd, prompt string) error {
+// StartPreparedTurn submits the first instruction through Desktop so its normal
+// userMessage event is both displayed live and retained in turn history.
+func (client *ActivityClient) StartPreparedTurn(ctx context.Context, threadID, hostID, cwd, prompt string) error {
+	// Keep task control independent of dashboard subscriptions, whose following
+	// broadcasts can trigger additional discovery while a task is opening.
+	control := NewWithClientType(client.endpoint, client.clientType)
+	control.controlOnly = true
+	defer control.Close()
+	return control.startPreparedTurn(ctx, threadID, hostID, cwd, prompt)
+}
+
+func (client *ActivityClient) startPreparedTurn(ctx context.Context, threadID, hostID, cwd, prompt string) error {
 	if strings.TrimSpace(threadID) == "" || strings.TrimSpace(cwd) == "" || strings.TrimSpace(prompt) == "" {
 		return errors.New("task submission requires a thread, working directory, and prompt")
 	}
@@ -214,36 +226,34 @@ func (client *ActivityClient) StartTurn(ctx context.Context, threadID, hostID, c
 	client.mu.Lock()
 	clientID := client.clientID
 	client.mu.Unlock()
-	if clientID == "" {
-		return errors.New("Codex Desktop IPC is still initializing")
-	}
-	ownerRequestID := client.nextID("submit-owner")
-	ownerWaiter := make(chan string, 1)
-	client.mu.Lock()
-	client.ownerWaiters[ownerRequestID] = ownerWaiter
-	client.mu.Unlock()
-	if err := client.send(map[string]any{"type": "request", "requestId": ownerRequestID, "sourceClientId": clientID, "method": "thread-owner-discovery", "version": 1, "params": map[string]any{"conversationId": threadID, "hostId": hostID}}); err != nil {
-		client.mu.Lock()
-		delete(client.ownerWaiters, ownerRequestID)
-		client.mu.Unlock()
-		return err
-	}
+	// Opening a URL only starts navigation. Retry read-only discovery until
+	// Desktop claims the thread, never the effectful start-turn request.
+	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	var owner string
-	select {
-	case owner = <-ownerWaiter:
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(5 * time.Second):
-		return errors.New("Codex Desktop did not claim the new task")
+	for owner == "" {
+		attemptCtx, stopAttempt := context.WithTimeout(readyCtx, time.Second)
+		var err error
+		owner, err = client.discoverOwnerOnHost(attemptCtx, threadID, hostID, clientID)
+		stopAttempt()
+		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		if owner == "" {
+			select {
+			case <-readyCtx.Done():
+				return errors.New("Codex Desktop did not claim the new task")
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
 	}
-	if owner == "" {
-		return errors.New("Codex Desktop has no visible owner for the new task")
-	}
+
 	requestID := client.nextID("start-turn")
 	waiter := make(chan error, 1)
 	client.mu.Lock()
 	client.requestWaiters[requestID] = waiter
 	client.mu.Unlock()
+	defer func() { client.mu.Lock(); delete(client.requestWaiters, requestID); client.mu.Unlock() }()
 	message := map[string]any{
 		"type": "request", "requestId": requestID, "sourceClientId": clientID, "targetClientId": owner,
 		"timeoutMs": 15000, "method": "thread-follower-start-turn", "version": 2,
@@ -401,7 +411,7 @@ func (client *ActivityClient) handle(payload []byte) {
 		}
 		return
 	}
-	if typeName != "broadcast" {
+	if typeName != "broadcast" || client.controlOnly {
 		return
 	}
 	method, _ := envelope["method"].(string)
@@ -659,12 +669,17 @@ func (client *ActivityClient) refreshOwner(ctx context.Context, threadID string)
 }
 
 func (client *ActivityClient) discoverOwnerSync(ctx context.Context, threadID, source string) (string, error) {
+	return client.discoverOwnerOnHost(ctx, threadID, "local", source)
+}
+
+func (client *ActivityClient) discoverOwnerOnHost(ctx context.Context, threadID, hostID, source string) (string, error) {
 	requestID := client.nextID("owner")
 	waiter := make(chan string, 1)
 	client.mu.Lock()
 	client.ownerWaiters[requestID] = waiter
 	client.mu.Unlock()
-	if err := client.send(map[string]any{"type": "request", "requestId": requestID, "sourceClientId": source, "method": "thread-owner-discovery", "version": 1, "params": map[string]any{"conversationId": threadID, "hostId": "local"}}); err != nil {
+	defer func() { client.mu.Lock(); delete(client.ownerWaiters, requestID); client.mu.Unlock() }()
+	if err := client.send(map[string]any{"type": "request", "requestId": requestID, "sourceClientId": source, "method": "thread-owner-discovery", "version": 1, "params": map[string]any{"conversationId": threadID, "hostId": hostID}}); err != nil {
 		return "", err
 	}
 	select {

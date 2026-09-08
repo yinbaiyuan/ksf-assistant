@@ -233,12 +233,11 @@ function registerIPC() {
     const settings = store.get();
     const created = await core.request('task/create', { projectId, ksfRoot: settings.ksfRoot, purpose });
     await shell.openExternal(taskURL(created.threadId));
-    await new Promise((resolve) => setTimeout(resolve, 700));
     try {
       await core.request('task/submit', { threadId: created.threadId, hostId: 'local', cwd: settings.ksfRoot, prompt: created.prompt });
       return { ...created, submitted: true };
     } catch (error) {
-      return { ...created, submitted: false, warning: `任务已创建并打开，但首次说明未自动提交：${error.message}` };
+      return { ...created, submitted: false, warning: '任务已创建，但未确认启动。请在 Codex 中查看并继续。' };
     }
   });
   ipcMain.handle('project:launch', async (_event, projectId) => {

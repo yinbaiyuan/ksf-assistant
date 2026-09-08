@@ -44,6 +44,7 @@ type Client struct {
 	serverRequests map[string]ServerRequest
 	nextID         int
 	closed         bool
+	exitDone       chan struct{}
 }
 
 type ServerRequest struct {
@@ -158,7 +159,8 @@ func (client *Client) Start(ctx context.Context) error {
 	client.pending = map[int]chan response{}
 	client.serverRequests = map[string]ServerRequest{}
 	go io.Copy(io.Discard, stderr)
-	go client.readLoop(stdout, command)
+	client.exitDone = make(chan struct{})
+	go client.readLoop(stdout, command, client.exitDone)
 	client.stateMu.Unlock()
 	_, initErr := client.callStarted(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "ksf_assistant_core", "title": "KSFAssistant Core", "version": "0.11.0-preview.4"}})
 	if initErr == nil {
@@ -228,19 +230,41 @@ func (client *Client) FetchThreads(ctx context.Context) ([]domain.CodexThread, e
 }
 
 func (client *Client) CreateDraftThread(ctx context.Context, cwd, name string) (string, error) {
+	// Current Codex cannot resume an empty reserved thread in another process.
+	// Persist only factual task context here, not the first instruction: injected
+	// history has no userMessage event and therefore no Desktop message bubble.
+	// Desktop submits the actual prompt once through its normal turn input.
+	// This adapter can be removed when Codex supports durable empty drafts.
+	metadata, err := json.Marshal(map[string]string{"taskName": name, "workingDirectory": cwd})
+	if err != nil {
+		return "", err
+	}
+	draft := &Client{Executable: client.Executable, Timeout: client.Timeout}
+	defer draft.Close()
 	var started struct {
 		Thread struct {
 			ID string `json:"id"`
 		} `json:"thread"`
 	}
-	if err := client.Call(ctx, "thread/start", map[string]any{"cwd": cwd, "serviceName": "ksf_assistant"}, &started); err != nil {
+	if err := draft.Call(ctx, "thread/start", map[string]any{"cwd": cwd, "serviceName": "ksf_assistant"}, &started); err != nil {
 		return "", err
 	}
 	if started.Thread.ID == "" {
 		return "", errors.New("thread/start returned an empty thread id")
 	}
-	if err := client.Call(ctx, "thread/name/set", map[string]any{"threadId": started.Thread.ID, "name": name}, nil); err != nil {
+	if err := draft.Call(ctx, "thread/name/set", map[string]any{"threadId": started.Thread.ID, "name": name}, nil); err != nil {
 		return "", err
+	}
+	if err := draft.Call(ctx, "thread/inject_items", map[string]any{
+		"threadId": started.Thread.ID,
+		"items": []any{map[string]any{"type": "message", "role": "user", "content": []any{
+			map[string]any{"type": "input_text", "text": string(metadata)},
+		}}},
+	}, nil); err != nil {
+		return "", fmt.Errorf("prepare task context: %w", err)
+	}
+	if err := draft.Close(); err != nil {
+		return "", fmt.Errorf("release task writer: %w", err)
 	}
 	return started.Thread.ID, nil
 }
@@ -381,9 +405,17 @@ func Observations(threads []domain.CodexThread) []domain.TaskObservation {
 
 func (client *Client) Close() error {
 	client.stateMu.Lock()
-	defer client.stateMu.Unlock()
+	done := client.exitDone
 	client.closed = true
 	client.stopLocked(errors.New("Codex App Server client closed"))
+	client.stateMu.Unlock()
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			return errors.New("Codex App Server process did not exit")
+		}
+	}
 	return nil
 }
 
@@ -445,7 +477,8 @@ func (client *Client) write(value any) error {
 	return err
 }
 
-func (client *Client) readLoop(stdout io.Reader, command *exec.Cmd) {
+func (client *Client) readLoop(stdout io.Reader, command *exec.Cmd, done chan struct{}) {
+	defer close(done)
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 64*1024), 64*1024*1024)
 	for scanner.Scan() {

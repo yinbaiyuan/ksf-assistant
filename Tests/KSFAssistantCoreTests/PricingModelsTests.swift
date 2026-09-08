@@ -10,15 +10,17 @@ final class PricingModelsTests: XCTestCase {
     }
 
     func testPricingModelsDecodeCoreServiceContract() throws {
-        let data = #"{"defaultPlanId":"openai:gpt-5.6-sol","plans":[{"id":"openai:gpt-5.6-sol","provider":"OpenAI API","model":"GPT-5.6 Sol","displayName":"OpenAI API · GPT-5.6 Sol","regularInputMicroUsdPerMillion":4000000,"cachedInputMicroUsdPerMillion":400000,"outputMicroUsdPerMillion":20000000,"builtIn":true,"sourceUrl":"https://developers.openai.com/api/docs/models/compare","verifiedAt":"2026-09-03"}]}"#.data(using: .utf8)!
+        let data = #"{"defaultPlanId":"openai:gpt-6-astra","plans":[{"id":"openai:gpt-6-astra","provider":"OpenAI API","model":"GPT-6 Astra","displayName":"OpenAI API · GPT-6 Astra","regularInputMicroUsdPerMillion":10000000,"cachedInputMicroUsdPerMillion":1000000,"outputMicroUsdPerMillion":50000000,"builtIn":true,"sourceUrl":"https://developers.openai.com/api/docs/pricing","verifiedAt":"2026-09-08"}]}"#.data(using: .utf8)!
         let catalog = try JSONDecoder().decode(PricingCatalog.self, from: data)
-        XCTAssertEqual(catalog.defaultPlanId, "openai:gpt-5.6-sol")
-        XCTAssertEqual(catalog.plans.first?.regularInputMicroUsdPerMillion, 4_000_000)
+        XCTAssertEqual(catalog.defaultPlanId, "openai:gpt-6-astra")
+        XCTAssertEqual(catalog.plans.first?.regularInputMicroUsdPerMillion, 10_000_000)
+        XCTAssertEqual(catalog.plans.first?.cachedInputMicroUsdPerMillion, 1_000_000)
+        XCTAssertEqual(catalog.plans.first?.outputMicroUsdPerMillion, 50_000_000)
         XCTAssertTrue(catalog.plans.first?.builtIn == true)
     }
 
     func testPartialEstimateKeepsCoverageMetadata() throws {
-        let data = #"{"planId":"openai:gpt-5.6-sol","currency":"USD","status":"partial","regularInputMicroUsd":100,"cachedInputMicroUsd":20,"outputMicroUsd":500,"totalMicroUsd":620,"uncoveredTokens":42,"incompleteDayCount":1}"#.data(using: .utf8)!
+        let data = #"{"planId":"openai:gpt-6-astra","currency":"USD","status":"partial","regularInputMicroUsd":100,"cachedInputMicroUsd":20,"outputMicroUsd":500,"totalMicroUsd":620,"uncoveredTokens":42,"incompleteDayCount":1}"#.data(using: .utf8)!
         let estimate = try JSONDecoder().decode(TokenCostEstimate.self, from: data)
         XCTAssertEqual(estimate.status, .partial)
         XCTAssertEqual(estimate.totalMicroUsd, 620)

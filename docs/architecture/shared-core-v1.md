@@ -58,3 +58,13 @@ API pricing is a shared-core business rule. `pricing/catalog/read` combines seve
 ## Compatibility fallback
 
 The macOS host retains the pre-0.8 Swift clients as a temporary startup fallback if the bundled shared core cannot launch. They are not used when the packaged core is healthy and may be removed after the Windows and macOS 0.8 field-validation window.
+
+### Desktop task creation handoff
+
+`task/create` returns `submission: "desktop-prepared-context"`. Core creates a dedicated draft and persists only factual task context (`taskName`, `workingDirectory`) via the documented [thread/inject_items API](https://learn.chatgpt.com/docs/app-server#inject-items-into-a-thread), without generation. It waits for that writer process to exit before the host opens the task. The actual bootstrap instruction is not injected: raw prompt history has no canonical `userMessage` event and does not produce a Desktop message bubble.
+
+`task/submit` accepts only the matching, unexpired preparation from this Core lifetime, consumes it before dispatch, then sends the exact prompt as one normal text input through Desktop. This generates one persistent user message followed by the assistant response. Model, permissions, sandbox and reasoning settings continue to come from Desktop. Task control uses a short-lived IPC connection without dashboard subscriptions. Ownership queries may retry within a bounded readiness window; the turn-start operation is never automatically replayed.
+
+The small initialization context is a compatibility adapter for Codex releases that reserve empty thread IDs without materializing resumable history. It adds task metadata to prompt history but no model turn or duplicate instruction. Remove this adapter when a supported Codex API can create a durable empty draft; validate cross-process resume, writer release, and one visible canonical user message before switching. Do not fabricate assistant history, rewrite Codex session files, or start a background turn to force persistence.
+
+Pending preparations are memory-only and expire after 10 minutes; restarting Core deliberately does not replay them. If startup cannot be confirmed, the host directs the user to continue in the existing task. Existing completed tasks are not retroactively rewritten or rerun. Validation on bundled Codex 0.153.4 covers the previous `rollout_not_found` failure and checks that the repaired flow retains exactly one user message and one final reply in turn history. Unsupported injection fails explicitly.
