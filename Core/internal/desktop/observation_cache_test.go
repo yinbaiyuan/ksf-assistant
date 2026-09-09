@@ -52,6 +52,33 @@ func TestObservationCacheUsesTrustedPushWithoutHistoryReload(t *testing.T) {
 	}
 }
 
+func TestObservationCacheRejectsOutOfOrderNumericPushes(t *testing.T) {
+	c := New("test")
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	c.connection = a
+	c.started = true
+	key := taskKey{"local", "thread"}
+	c.owners[key] = "owner"
+	c.observationCache = map[taskKey]*observationCache{key: {
+		target:     UserInputTarget{OwnerClientID: "owner", State: map[string]any{"value": "current"}, SnapshotRevision: "12"},
+		generation: c.connectionGeneration,
+		nextRead:   time.Now().Add(time.Minute),
+	}}
+	c.mu.Lock()
+	c.cachePushedObservation(key, map[string]any{"value": "older"}, "owner", "11")
+	c.mu.Unlock()
+
+	value, err := c.ObserveConversationState(context.Background(), "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.State["value"] != "current" || value.SnapshotRevision != "12" {
+		t.Fatalf("older revision replaced cache: %#v", value)
+	}
+}
+
 func TestConcurrentObservationInitializesOnceAndCalibratesAfterMinute(t *testing.T) {
 	a, b := net.Pipe()
 	defer a.Close()
@@ -105,5 +132,9 @@ func TestConcurrentObservationInitializesOnceAndCalibratesAfterMinute(t *testing
 	}
 	if c.ObservationDiagnostics()["fullHistoryReads"] != 2 {
 		t.Fatal("calibration missing")
+	}
+	value, err = c.ObserveConversationState(ctx, "thread")
+	if err != nil || value.State["marker"] != "latest" || value.SnapshotRevision != "2" {
+		t.Fatalf("older calibration replaced newer cache: %#v, %v", value, err)
 	}
 }

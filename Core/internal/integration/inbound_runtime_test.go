@@ -146,6 +146,77 @@ func TestProjectDesktopTaskLinkTracksRunningDesktopTurn(t *testing.T) {
 	}
 }
 
+func TestDesktopTurnProgressAccumulatesOnlyCommentarySegments(t *testing.T) {
+	turn := map[string]any{"items": []any{
+		map[string]any{"id": "one", "type": "agentMessage", "phase": "commentary", "text": "第一段"},
+		map[string]any{"id": "private", "type": "agentMessage", "phase": "analysis", "text": "内部推理"},
+		map[string]any{"id": "tool", "type": "commandExecution", "text": "工具输出"},
+		map[string]any{"id": "two", "type": "agentMessage", "phase": "commentary", "text": "第二段"},
+		map[string]any{"id": "final", "type": "agentMessage", "phase": "final_answer", "text": "最终回答"},
+	}}
+	segments := desktopTurnProgressSegments(turn)
+	if len(segments) != 2 || segments[0].Text != "第一段" || segments[1].Text != "第二段" {
+		t.Fatalf("unexpected public progress: %#v", segments)
+	}
+	if got := desktopTurnProgress(turn); got != "第一段\n\n第二段" {
+		t.Fatalf("progress = %q", got)
+	}
+}
+
+func TestProgressSegmentMergeUsesSnapshotOverlapWithoutDuplication(t *testing.T) {
+	existing := []taskProgressSegment{{Text: "第一段"}, {Text: "第二段"}}
+	incoming := []taskProgressSegment{{Text: "第一段"}, {Text: "第二段"}, {Text: "第三段"}}
+	merged := mergeTaskProgressSegments(existing, incoming)
+	if len(merged) != 3 || merged[2].Text != "第三段" {
+		t.Fatalf("full snapshot duplicated progress: %#v", merged)
+	}
+	merged = mergeTaskProgressSegments(merged, []taskProgressSegment{{Text: "第三段"}})
+	if len(merged) != 3 {
+		t.Fatalf("partial snapshot duplicated latest progress: %#v", merged)
+	}
+	merged = mergeTaskProgressSegments(merged, []taskProgressSegment{{ID: "live", Text: "草稿"}})
+	merged = mergeTaskProgressSegments(merged, []taskProgressSegment{{ID: "live", Text: "草稿已扩展"}})
+	if merged[len(merged)-1].Text != "草稿已扩展" {
+		t.Fatalf("stable item update was not replaced: %#v", merged)
+	}
+	evicted := []taskProgressSegment{{Text: "第三段"}, {Text: "第四段"}}
+	fullSnapshot := []taskProgressSegment{{Text: "第一段"}, {Text: "第二段"}, {Text: "第三段"}, {Text: "第四段"}, {Text: "第五段"}}
+	merged = mergeTaskProgressSegments(evicted, fullSnapshot)
+	if len(merged) != 3 || merged[0].Text != "第三段" || merged[2].Text != "第五段" {
+		t.Fatalf("evicted progress re-entered the queue: %#v", merged)
+	}
+}
+
+func TestDesktopProjectionRejectsOlderOrIncompleteTurnRegression(t *testing.T) {
+	link := TaskLink{TurnState: "running", ActiveTurnID: "current", Extra: map[string]json.RawMessage{}}
+	link.SetExtraString("latestInputTurnId", "current")
+	oldOnly := map[string]any{"turns": []any{map[string]any{"id": "old", "status": "failed"}}}
+	if desktopProjectionCanAdvance(link, oldOnly, projectDesktopTaskLink(oldOnly)) {
+		t.Fatal("an incomplete old failure replaced the current running turn")
+	}
+	ordered := map[string]any{"turns": []any{
+		map[string]any{"id": "old", "status": "failed"},
+		map[string]any{"id": "current", "status": "interrupted"},
+		map[string]any{"id": "new", "status": "running"},
+	}}
+	if !desktopProjectionCanAdvance(link, ordered, projectDesktopTaskLink(ordered)) {
+		t.Fatal("an ordered newer turn was rejected")
+	}
+}
+
+func TestInterruptedTurnAllowsTimestampedNewRunningTurn(t *testing.T) {
+	link := TaskLink{TurnState: "interrupted", Extra: map[string]json.RawMessage{}}
+	link.SetExtraString("latestInputTurnId", "stopped")
+	link.SetExtraValue("desktopTurnStartedAtMs", int64(100))
+	newOnly := map[string]any{
+		"thread": map[string]any{"status": map[string]any{"type": "active"}},
+		"turns":  []any{map[string]any{"id": "new", "status": "running", "turnStartedAtMs": float64(200)}},
+	}
+	if !desktopProjectionCanAdvance(link, newOnly, projectDesktopTaskLink(newOnly)) {
+		t.Fatal("a newer running turn after interruption was rejected")
+	}
+}
+
 func TestProjectDesktopTaskLinkTracksCompletedResultOnce(t *testing.T) {
 	snapshot := map[string]any{"turns": []any{map[string]any{
 		"id": "turn-complete", "status": map[string]any{"type": "completed"},

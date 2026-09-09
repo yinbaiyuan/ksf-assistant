@@ -81,3 +81,64 @@ func TestWaitingInputCardCarriesRevisionAndDoesNotRenderSubmissionError(t *testi
 		t.Fatalf("internal submission error leaked into the shared card: %s", encoded)
 	}
 }
+
+func TestRunningCardKeepsCurrentTurnProgressSegmentsInOrder(t *testing.T) {
+	link := TaskLink{ID: "LINK-0123456789ABCDEF", TaskKey: "0123456789abcdef0123", ProjectName: "KSFAssistant", LinkState: "active", TurnState: "running", TurnOwner: "desktop", ActiveTurnID: "turn-1"}
+	link.SetExtraString("latestInput", "检查任务卡片")
+	link.SetExtraString("latestInputTurnId", "turn-1")
+	link.SetExtraString("progressTurnId", "turn-1")
+	link.SetExtraValue("progressSegments", []taskProgressSegment{{ID: "one", Text: "第一段进展"}, {ID: "two", Text: "第二段进展"}, {ID: "three", Text: "第三段进展"}})
+
+	encoded, err := TaskLinkCardJSON(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := strings.Index(encoded, "第一段进展")
+	second := strings.Index(encoded, "第二段进展")
+	third := strings.Index(encoded, "第三段进展")
+	if first < 0 || second <= first || third <= second {
+		t.Fatalf("progress segments are not ordered: %s", encoded)
+	}
+}
+
+func TestRunningCardEvictsOldestWholeSegmentsWithinRequestBudget(t *testing.T) {
+	link := TaskLink{ID: "LINK-0123456789ABCDEF", TaskKey: "0123456789abcdef0123", ProjectName: "KSFAssistant", LinkState: "active", TurnState: "running", TurnOwner: "desktop", ActiveTurnID: "turn-1"}
+	link.SetExtraString("latestInput", "检查中文与 JSON 转义：\"卡片\"")
+	link.SetExtraString("latestInputTurnId", "turn-1")
+	link.SetExtraString("progressTurnId", "turn-1")
+	segments := []taskProgressSegment{}
+	for index := 0; index < 8; index++ {
+		segments = append(segments, taskProgressSegment{ID: string(rune('a' + index)), Text: strings.Repeat("中", 1800) + "-segment-" + string(rune('a'+index))})
+	}
+	link.SetExtraValue("progressSegments", segments)
+
+	encoded, err := TaskLinkCardJSON(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := taskLinkCardRequestBytes(encoded); got > feishuCardSafeRequestBytes {
+		t.Fatalf("request size = %d, limit = %d", got, feishuCardSafeRequestBytes)
+	}
+	if strings.Contains(encoded, "-segment-a") || !strings.Contains(encoded, "-segment-h") {
+		t.Fatalf("FIFO eviction did not preserve newest segments: %s", encoded)
+	}
+}
+
+func TestRunningCardKeepsTailWhenNewestSegmentAloneExceedsBudget(t *testing.T) {
+	link := TaskLink{ID: "LINK-0123456789ABCDEF", TaskKey: "0123456789abcdef0123", ProjectName: "KSFAssistant", LinkState: "active", TurnState: "running", TurnOwner: "desktop", ActiveTurnID: "turn-1"}
+	link.SetExtraString("latestInput", "检查超长进展")
+	link.SetExtraString("latestInputTurnId", "turn-1")
+	link.SetExtraString("progressTurnId", "turn-1")
+	link.SetExtraValue("progressSegments", []taskProgressSegment{{ID: "latest", Text: "最早开头" + strings.Repeat("中", 20000) + "最新结尾"}})
+
+	encoded, err := TaskLinkCardJSON(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := taskLinkCardRequestBytes(encoded); got > feishuCardSafeRequestBytes {
+		t.Fatalf("request size = %d, limit = %d", got, feishuCardSafeRequestBytes)
+	}
+	if !strings.Contains(encoded, "较早内容已省略") || strings.Contains(encoded, "最早开头") || !strings.Contains(encoded, "最新结尾") {
+		t.Fatalf("oversized newest segment was not tail-truncated: %s", encoded)
+	}
+}

@@ -91,4 +91,7 @@ func TestDesktopMissingCurrentInputClearsStaleText(t *testing.T) {
 	if l.ExtraString("userMessageProjectionVersion") != "1" {
 		t.Fatal("existing card was not migrated")
 	}
+	if l.ExtraString("progressProjectionVersion") != "1" {
+		t.Fatal("existing card progress was not migrated")
+	}
 }

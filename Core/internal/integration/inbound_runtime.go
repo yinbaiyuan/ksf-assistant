@@ -231,6 +231,9 @@ func (runtime *Runtime) HandleMessage(ctx context.Context, message InboundMessag
 		value.Phase = "运行中"
 		value.Detail = "Codex 已开始处理。"
 		value.SetExtraString("latestInput", prompt)
+		value.SetExtraString("latestInputTurnId", turnID)
+		value.SetExtraString("progressTurnId", turnID)
+		value.SetExtraValue("progressSegments", nil)
 		value.SetExtraString("activeTurnMode", "default")
 		value.SetExtraString("pendingCleanupDir", cleanupDir)
 		value.MessageIDs = appendUnique(value.MessageIDs, message.MessageID)
@@ -435,6 +438,11 @@ func (runtime *Runtime) HandleCard(ctx context.Context, action InboundCardAction
 			value.Phase = "运行中"
 			value.Detail = "Codex 已收到补充内容。"
 			value.SetExtraString("latestInput", followup)
+			value.SetExtraString("latestInputTurnId", turnID)
+			if value.ExtraString("progressTurnId") != turnID {
+				value.SetExtraString("progressTurnId", turnID)
+				value.SetExtraValue("progressSegments", nil)
+			}
 			value.SetExtraString("activeTurnMode", selectedMode)
 			value.NextTurnMode = "default"
 		})
@@ -470,6 +478,8 @@ func (runtime *Runtime) HandleCard(ctx context.Context, action InboundCardAction
 			value.Detail = "计划已开始执行。"
 			value.SetExtraString("latestInput", "执行此计划")
 			value.SetExtraString("latestInputTurnId", turnID)
+			value.SetExtraString("progressTurnId", turnID)
+			value.SetExtraValue("progressSegments", nil)
 			value.SetExtraString("activeTurnMode", "default")
 			value.NextTurnMode = "default"
 		})
@@ -1142,6 +1152,8 @@ type desktopTaskProjection struct {
 	TurnID, TurnState, TurnOwner, ActionRequired string
 	Phase, Detail                                string
 	UserInput                                    string
+	TurnStartedAtMS                              int64
+	ProgressSegments                             []taskProgressSegment
 	PendingPlan                                  pendingPlan
 	PendingQuestions                             []map[string]any
 	PendingRequestID                             string
@@ -1157,10 +1169,19 @@ func (runtime *Runtime) reconcileDesktopTaskLink(ctx context.Context, link TaskL
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if revision != "" && revision == link.ExtraString("observedSnapshotRevision") && link.ExtraString("userMessageProjectionVersion") == "1" {
+	if revision != "" && revision == link.ExtraString("observedSnapshotRevision") &&
+		link.ExtraString("userMessageProjectionVersion") == "1" &&
+		link.ExtraString("progressProjectionVersion") == "1" {
 		return nil
 	}
 	projection := projectDesktopTaskLink(snapshot)
+	if projection.TurnID == "" || !desktopProjectionCanAdvance(link, snapshot, projection) {
+		return nil
+	}
+	projection.ProgressSegments = desktopProjectionProgressSegments(link, projection)
+	if projection.TurnState == "running" && len(projection.ProgressSegments) > 0 {
+		projection.Detail = boundedPublicText(taskProgressText(projection.ProgressSegments), 900)
+	}
 	if len(projection.PendingQuestions) > 0 {
 		owner := runtime.core.ProjectionOwner(link.ThreadID, link.ExtraString("runtimeOwner"))
 		projection.PendingQuestionRevision = PendingQuestionRevisionScoped(link.TaskKey, projection.TurnID, owner, projection.PendingRequestRef, projection.PendingQuestions)
@@ -1168,7 +1189,7 @@ func (runtime *Runtime) reconcileDesktopTaskLink(ctx context.Context, link TaskL
 	if projection.TurnState == "waiting_input" && desktopAnswerSubmissionPending(link, projection) {
 		return nil
 	}
-	if projection.TurnID == "" || !desktopProjectionRequiresSync(link, projection) {
+	if !desktopProjectionRequiresSync(link, projection) {
 		return nil
 	}
 	updated, err := runtime.links.UpdateActiveByID(link.ID, func(value *TaskLink) {
@@ -1176,6 +1197,8 @@ func (runtime *Runtime) reconcileDesktopTaskLink(ctx context.Context, link TaskL
 		value.SetExtraString("latestInput", projection.UserInput)
 		value.SetExtraString("latestInputTurnId", projection.TurnID)
 		value.SetExtraString("userMessageProjectionVersion", "1")
+		value.SetExtraString("progressProjectionVersion", "1")
+		value.SetExtraValue("desktopTurnStartedAtMs", projection.TurnStartedAtMS)
 		value.TurnState = projection.TurnState
 		value.TurnOwner = projection.TurnOwner
 		value.ActionRequired = projection.ActionRequired
@@ -1184,8 +1207,12 @@ func (runtime *Runtime) reconcileDesktopTaskLink(ctx context.Context, link TaskL
 		value.NextTurnMode = "default"
 		if projection.TurnState == "running" || projection.TurnState == "waiting_input" || projection.TurnState == "desktop_action_required" {
 			value.ActiveTurnID = projection.TurnID
+			value.SetExtraString("progressTurnId", projection.TurnID)
+			value.SetExtraValue("progressSegments", fitTaskLinkProgressSegments(*value, projection.ProgressSegments))
 		} else {
 			value.ActiveTurnID = ""
+			value.SetExtraString("progressTurnId", "")
+			value.SetExtraValue("progressSegments", nil)
 		}
 		if projection.PendingPlan.Content != "" {
 			value.PendingPlanTurnID = projection.PendingPlan.TurnID
@@ -1244,7 +1271,7 @@ func projectDesktopTaskLink(snapshot map[string]any) desktopTaskProjection {
 		return desktopTaskProjection{}
 	}
 	turnID := cleanString(turn["id"])
-	result := desktopTaskProjection{UserInput: desktopTurnUserInput(turn), TurnID: turnID, TurnState: "idle", TurnOwner: "none", ActionRequired: "none", Phase: "已连接", Detail: "任务已连接。回复本消息可继续任务。"}
+	result := desktopTaskProjection{UserInput: desktopTurnUserInput(turn), TurnID: turnID, TurnStartedAtMS: desktopTurnTimestamp(turn), TurnState: "idle", TurnOwner: "none", ActionRequired: "none", Phase: "已连接", Detail: "任务已连接。回复本消息可继续任务。"}
 	if pending := pendingPlanImplementation(normalized); pending.Content != "" {
 		result.TurnState, result.ActionRequired = "plan_ready", "feishu"
 		result.Phase, result.Detail, result.PendingPlan = "计划已生成", pending.Content, pending
@@ -1265,6 +1292,7 @@ func projectDesktopTaskLink(snapshot map[string]any) desktopTaskProjection {
 	threadStatus := strings.ToLower(statusType(thread["status"]))
 	if isRunningStatus(status) || isRunningStatus(threadStatus) {
 		result.TurnState, result.TurnOwner = "running", "desktop"
+		result.ProgressSegments = desktopTurnProgressSegments(turn)
 		result.Phase, result.Detail = "运行中", desktopTurnProgress(turn)
 		if desktopNeedsLocalAction(thread) {
 			result.TurnState, result.ActionRequired = "desktop_action_required", "desktop"
@@ -1312,6 +1340,11 @@ func desktopProjectionRequiresSync(link TaskLink, next desktopTaskProjection) bo
 		return true
 	}
 	if link.Phase != next.Phase || strings.TrimSpace(link.Detail) != strings.TrimSpace(next.Detail) {
+		return true
+	}
+	var currentProgress []taskProgressSegment
+	link.ExtraValue("progressSegments", &currentProgress)
+	if taskProgressText(currentProgress) != taskProgressText(next.ProgressSegments) || link.ExtraString("progressTurnId") != activeProjectionTurnID(next) {
 		return true
 	}
 	if link.PendingPlanTurnID != next.PendingPlan.TurnID || link.PendingPlanRevision != planRevisionIfPresent(next.PendingPlan) {
@@ -1366,17 +1399,57 @@ func desktopNeedsLocalAction(thread map[string]any) bool {
 }
 
 func desktopTurnProgress(turn map[string]any) string {
-	items, _ := turn["items"].([]any)
-	for index := len(items) - 1; index >= 0; index-- {
-		item, _ := items[index].(map[string]any)
-		if item == nil || fmt.Sprint(item["type"]) != "agentMessage" || strings.ToLower(fmt.Sprint(item["phase"])) != "commentary" {
-			continue
-		}
-		if value := boundedPublicText(fmt.Sprint(item["text"]), 900); value != "" {
-			return value
-		}
+	if value := boundedPublicText(taskProgressText(desktopTurnProgressSegments(turn)), 900); value != "" {
+		return value
 	}
 	return "Codex 正在处理。"
+}
+
+func desktopProjectionProgressSegments(link TaskLink, projection desktopTaskProjection) []taskProgressSegment {
+	if projection.TurnState != "running" && projection.TurnState != "waiting_input" && projection.TurnState != "desktop_action_required" {
+		return nil
+	}
+	if link.ExtraString("progressTurnId") != projection.TurnID {
+		return projection.ProgressSegments
+	}
+	var existing []taskProgressSegment
+	link.ExtraValue("progressSegments", &existing)
+	return mergeTaskProgressSegments(existing, projection.ProgressSegments)
+}
+
+func desktopProjectionCanAdvance(link TaskLink, snapshot map[string]any, projection desktopTaskProjection) bool {
+	anchor := link.ExtraString("latestInputTurnId")
+	if anchor == "" || projection.TurnID == anchor {
+		return true
+	}
+	normalized := normalizeDesktopState(snapshot)
+	turns, _ := normalized["turns"].([]any)
+	anchorIndex, projectionIndex := -1, -1
+	for index, raw := range turns {
+		turn, _ := raw.(map[string]any)
+		id := cleanString(turn["id"])
+		if id == anchor {
+			anchorIndex = index
+		}
+		if id == projection.TurnID {
+			projectionIndex = index
+		}
+	}
+	if anchorIndex >= 0 && projectionIndex >= 0 {
+		return projectionIndex > anchorIndex
+	}
+	var anchorStartedAt int64
+	link.ExtraValue("desktopTurnStartedAtMs", &anchorStartedAt)
+	if anchorStartedAt > 0 && projection.TurnStartedAtMS > anchorStartedAt {
+		return true
+	}
+	thread := snapshot
+	if value, ok := snapshot["thread"].(map[string]any); ok {
+		thread = value
+	}
+	return isTerminalTaskState(link.TurnState) &&
+		projection.TurnState == "running" &&
+		isRunningStatus(strings.ToLower(statusType(thread["status"])))
 }
 
 func boundedPublicText(value string, maximum int) string {

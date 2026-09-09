@@ -9,6 +9,14 @@ import (
 	"time"
 )
 
+const (
+	feishuCardRequestMaxBytes     = 30 * 1024
+	feishuCardRequestReserveBytes = 512
+	feishuCardSafeRequestBytes    = feishuCardRequestMaxBytes - feishuCardRequestReserveBytes
+)
+
+const omittedProgressPrefix = "…（较早内容已省略）\n"
+
 func PendingQuestionRevision(turnID, requestID string, questions []map[string]any) string {
 	raw, _ := json.Marshal(strings.TrimSpace(requestID))
 	return PendingQuestionRevisionRaw(turnID, raw, questions)
@@ -41,6 +49,13 @@ func PendingQuestionRevisionScoped(taskKey, turnID, ownerClientID string, reques
 }
 
 func TaskLinkCardJSON(link TaskLink) (string, error) {
+	if segments := taskLinkProgressSegments(link); len(segments) > 0 {
+		link.SetExtraValue("progressSegments", fitTaskLinkProgressSegments(link, segments))
+	}
+	return marshalTaskLinkCard(link)
+}
+
+func marshalTaskLinkCard(link TaskLink) (string, error) {
 	link.LinkState = effectiveTaskLinkState(link, time.Now())
 	statusLabel, statusColor := taskLinkStatusTag(link)
 	mode := link.ExtraString("activeTurnMode")
@@ -73,6 +88,46 @@ func TaskLinkCardJSON(link TaskLink) (string, error) {
 	}
 	data, err := json.Marshal(card)
 	return string(data), err
+}
+
+func taskLinkCardRequestBytes(cardJSON string) int {
+	payload, _ := json.Marshal(struct {
+		Content string `json:"content"`
+	}{Content: cardJSON})
+	return len(payload)
+}
+
+func fitTaskLinkProgressSegments(link TaskLink, segments []taskProgressSegment) []taskProgressSegment {
+	segments = append([]taskProgressSegment(nil), segments...)
+	fits := func(candidate []taskProgressSegment) bool {
+		value := link
+		value.SetExtraValue("progressSegments", candidate)
+		card, err := marshalTaskLinkCard(value)
+		return err == nil && taskLinkCardRequestBytes(card) <= feishuCardSafeRequestBytes
+	}
+	for len(segments) > 1 && !fits(segments) {
+		segments = segments[1:]
+	}
+	if len(segments) == 0 || fits(segments) {
+		return segments
+	}
+	runes := []rune(segments[0].Text)
+	best := taskProgressSegment{ID: segments[0].ID, Text: omittedProgressPrefix}
+	low, high := 0, len(runes)
+	for low <= high {
+		keep := low + (high-low)/2
+		candidate := taskProgressSegment{ID: segments[0].ID, Text: omittedProgressPrefix + string(runes[len(runes)-keep:])}
+		if fits([]taskProgressSegment{candidate}) {
+			best = candidate
+			low = keep + 1
+		} else {
+			high = keep - 1
+		}
+	}
+	if !fits([]taskProgressSegment{best}) {
+		return nil
+	}
+	return []taskProgressSegment{best}
 }
 
 func taskLinkCardElements(link TaskLink) []any {
@@ -121,6 +176,9 @@ func taskLinkCardElements(link TaskLink) []any {
 		elements = append(elements, questions...)
 	} else {
 		detail := strings.TrimSpace(link.Detail)
+		if progress := taskProgressText(taskLinkProgressSegments(link)); progress != "" {
+			detail = progress
+		}
 		if detail == "" {
 			detail = taskLinkCardDetail(link)
 		}

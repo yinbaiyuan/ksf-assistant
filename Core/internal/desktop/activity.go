@@ -470,9 +470,10 @@ func (client *ActivityClient) handle(payload []byte) {
 				revision = desktopSnapshotRevision(state)
 			}
 			client.mu.Lock()
-			if owner := client.owners[key]; owner == "" || owner == source {
+			if owner := client.owners[key]; owner == "" {
 				client.states[key] = state
-				client.cachePushedObservation(key, state, source, revision)
+			} else if owner == source && client.cachePushedObservation(key, state, source, revision) {
+				client.states[key] = state
 			}
 			matched := []snapshotWaiter{}
 			waiterKeys := []snapshotKey{{task: key}}

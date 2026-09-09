@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"ksfassistant/core/internal/retrypolicy"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -79,8 +80,14 @@ func (c *ActivityClient) ObserveConversationState(ctx context.Context, id string
 			}
 		}
 		if err == nil {
-			if e.pushes > pushes && e.target.OwnerClientID == target.OwnerClientID {
-				target = e.target
+			if e.target.OwnerClientID == target.OwnerClientID && e.target.State != nil {
+				if order, comparable := compareNumericSnapshotRevisions(target.SnapshotRevision, e.target.SnapshotRevision); comparable {
+					if order <= 0 {
+						target = e.target
+					}
+				} else if e.pushes > pushes {
+					target = e.target
+				}
 			}
 			target.ObservationEpoch = generation
 			e.target = target
@@ -97,12 +104,15 @@ func (c *ActivityClient) ObserveConversationState(ctx context.Context, id string
 		return target, err
 	}
 }
-func (c *ActivityClient) cachePushedObservation(key taskKey, state map[string]any, source, revision string) {
+func (c *ActivityClient) cachePushedObservation(key taskKey, state map[string]any, source, revision string) bool {
 	// Called under c.mu. A source with no established owner is not trusted.
 	if source == "" || c.owners[key] != source {
-		return
+		return false
 	}
 	if e := c.observationCache[key]; e != nil && e.generation == c.connectionGeneration && (e.target.OwnerClientID == source || e.target.OwnerClientID == "") {
+		if order, comparable := compareNumericSnapshotRevisions(revision, e.target.SnapshotRevision); comparable && order <= 0 {
+			return false
+		}
 		e.pushes++
 		e.target.OwnerClientID = source
 		e.target.ThreadID = key.threadID
@@ -110,6 +120,37 @@ func (c *ActivityClient) cachePushedObservation(key taskKey, state map[string]an
 		e.target.SnapshotRevision = revision
 		e.target.SnapshotSourceClientID = source
 	}
+	return true
+}
+
+func compareNumericSnapshotRevisions(candidate, current string) (int, bool) {
+	candidate = strings.TrimSpace(candidate)
+	current = strings.TrimSpace(current)
+	if candidate == "" || current == "" {
+		return 0, false
+	}
+	for _, value := range []string{candidate, current} {
+		for _, character := range value {
+			if character < '0' || character > '9' {
+				return 0, false
+			}
+		}
+	}
+	candidate = strings.TrimLeft(candidate, "0")
+	current = strings.TrimLeft(current, "0")
+	if candidate == "" {
+		candidate = "0"
+	}
+	if current == "" {
+		current = "0"
+	}
+	if len(candidate) < len(current) {
+		return -1, true
+	}
+	if len(candidate) > len(current) {
+		return 1, true
+	}
+	return strings.Compare(candidate, current), true
 }
 func ObservationVersion(t UserInputTarget) string {
 	return fmt.Sprintf("%d:%s:%s", t.ObservationEpoch, t.OwnerClientID, t.SnapshotRevision)
