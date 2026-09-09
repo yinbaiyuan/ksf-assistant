@@ -385,6 +385,17 @@ struct UsagePopoverView: View {
                     .foregroundStyle(.red)
                     .lineLimit(1)
             }
+
+            if let message = viewModel.workspaceTaskCreationErrors[item.id] {
+                Label(message, systemImage: "exclamationmark.circle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+            }
+
+            if item.kind == "workspace", !item.path.isEmpty {
+                workspaceActionFooter(item)
+            }
         }
         .padding(8)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
@@ -778,7 +789,7 @@ struct UsagePopoverView: View {
         guard let selectedTaskID else { return nil }
         for item in viewModel.projectDashboard.projects {
             if let task = item.tasks.first(where: { $0.id == selectedTaskID }) {
-                return TaskDetailContext(task: task, containerName: item.project?.name ?? "KSF 项目", showsKSFRoute: true)
+                return TaskDetailContext(task: task, containerName: item.isUnassigned ? "无项目" : item.project?.name ?? "KSF 项目", showsKSFRoute: true)
             }
         }
         for item in viewModel.workspaceDashboard.workspaces {
@@ -822,6 +833,31 @@ struct UsagePopoverView: View {
             projectLaunchIconControl(item)
             projectRowIconButton(systemName: "doc.text", label: "打开项目记忆") {
                 viewModel.openProjectCard(project)
+            }
+        }
+        .padding(.top, 6)
+        .overlay(alignment: .top) { Divider().opacity(0.55) }
+    }
+
+    private func workspaceActionFooter(_ item: CodexWorkspaceItem) -> some View {
+        HStack(spacing: 7) {
+            projectInlineMetric("累计", value: projectTokenValue(item.usage, keyPath: \.cumulativeTokens))
+            projectInlineMetric("今日", value: projectTokenValue(item.usage, keyPath: \.todayTokens))
+            Spacer(minLength: 2)
+            if viewModel.creatingWorkspaceTaskIDs.contains(item.id) {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.7)
+                    .frame(width: 20, height: 20)
+                    .help("正在新建 Codex 任务")
+                    .accessibilityLabel("正在新建 Codex 任务")
+            } else {
+                projectRowIconButton(systemName: "plus.bubble", label: "在工作区中新建 Codex 任务") {
+                    viewModel.createTask(for: item)
+                }
+            }
+            projectRowIconButton(systemName: "folder", label: "打开工作区文件夹") {
+                viewModel.openWorkspaceDirectory(item)
             }
         }
         .padding(.top, 6)
@@ -1527,8 +1563,15 @@ struct UsagePopoverView: View {
                             .lineLimit(1)
                     }
                     Spacer()
-                    Button(viewModel.isOnboardingComplete ? "更换" : "选择目录") { viewModel.chooseKSFRoot() }
-                        .controlSize(.small)
+                    if viewModel.isOnboardingComplete {
+                        Button("取消", role: .destructive) { viewModel.cancelKSFRoot() }
+                            .controlSize(.small)
+                            .disabled(viewModel.onboardingInProgress)
+                    } else {
+                        Button("选择目录") { viewModel.chooseKSFRoot() }
+                            .controlSize(.small)
+                            .disabled(viewModel.onboardingInProgress)
+                    }
                 }
                 .padding(.vertical, 7)
                 Divider()

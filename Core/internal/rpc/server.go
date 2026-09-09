@@ -264,6 +264,12 @@ func (server *Server) dispatch(ctx context.Context, method string, params json.R
 			return nil, err
 		}
 		return server.service.CreateTask(ctx, input)
+	case "workspace/task/create":
+		var input service.CreateWorkspaceTaskRequest
+		if err := decodeParams(params, &input); err != nil {
+			return nil, err
+		}
+		return server.service.CreateWorkspaceTask(ctx, input)
 	case "task/submit":
 		var input service.SubmitTaskRequest
 		if err := decodeParams(params, &input); err != nil {

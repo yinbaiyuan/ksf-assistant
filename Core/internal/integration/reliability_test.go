@@ -84,3 +84,72 @@ func TestEventRetriesOnlyProvenPreExecutionFailure(t *testing.T) {
 		t.Fatalf("expected one thread and one turn, got %d calls", core.calls.Load())
 	}
 }
+
+func TestNewTaskCreationFailureRepliesWithoutRetrying(t *testing.T) {
+	core := &fakeCorePort{startThread: func(context.Context, string, string) (StartedThread, error) {
+		return StartedThread{}, errors.New("codex unavailable")
+	}}
+	messages := &fakeFeishuPort{}
+	runtime := testRuntime(t, core, messages)
+	event := feishuprotocol.Event{ID: "failed-create", Kind: "message", Payload: []byte(`{"EventID":"failed-create","MessageID":"message","SenderOpenID":"user-1","ChatID":"chat","ChatType":"p2p","MessageType":"text","Text":"hello"}`)}
+	if accepted, err := runtime.AcceptEvent(context.Background(), event); err != nil || !accepted.Accepted {
+		t.Fatal(err)
+	}
+	waitInboxState(t, runtime, event.ID, "completed")
+	if core.calls.Load() != 1 || messages.calls.Load() != 1 {
+		t.Fatalf("unexpected calls: core=%d messages=%d", core.calls.Load(), messages.calls.Load())
+	}
+}
+
+func TestInvalidLaunchContextRepliesWithoutCreatingTask(t *testing.T) {
+	core := &fakeCorePort{workspace: func(context.Context) (string, error) {
+		return "", ErrInvalidThreadLaunchContext
+	}}
+	messages := &fakeFeishuPort{}
+	runtime := testRuntime(t, core, messages)
+	if err := runtime.HandleMessage(context.Background(), InboundMessage{MessageID: "message", SenderOpenID: "user-1", ChatID: "chat", ChatType: "p2p", MessageType: "text", Text: "hello"}); err != nil {
+		t.Fatalf("reported launch context failure must be terminal: %v", err)
+	}
+	if core.calls.Load() != 0 || messages.calls.Load() != 1 {
+		t.Fatalf("unexpected calls: core=%d messages=%d", core.calls.Load(), messages.calls.Load())
+	}
+}
+
+func TestProjectlessMessageStoresCapturedDirectoryWithoutOverridingTurns(t *testing.T) {
+	core := &fakeCorePort{
+		workspace: func(context.Context) (string, error) { return "", nil },
+		startThread: func(context.Context, string, string) (StartedThread, error) {
+			return StartedThread{ThreadID: "projectless-thread", CWD: "/Users/example"}, nil
+		},
+	}
+	runtime := testRuntime(t, core, &fakeFeishuPort{})
+	if err := runtime.HandleMessage(context.Background(), InboundMessage{MessageID: "message", SenderOpenID: "user-1", ChatID: "chat", ChatType: "p2p", MessageType: "text", Text: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if core.threadCWD.Load().(string) != "" || core.turnCWD.Load().(string) != "" {
+		t.Fatalf("projectless task received cwd overrides: thread=%q turn=%q", core.threadCWD.Load(), core.turnCWD.Load())
+	}
+	file, err := runtime.Store().Load()
+	if err != nil || len(file.Links) != 1 {
+		t.Fatalf("load task links: %#v %v", file, err)
+	}
+	link := file.Links[0]
+	if link.ThreadID != "projectless-thread" || link.ProjectName != "" || link.ExtraString("launchScope") != LaunchScopeProjectless || link.ExtraString("workingDirectory") != "/Users/example" {
+		t.Fatalf("unexpected projectless task link: %#v", link)
+	}
+}
+
+func TestKSFMessageKeepsWorkspaceOverride(t *testing.T) {
+	core := &fakeCorePort{}
+	runtime := testRuntime(t, core, &fakeFeishuPort{})
+	if err := runtime.HandleMessage(context.Background(), InboundMessage{MessageID: "message", SenderOpenID: "user-1", ChatID: "chat", ChatType: "p2p", MessageType: "text", Text: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if core.threadCWD.Load().(string) != "/workspace" || core.turnCWD.Load().(string) != "/workspace" {
+		t.Fatalf("KSF task lost cwd overrides: thread=%q turn=%q", core.threadCWD.Load(), core.turnCWD.Load())
+	}
+	file, err := runtime.Store().Load()
+	if err != nil || len(file.Links) != 1 || file.Links[0].ExtraString("launchScope") != LaunchScopeKSF {
+		t.Fatalf("unexpected KSF task link: %#v %v", file, err)
+	}
+}

@@ -4,14 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"ksfassistant/core/internal/capabilitypolicy"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"ksfassistant/core/internal/capabilitypolicy"
 	"ksfassistant/core/internal/corebridge"
 	"ksfassistant/core/internal/desktop"
+	"ksfassistant/core/internal/integration"
 )
 
 type coreCapabilityClient struct {
@@ -29,11 +30,14 @@ func newCoreCapabilityClient(service *Service) *coreCapabilityClient {
 func (client *coreCapabilityClient) Workspace(ctx context.Context) (string, error) {
 	host, err := client.service.hostContextStore.Load()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %v", integration.ErrInvalidThreadLaunchContext, err)
 	}
 	result := host.KSF
-	if result.State != "ready" || result.Root == "" {
-		return "", fmt.Errorf("KSF context is %s", result.State)
+	if result.State == integration.KSFNotConfigured {
+		return "", nil
+	}
+	if result.State != integration.KSFReady || result.Root == "" {
+		return "", fmt.Errorf("%w: KSF context is %s", integration.ErrInvalidThreadLaunchContext, result.State)
 	}
 	return result.Root, nil
 }
@@ -74,9 +78,9 @@ func (client *coreCapabilityClient) PendingInput(threadID string) (corebridge.Pe
 	return value, found
 }
 
-func (client *coreCapabilityClient) StartThread(ctx context.Context, cwd, title string) (string, error) {
+func (client *coreCapabilityClient) StartThread(ctx context.Context, cwd, title string) (integration.StartedThread, error) {
 	result, err := client.control(ctx, corebridge.ControlRequest{Operation: "task.create", RuntimeOwner: "bridge", CWD: cwd, Title: title})
-	return result.ThreadID, err
+	return integration.StartedThread{ThreadID: result.ThreadID, CWD: result.CWD, ProjectID: result.ProjectID}, err
 }
 
 func (client *coreCapabilityClient) StartTurn(ctx context.Context, taskKey, runtimeOwner, threadID, cwd, text string, mode map[string]any) (string, error) {

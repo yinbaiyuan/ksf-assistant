@@ -128,14 +128,14 @@ func (service *Service) privateControl(ctx context.Context, request corebridge.C
 		if service.codex == nil {
 			return corebridge.ControlResult{}, privateipc.NewError(-32051, "Codex App Server unavailable")
 		}
-		threadID, err := service.codex.StartBridgeThread(ctx, request.CWD, request.Title)
-		return corebridge.ControlResult{ThreadID: threadID}, err
+		thread, err := service.codex.StartBridgeThread(ctx, request.CWD, request.Title)
+		return corebridge.ControlResult{ThreadID: thread.ID, CWD: thread.CWD, ProjectID: thread.ProjectID}, err
 	case "turn.continue":
 		cwd := strings.TrimSpace(request.CWD)
-		if cwd == "" {
+		if cwd == "" && !bridgeOwned {
 			cwd = service.controlWorkingDirectory(ctx, request.RuntimeOwner, request.ThreadID)
 		}
-		if cwd == "" {
+		if cwd == "" && !bridgeOwned {
 			return corebridge.ControlResult{}, privateipc.NewError(-32053, "task working directory unavailable")
 		}
 		if bridgeOwned {

@@ -8,6 +8,7 @@ final class CodexWorkspaceModelsTests: XCTestCase {
             kind: "workspace",
             name: "Example",
             tasks: [task("running", .running), task("waiting", .waiting), task("done", .completed)],
+            usage: ProjectUsageSummary(cumulativeTokens: 120, todayTokens: 20, trackingStartedAt: Date(timeIntervalSince1970: 1)),
             runningCount: 1,
             waitingCount: 1,
             totalTaskCount: 3
@@ -16,6 +17,7 @@ final class CodexWorkspaceModelsTests: XCTestCase {
         XCTAssertEqual(workspace.tasks.map(\.threadID), ["running", "waiting", "done"])
         XCTAssertEqual(workspace.activeTaskCount, 2)
         XCTAssertEqual(workspace.totalTaskCount, 3)
+        XCTAssertEqual(workspace.usage?.cumulativeTokens, 120)
     }
 
     func testHomeWorksetIncludesPinnedOrActiveWorkspacesOnly() {

@@ -13,6 +13,7 @@ public struct CodexWorkspaceItem: Equatable, Sendable, Identifiable {
     public let path: String
     public let isPinned: Bool
     public let tasks: [ProjectTaskItem]
+    public let usage: ProjectUsageSummary?
     public let runningCount: Int
     public let waitingCount: Int
     public let totalTaskCount: Int
@@ -26,6 +27,7 @@ public struct CodexWorkspaceItem: Equatable, Sendable, Identifiable {
         path: String = "",
         isPinned: Bool = false,
         tasks: [ProjectTaskItem] = [],
+        usage: ProjectUsageSummary? = nil,
         runningCount: Int = 0,
         waitingCount: Int = 0,
         totalTaskCount: Int = 0,
@@ -38,6 +40,7 @@ public struct CodexWorkspaceItem: Equatable, Sendable, Identifiable {
         self.path = path
         self.isPinned = isPinned
         self.tasks = tasks
+        self.usage = usage
         self.runningCount = runningCount
         self.waitingCount = waitingCount
         self.totalTaskCount = totalTaskCount

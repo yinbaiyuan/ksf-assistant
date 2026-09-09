@@ -19,9 +19,9 @@ func beginEventEffect(ctx context.Context) error {
 
 type eventCorePort struct{ CorePort }
 
-func (port eventCorePort) StartThread(ctx context.Context, cwd, title string) (string, error) {
+func (port eventCorePort) StartThread(ctx context.Context, cwd, title string) (StartedThread, error) {
 	if err := beginEventEffect(ctx); err != nil {
-		return "", err
+		return StartedThread{}, err
 	}
 	return port.CorePort.StartThread(ctx, cwd, title)
 }

@@ -86,6 +86,8 @@ func (s *Status) finalizeInstallation() {
 	s.InstallationTitle = "未安装"
 	s.InstallationAction = "安装到 Codex"
 	blocked := ""
+	skillsUpdate := false
+	componentUpdate := false
 	for _, skill := range s.Skills {
 		for _, detail := range skill.Details {
 			s.InstallationDetails = append(s.InstallationDetails, skill.Name+"/"+detail)
@@ -102,6 +104,15 @@ func (s *Status) finalizeInstallation() {
 	}
 	missing := false
 	for _, p := range s.Problems {
+		switch p {
+		case "skills_manifest_changed", "skills_adapter_changed":
+			skillsUpdate = true
+		case "launcher_update_required", "configuration_changed", "execution_manifest_changed":
+			componentUpdate = true
+		}
+		if strings.HasPrefix(p, "skill_") {
+			skillsUpdate = true
+		}
 		if p == "launcher_missing" || p == "skill_missing" {
 			missing = true
 		}
@@ -141,8 +152,17 @@ func (s *Status) finalizeInstallation() {
 	}
 	if s.Installed {
 		s.InstallationState = "update"
-		s.InstallationTitle = "有更新"
-		s.InstallationAction = "更新技能"
+		switch {
+		case skillsUpdate && componentUpdate:
+			s.InstallationTitle = "技能与组件有更新"
+			s.InstallationAction = "全部更新"
+		case skillsUpdate:
+			s.InstallationTitle = "技能有更新"
+			s.InstallationAction = "更新技能"
+		default:
+			s.InstallationTitle = "组件有更新"
+			s.InstallationAction = "更新组件"
+		}
 	}
 }
 

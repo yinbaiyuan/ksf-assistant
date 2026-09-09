@@ -191,15 +191,26 @@ func (runtime *Runtime) HandleMessage(ctx context.Context, message InboundMessag
 	if !found {
 		workspace, err := runtime.workspace()
 		if err != nil {
+			if errors.Is(err, ErrInvalidThreadLaunchContext) {
+				return runtime.reportTaskCreationFailure(ctx, message.MessageID, cleanupDir)
+			}
 			return err
 		}
 		title := firstMessageTitle(prompt)
-		threadID, err := runtime.core.StartThread(ctx, workspace, title)
+		started, err := runtime.core.StartThread(ctx, workspace, title)
 		if err != nil {
-			return err
+			return runtime.reportTaskCreationFailure(ctx, message.MessageID, cleanupDir)
+		}
+		launchScope := LaunchScopeKSF
+		if strings.TrimSpace(workspace) == "" {
+			launchScope = LaunchScopeProjectless
+		}
+		workingDirectory := strings.TrimSpace(started.CWD)
+		if workingDirectory == "" {
+			workingDirectory = strings.TrimSpace(workspace)
 		}
 		alias := runtime.aliasForOpenID(message.SenderOpenID)
-		link, err = runtime.links.Upsert(threadID, title, "", alias)
+		link, err = runtime.links.Upsert(started.ThreadID, title, "", alias)
 		if err != nil {
 			return err
 		}
@@ -208,13 +219,18 @@ func (runtime *Runtime) HandleMessage(ctx context.Context, message InboundMessag
 			value.RootMessageID = message.MessageID
 			value.MessageIDs = append(value.MessageIDs, message.MessageID)
 			value.SetExtraString("runtimeOwner", "bridge")
-			value.SetExtraString("workingDirectory", workspace)
+			value.SetExtraString("launchScope", launchScope)
+			value.SetExtraString("workingDirectory", workingDirectory)
+			value.SetExtraString("codexProjectId", strings.TrimSpace(started.ProjectID))
 		})
 		if err != nil {
 			return err
 		}
 	}
 	workspace := link.ExtraString("workingDirectory")
+	if link.ExtraString("launchScope") == LaunchScopeProjectless {
+		workspace = ""
+	}
 	if err := beginEventEffect(ctx); err != nil {
 		return err
 	}
@@ -536,6 +552,13 @@ func (runtime *Runtime) workspace() (string, error) {
 	defer cancel()
 	return runtime.core.Workspace(ctx)
 }
+
+func (runtime *Runtime) reportTaskCreationFailure(ctx context.Context, messageID, cleanupDir string) error {
+	_ = runtime.messages.CleanupInbound(ctx, cleanupDir)
+	_, err := runtime.messages.Reply(ctx, messageID, "text", "无法创建 Codex 任务，请打开 KSFAssistant 检查 KSF 配置和 Codex 状态后重试。", replyIdempotencyKey(messageID, "task-creation-failed", 0))
+	return err
+}
+
 func (runtime *Runtime) aliasForOpenID(openID string) string {
 	return runtime.messages.AliasForOpenID(openID)
 }

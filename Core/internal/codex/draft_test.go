@@ -35,7 +35,13 @@ func init() {
 		result := any(map[string]any{})
 		method, _ := request["method"].(string)
 		if method == "thread/start" {
-			result = map[string]any{"thread": map[string]any{"id": "draft-test"}}
+			thread := map[string]any{"id": "draft-test"}
+			if cwd := os.Getenv("KSFA_DRAFT_THREAD_CWD"); cwd != "" {
+				thread["cwd"] = cwd
+			}
+			result = map[string]any{"thread": thread}
+		} else if method == "turn/start" {
+			result = map[string]any{"turn": map[string]any{"id": "turn-test"}}
 		}
 		response := map[string]any{"id": request["id"], "result": result}
 		if method == "thread/inject_items" && os.Getenv("KSFA_DRAFT_RPC_REJECT") == "1" {
@@ -122,5 +128,47 @@ func TestDraftPersistsOnlyContextWithoutStartingTurnAndReleasesWriter(t *testing
 				t.Fatal("Close returned before process exit")
 			}
 		})
+	}
+}
+
+func TestBridgeProjectlessThreadOmitsWorkingDirectoryOverrides(t *testing.T) {
+	t.Setenv("KSFA_DRAFT_RPC_FIXTURE", "1")
+	path := t.TempDir() + "/rpc.jsonl"
+	t.Setenv("KSFA_DRAFT_RPC_LOG", path)
+	t.Setenv("KSFA_DRAFT_THREAD_CWD", "/Users/example")
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &Client{Executable: binary, Timeout: time.Second}
+	defer client.Close()
+	thread, err := client.StartBridgeThread(context.Background(), "", "无项目任务")
+	if err != nil || thread.ID != "draft-test" || thread.CWD != "/Users/example" || thread.ProjectID != "" {
+		t.Fatalf("start thread: %#v %v", thread, err)
+	}
+	if _, err := client.StartBridgeTurn(context.Background(), thread.ID, "", "测试"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var request struct {
+			Method string         `json:"method"`
+			Params map[string]any `json:"params"`
+		}
+		if err := json.Unmarshal([]byte(line), &request); err != nil {
+			t.Fatal(err)
+		}
+		if request.Method != "thread/start" && request.Method != "turn/start" {
+			continue
+		}
+		if _, found := request.Params["cwd"]; found {
+			t.Fatalf("%s sent a cwd override for a projectless task: %#v", request.Method, request.Params)
+		}
+		if _, found := request.Params["projectId"]; found {
+			t.Fatalf("%s assigned a project to a projectless task: %#v", request.Method, request.Params)
+		}
 	}
 }

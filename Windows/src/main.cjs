@@ -21,6 +21,7 @@ let store = null;
 let quitting = false;
 let shutdownStarted = false;
 let dashboardPromise = null;
+let authorizedWorkspacePaths = new Map();
 let userApproval = null;
 const approvalUnavailableReasons = new Set();
 
@@ -154,6 +155,11 @@ async function readDashboard(forceAccountRefresh = false) {
   dashboardPromise = core.request('dashboard/read', dashboardParams(forceAccountRefresh));
   try {
     const snapshot = await dashboardPromise;
+    authorizedWorkspacePaths = new Map(
+      (snapshot.workspaces?.workspaces || [])
+        .filter((item) => item.kind === 'workspace' && typeof item.path === 'string' && path.isAbsolute(item.path))
+        .map((item) => [item.id, path.resolve(item.path)])
+    );
     updateTrayStatus(snapshot);
     return snapshot;
   } catch (error) {
@@ -169,6 +175,18 @@ function showWindowWhenReady() {
     window.webContents.once('did-finish-load', showWindow);
   } else {
     showWindow();
+  }
+}
+
+async function persistKSFRoot(ksfRoot) {
+  const previousRoot = store.get().ksfRoot;
+  await core.request('integration/context/update', { ksfRoot });
+  authorizedWorkspacePaths = new Map();
+  try {
+    return store.update({ ksfRoot });
+  } catch (error) {
+    try { await core.request('integration/context/update', { ksfRoot: previousRoot }); } catch {}
+    throw error;
   }
 }
 
@@ -214,9 +232,11 @@ function registerIPC() {
     if (kind !== 'ksfRoot') throw new Error('不支持的目录类型');
     const result = await dialog.showOpenDialog(window, { properties: ['openDirectory'], title: '选择 KSF 根目录' });
     if (result.canceled || result.filePaths.length !== 1) return null;
-    const settings = store.update({ [kind]: result.filePaths[0] });
-    await core.request('integration/context/update', { ksfRoot: settings.ksfRoot });
-    return settings;
+    return persistKSFRoot(result.filePaths[0]);
+  });
+  ipcMain.handle('directory:clear', async (_event, kind) => {
+    if (kind !== 'ksfRoot') throw new Error('不支持的目录类型');
+    return persistKSFRoot('');
   });
   ipcMain.handle('project:set-pinned', (_event, { projectId, pinned }) => {
     if (typeof projectId !== 'string' || !projectId || /[\u0000-\u001f\u007f]/.test(projectId)) throw new Error('项目标识无效');
@@ -236,6 +256,12 @@ function registerIPC() {
     if (error) throw new Error(error);
     return true;
   });
+  ipcMain.handle('workspace:path-open', async (_event, { workspaceId, targetPath }) => {
+    const safePath = allowedWorkspacePath(workspaceId, targetPath);
+    const error = await shell.openPath(safePath);
+    if (error) throw new Error(error);
+    return true;
+  });
   ipcMain.handle('task:open', async (_event, threadId) => {
     await shell.openExternal(taskURL(threadId));
     return true;
@@ -250,6 +276,17 @@ function registerIPC() {
     } catch (error) {
       return { ...created, submitted: false, warning: '任务已创建，但未确认启动。请在 Codex 中查看并继续。' };
     }
+  });
+  ipcMain.handle('workspace:task-create', async (_event, { workspaceId, path: workspacePath, name }) => {
+    const settings = store.get();
+    const created = await core.request('workspace/task/create', {
+      workspaceId,
+      path: allowedWorkspacePath(workspaceId, workspacePath),
+      name,
+      ksfRoot: settings.ksfRoot,
+    });
+    await shell.openExternal(taskURL(created.threadId));
+    return created;
   });
   ipcMain.handle('project:launch', async (_event, projectId) => {
     const settings = store.get();
@@ -422,6 +459,16 @@ function allowedLocalPath(targetPath) {
   const roots = [settings.ksfRoot].filter(Boolean).map((value) => path.resolve(value));
   if (!roots.some((root) => isPathInside(target, root))) throw new Error('路径不在已授权目录内');
   if (!fs.existsSync(target)) throw new Error('路径不存在');
+  return target;
+}
+
+function allowedWorkspacePath(workspaceId, targetPath) {
+  if (typeof workspaceId !== 'string' || !workspaceId || typeof targetPath !== 'string' || !path.isAbsolute(targetPath) || /[\u0000-\u001f\u007f]/.test(targetPath)) {
+    throw new Error('工作区路径无效');
+  }
+  const target = path.resolve(targetPath);
+  if (authorizedWorkspacePaths.get(workspaceId) !== target) throw new Error('工作区路径未获授权');
+  if (!fs.existsSync(target)) throw new Error('工作区路径不存在');
   return target;
 }
 

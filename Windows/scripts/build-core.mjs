@@ -24,7 +24,7 @@ for (const arch of ['amd64', 'arm64']) {
   const outputDir = path.join(repoRoot, 'dist', 'core', outputArch);
   mkdirSync(outputDir, { recursive: true });
 	const result = spawnSync(go, [
-    'build', '-trimpath', '-ldflags=-s -w',
+    'build', '-buildvcs=false', '-trimpath', '-ldflags=-s -w',
     '-o', path.join(outputDir, 'ksf-assistant-core.exe'),
     './cmd/ksf-assistant-core',
   ], {
@@ -44,7 +44,7 @@ for (const arch of ['amd64', 'arm64']) {
 	const bridgeOutputDir = path.join(repoRoot, 'dist', 'runtime', 'feishu-bridge', outputArch);
 	mkdirSync(bridgeOutputDir, { recursive: true });
 	const bridgeResult = spawnSync(go, [
-		'build', '-trimpath', '-ldflags=-s -w',
+		'build', '-buildvcs=false', '-trimpath', '-ldflags=-s -w',
 		'-o', path.join(bridgeOutputDir, 'ksf-assistant-feishu-bridge.exe'),
 		'./cmd/ksf-assistant-feishu-bridge',
 	], {
@@ -61,7 +61,7 @@ for (const arch of ['amd64', 'arm64']) {
     const componentDir = path.join(repoRoot, 'dist', 'runtime', component, outputArch);
     mkdirSync(componentDir, { recursive: true });
     const componentResult = spawnSync(go, [
-      'build', '-trimpath', '-ldflags=-s -w',
+      'build', '-buildvcs=false', '-trimpath', '-ldflags=-s -w',
       '-o', path.join(componentDir, `ksf-assistant-${component}.exe`),
       `./cmd/ksf-assistant-${component}`,
     ], {

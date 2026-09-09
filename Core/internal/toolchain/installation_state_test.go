@@ -106,3 +106,25 @@ func TestMissingPlusModifiedIsNotRepairable(t *testing.T) {
 		t.Fatal("overwrote user changes")
 	}
 }
+
+func TestUpdateCopyDistinguishesSkillsFromComponents(t *testing.T) {
+	tests := []struct {
+		name     string
+		problems []string
+		title    string
+		action   string
+	}{
+		{name: "launcher", problems: []string{"launcher_update_required"}, title: "组件有更新", action: "更新组件"},
+		{name: "skills", problems: []string{"skills_manifest_changed"}, title: "技能有更新", action: "更新技能"},
+		{name: "both", problems: []string{"launcher_update_required", "skills_adapter_changed"}, title: "技能与组件有更新", action: "全部更新"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			status := Status{Installed: true, Problems: test.problems}
+			status.finalizeInstallation()
+			if status.InstallationTitle != test.title || status.InstallationAction != test.action {
+				t.Fatalf("unexpected update copy: %+v", status)
+			}
+		})
+	}
+}

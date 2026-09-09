@@ -12,18 +12,18 @@ build_core() {
     mkdir -p "$repo_root/dist/core/$output_dir"
     (
         cd "$core_root"
-        GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags="-s -w" \
+        GOOS="$goos" GOARCH="$goarch" go build -buildvcs=false -trimpath -ldflags="-s -w" \
             -o "$repo_root/dist/core/$output_dir/$filename" ./cmd/ksf-assistant-core
         mkdir -p "$repo_root/dist/runtime/feishu-bridge/$output_dir"
         local bridge_filename="ksf-assistant-feishu-bridge"
         [[ "$goos" == "windows" ]] && bridge_filename="ksf-assistant-feishu-bridge.exe"
-        GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags="-s -w" \
+        GOOS="$goos" GOARCH="$goarch" go build -buildvcs=false -trimpath -ldflags="-s -w" \
             -o "$repo_root/dist/runtime/feishu-bridge/$output_dir/$bridge_filename" ./cmd/ksf-assistant-feishu-bridge
         for component in toolchain task; do
             local component_filename="ksf-assistant-$component"
             [[ "$goos" == "windows" ]] && component_filename="$component_filename.exe"
             mkdir -p "$repo_root/dist/runtime/$component/$output_dir"
-            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags="-s -w" \
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -buildvcs=false -trimpath -ldflags="-s -w" \
                 -o "$repo_root/dist/runtime/$component/$output_dir/$component_filename" "./cmd/ksf-assistant-$component"
         done
     )

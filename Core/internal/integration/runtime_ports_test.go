@@ -19,12 +19,21 @@ import (
 type fakeCorePort struct {
 	CorePort
 	calls        atomic.Int32
+	threadCWD    atomic.Value
+	turnCWD      atomic.Value
+	workspace    func(context.Context) (string, error)
+	startThread  func(context.Context, string, string) (StartedThread, error)
 	start        func(context.Context, string) (string, error)
 	answer       func(json.RawMessage) (json.RawMessage, error)
 	interruptErr error
 }
 
-func (port *fakeCorePort) Workspace(context.Context) (string, error) { return "/workspace", nil }
+func (port *fakeCorePort) Workspace(ctx context.Context) (string, error) {
+	if port.workspace != nil {
+		return port.workspace(ctx)
+	}
+	return "/workspace", nil
+}
 func (port *fakeCorePort) ReadThread(ctx context.Context, owner, threadID, turnID string) (map[string]any, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
@@ -33,12 +42,17 @@ func (port *fakeCorePort) ProjectionOwner(threadID, owner string) string { retur
 func (port *fakeCorePort) PendingInput(string) (corebridge.PendingUserInput, bool) {
 	return corebridge.PendingUserInput{}, false
 }
-func (port *fakeCorePort) StartThread(context.Context, string, string) (string, error) {
+func (port *fakeCorePort) StartThread(ctx context.Context, cwd, title string) (StartedThread, error) {
 	port.calls.Add(1)
-	return "thread-1", nil
+	port.threadCWD.Store(cwd)
+	if port.startThread != nil {
+		return port.startThread(ctx, cwd, title)
+	}
+	return StartedThread{ThreadID: "thread-1", CWD: cwd}, nil
 }
 func (port *fakeCorePort) StartTurn(ctx context.Context, key, owner, threadID, cwd, text string, mode map[string]any) (string, error) {
 	port.calls.Add(1)
+	port.turnCWD.Store(cwd)
 	if port.start != nil {
 		return port.start(ctx, text)
 	}

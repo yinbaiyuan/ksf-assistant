@@ -32,6 +32,10 @@ The managed directory is `~/.local/share/ksfassistant/toolchain` on macOS and
 The receipt owns exact checksummed files, including all three launcher entries.
 Unowned names, added files/directories, symlinks, missing files, and user edits
 refuse install/uninstall. Unrelated Skills and all other installed CLIs remain intact.
+
+Launcher compatibility continues to compare exact managed binary hashes. Packaging
+disables Go VCS build metadata so unrelated repository commits cannot manufacture
+launcher updates while real executor changes still require explicit installation.
 Directory inventory matters even when every file hash matches: an extra empty
 `lark-sheets/scripts/__pycache__` directory is an ownership conflict. Do not
 automatically delete it, run recursive cleanup, regenerate the receipt or ignore

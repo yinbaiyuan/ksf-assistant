@@ -64,6 +64,14 @@ test('ordinary Codex workspaces are independent, conditional and KSF-free', () =
   assert.match(app, /data-action="workspace-pin"/);
   assert.match(preload, /setWorkspacePinned/);
   assert.match(main, /workspace:set-pinned/);
+  assert.match(app, /item\.usage\?\.cumulativeTokens/);
+  assert.match(app, /workspace-create-task:/);
+  assert.match(app, /workspace-open-folder:/);
+  assert.match(preload, /createWorkspaceTask/);
+  assert.match(preload, /openWorkspacePath/);
+  assert.match(main, /workspace:task-create/);
+  assert.match(main, /workspace:path-open/);
+  assert.match(main, /authorizedWorkspacePaths/);
   assert.match(app, /project \? `<span class="task-detail">/);
   assert.match(app, /showsKSFRoute \? `<div class="section-header"><h2 class="section-title">KSF 路由/);
   assert.match(app, /state\.dashboard\?\.workspaces\?\.workspaces/);
@@ -141,4 +149,14 @@ test('KSF is an optional integration and preview version is explicit', () => {
   assert.match(app, /KSF 是可选增强能力/);
   assert.match(app, /0\.11\.0-preview\.1/);
   assert.doesNotMatch(app, /请先选择 KSF/);
+});
+
+test('connected KSF library can be cancelled and selected again', () => {
+  assert.match(app, /settings\.ksfRoot \? 'clear-ksf' : 'choose-ksf'/);
+  assert.match(app, /settings\.ksfRoot \? '取消' : '选择目录'/);
+  assert.doesNotMatch(app, /settings\.ksfRoot \? '更换' : '选择目录'/);
+  assert.match(app, /api\.clearDirectory\('ksfRoot'\)/);
+  assert.match(preload, /clearDirectory/);
+  assert.match(main, /directory:clear/);
+  assert.match(main, /persistKSFRoot\(''\)/);
 });

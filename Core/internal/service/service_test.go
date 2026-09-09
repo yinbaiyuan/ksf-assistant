@@ -119,6 +119,18 @@ func TestProjectByIDUsesCatalogAuthority(t *testing.T) {
 	}
 }
 
+func TestWorkspaceTaskNameRequiresVisibleSafeName(t *testing.T) {
+	name, err := workspaceTaskName(" 测试 ")
+	if err != nil || name != "测试 · 新任务" {
+		t.Fatalf("unexpected workspace task name: %q %v", name, err)
+	}
+	for _, value := range []string{"", "bad\nname"} {
+		if _, err := workspaceTaskName(value); err == nil {
+			t.Fatalf("expected %q to be rejected", value)
+		}
+	}
+}
+
 func TestNormalizedHistoryDayCountUsesBoundedDefault(t *testing.T) {
 	values := map[int]int{-1: 30, 0: 30, 1: 1, 30: 30, 90: 90, 91: 90}
 	for input, expected := range values {

@@ -64,6 +64,8 @@ type ControlRequest struct {
 type ControlResult struct {
 	ThreadID     string          `json:"threadId,omitempty"`
 	TurnID       string          `json:"turnId,omitempty"`
+	CWD          string          `json:"cwd,omitempty"`
+	ProjectID    string          `json:"projectId,omitempty"`
 	RequestID    string          `json:"requestId,omitempty"`
 	RequestIDRaw json.RawMessage `json:"requestIdRaw,omitempty"`
 }

@@ -574,3 +574,48 @@ func TestTaskCardRuntimeWriteBlockersSurviveSnapshotComposition(t *testing.T) {
 		}
 	}
 }
+
+func TestCoreCapabilityWorkspaceAllowsMissingKSFConfiguration(t *testing.T) {
+	root := t.TempDir()
+	store := integration.NewHostContextStore(root)
+	if _, err := store.SaveKSFRoot(""); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{hostContextStore: store}
+	workspace, err := newCoreCapabilityClient(service).Workspace(context.Background())
+	if err != nil || workspace != "" {
+		t.Fatalf("not configured KSF must resolve to a projectless workspace: %q %v", workspace, err)
+	}
+}
+
+func TestCoreCapabilityWorkspaceRejectsInvalidKSFConfiguration(t *testing.T) {
+	root := t.TempDir()
+	store := integration.NewHostContextStore(root)
+	if _, err := store.SaveKSFRoot(filepath.Join(root, "missing")); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{hostContextStore: store}
+	_, err := newCoreCapabilityClient(service).Workspace(context.Background())
+	if !errors.Is(err, integration.ErrInvalidThreadLaunchContext) {
+		t.Fatalf("invalid KSF context must remain a visible launch error: %v", err)
+	}
+}
+
+func TestApplyThreadLaunchScopesUsesTaskLinkMetadata(t *testing.T) {
+	root := t.TempDir()
+	runtime := gatewayRuntime(t, root, &gatewayMessagePort{})
+	link, err := runtime.Store().Upsert("projectless", "Task", "", "me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Store().UpdateByID(link.ID, func(value *integration.TaskLink) {
+		value.SetExtraString("launchScope", integration.LaunchScopeProjectless)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{integrationRuntime: runtime}
+	threads := service.applyThreadLaunchScopes([]domain.CodexThread{{ID: "projectless"}, {ID: "ordinary"}})
+	if threads[0].LaunchScope != integration.LaunchScopeProjectless || threads[1].LaunchScope != "" {
+		t.Fatalf("unexpected launch scopes: %#v", threads)
+	}
+}

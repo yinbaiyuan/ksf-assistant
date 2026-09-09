@@ -151,6 +151,7 @@ type CodexThread struct {
 	ID             string           `json:"id"`
 	Name           *string          `json:"name,omitempty"`
 	CWD            string           `json:"cwd"`
+	LaunchScope    string           `json:"-"`
 	ParentThreadID *string          `json:"parentThreadId,omitempty"`
 	AgentNickname  *string          `json:"agentNickname,omitempty"`
 	CreatedAt      int64            `json:"createdAt"`
@@ -382,6 +383,7 @@ type CodexWorkspaceItem struct {
 	Path            string               `json:"path,omitempty"`
 	IsPinned        bool                 `json:"isPinned"`
 	Tasks           []CodexWorkspaceTask `json:"tasks"`
+	Usage           *ProjectUsageSummary `json:"usage,omitempty"`
 	RunningCount    int                  `json:"runningCount"`
 	WaitingCount    int                  `json:"waitingCount"`
 	TotalTaskCount  int                  `json:"totalTaskCount"`

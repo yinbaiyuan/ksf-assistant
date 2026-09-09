@@ -85,6 +85,13 @@ type CreateTaskRequest struct {
 	Purpose   string `json:"purpose"`
 }
 
+type CreateWorkspaceTaskRequest struct {
+	WorkspaceID string `json:"workspaceId"`
+	Path        string `json:"path"`
+	Name        string `json:"name"`
+	KSFRoot     string `json:"ksfRoot,omitempty"`
+}
+
 type TaskLinkRequest struct {
 	ThreadID    string `json:"threadId"`
 	Title       string `json:"title"`
@@ -151,6 +158,7 @@ type Service struct {
 	lastServerHistory       []domain.DailyUsageBucket
 	trackingAt              map[string]time.Time
 	preparedTasks           map[string]preparedTask
+	workspaceUsage          workspaceUsageCache
 }
 
 type projectSourceCache struct {
@@ -161,6 +169,12 @@ type projectSourceCache struct {
 	threadStamp   string
 	refreshedAt   time.Time
 	message       string
+}
+
+type workspaceUsageCache struct {
+	values      map[string]domain.ProjectUsageSummary
+	stamp       string
+	refreshedAt time.Time
 }
 
 func New() *Service {
@@ -239,7 +253,7 @@ func (service *Service) Initialize(ctx context.Context, request InitializeReques
 		"platform": runtime.GOOS,
 		"capabilities": map[string]bool{
 			"usage": true, "localTokens": true, "tokenHistory": true, "tokenHistoryComparison": true, "tokenCostEstimate": true, "projects": true, "taskActivity": true,
-			"taskCreation": true, "projectLaunch": true, "feishuTaskLinks": true, "feishuServiceManagement": true, "feishuCapabilityGovernance": true, "userWriteApproval": true,
+			"taskCreation": true, "workspaceTaskCreation": true, "projectLaunch": true, "feishuTaskLinks": true, "feishuServiceManagement": true, "feishuCapabilityGovernance": true, "userWriteApproval": true,
 		},
 	}
 	if hostContextErr == nil {
@@ -274,6 +288,7 @@ func (service *Service) Dashboard(ctx context.Context, request DashboardRequest)
 	desktopActivity := activity
 	activeHint := activity.RunningCount > 0 || activity.WaitingCount > 0
 	usage, threads, codexProjects := service.readCodexState(ctx, now, activeHint, request.ForceAccountRefresh)
+	threads = service.applyThreadLaunchScopes(threads)
 	plan, _ := pricing.Resolve(request.PricingSelection)
 	if usage.LocalDailyUsage != nil {
 		estimate := pricing.Estimate(plan, usage.LocalDailyUsage.Tokens, usage.LocalDailyUsage.Breakdown)
@@ -291,12 +306,72 @@ func (service *Service) Dashboard(ctx context.Context, request DashboardRequest)
 	projects := service.readProjects(ctx, request, threads, observations, now)
 	service.enrichTaskRuntime(ctx, request.KSFRoot, &projects, desktopActivity, now)
 	workspaces := domain.BuildCodexWorkspaceDashboard(runtime.GOOS, request.KSFRoot, threads, codexProjects, observations, projects, request.PinnedWorkspaceIDs, now)
-	projects = domain.RemoveUnassignedProjectTasks(projects)
+	workspaceUsage := service.readWorkspaceUsage(workspaces.Workspaces, threads, projects, now)
+	for index := range workspaces.Workspaces {
+		if usage, ok := workspaceUsage[workspaces.Workspaces[index].ID]; ok {
+			workspaces.Workspaces[index].Usage = &usage
+		}
+	}
+	projects = domain.RemoveWorkspaceTasksFromUnassignedProjects(projects, workspaces)
 	feishu := normalizedFeishuSnapshot(domain.FeishuSnapshot{Availability: "notConfigured"})
 	if service.hasFeishuRuntime() {
 		feishu = service.readFeishu(ctx, now)
 	}
 	return domain.DashboardSnapshot{Protocol: domain.Protocol, CoreVersion: Version, Platform: runtime.GOOS, ObservedAt: now, Usage: usage, Activity: activity, Projects: projects, Workspaces: workspaces, Feishu: feishu}
+}
+
+func (service *Service) applyThreadLaunchScopes(threads []domain.CodexThread) []domain.CodexThread {
+	if service.integrationRuntime == nil || len(threads) == 0 {
+		return threads
+	}
+	file, err := service.integrationRuntime.Store().Load()
+	if err != nil {
+		return threads
+	}
+	scopes := map[string]string{}
+	for _, link := range file.Links {
+		if scope := strings.TrimSpace(link.ExtraString("launchScope")); scope != "" {
+			scopes[link.ThreadID] = scope
+		}
+	}
+	if len(scopes) == 0 {
+		return threads
+	}
+	result := append([]domain.CodexThread(nil), threads...)
+	for index := range result {
+		result[index].LaunchScope = scopes[result[index].ID]
+	}
+	return result
+}
+
+func (service *Service) readWorkspaceUsage(workspaces []domain.CodexWorkspaceItem, threads []domain.CodexThread, projects domain.ProjectDashboardSnapshot, now time.Time) map[string]domain.ProjectUsageSummary {
+	stampParts := make([]string, 0, len(workspaces)+len(threads))
+	for _, workspace := range workspaces {
+		stampParts = append(stampParts, workspace.ID)
+	}
+	for _, project := range projects.Projects {
+		if project.Kind != "project" || project.Project == nil {
+			continue
+		}
+		for _, task := range project.Tasks {
+			stampParts = append(stampParts, "ksf:"+task.ThreadID)
+		}
+	}
+	stampParts = append(stampParts, "threads:"+threadSetStamp(threads))
+	sort.Strings(stampParts)
+	stamp := strings.Join(stampParts, "\x00")
+
+	service.mu.Lock()
+	cached := service.workspaceUsage
+	service.mu.Unlock()
+	if cached.values != nil && cached.stamp == stamp && now.Sub(cached.refreshedAt) < projectRefreshInterval {
+		return cached.values
+	}
+	values := tokens.ReadWorkspaceUsage(runtime.GOOS, workspaces, threads, projects, now)
+	service.mu.Lock()
+	service.workspaceUsage = workspaceUsageCache{values: values, stamp: stamp, refreshedAt: now}
+	service.mu.Unlock()
+	return values
 }
 
 func (service *Service) hasFeishuRuntime() bool {
@@ -343,6 +418,33 @@ func (service *Service) CreateTask(ctx context.Context, request CreateTaskReques
 	service.preparedTasks[threadID] = preparedTask{cwd: root, prompt: prompt, expiresAt: time.Now().Add(10 * time.Minute)}
 	service.mu.Unlock()
 	return map[string]string{"threadId": threadID, "name": name, "prompt": prompt, "submission": "desktop-prepared-context"}, nil
+}
+
+func (service *Service) CreateWorkspaceTask(ctx context.Context, request CreateWorkspaceTaskRequest) (map[string]string, error) {
+	if service.codex == nil {
+		return nil, errors.New("未找到 Codex，无法新建任务")
+	}
+	if request.WorkspaceID != domain.CodexWorkspaceID(runtime.GOOS, request.Path) {
+		return nil, errors.New("工作区标识与目录不匹配")
+	}
+	workspace, err := canonicalDirectory(request.Path)
+	if err != nil {
+		return nil, errors.New("工作区目录不存在，无法新建任务")
+	}
+	if strings.TrimSpace(request.KSFRoot) != "" {
+		if root, rootErr := canonicalDirectory(request.KSFRoot); rootErr == nil && pathInside(workspace, root) {
+			return nil, errors.New("KSF 路径不能作为普通 Codex 工作区新建任务")
+		}
+	}
+	name, err := workspaceTaskName(request.Name)
+	if err != nil {
+		return nil, err
+	}
+	threadID, err := service.codex.CreateDraftThread(ctx, workspace, name)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{"threadId": threadID, "name": name, "prompt": "", "submission": "desktop-draft"}, nil
 }
 
 func (service *Service) SubmitTask(ctx context.Context, request SubmitTaskRequest) error {
@@ -1465,6 +1567,14 @@ func taskBootstrap(project domain.Project, ksfRoot, purpose string) (string, str
 		runes = runes[:available]
 	}
 	return string(runes) + suffix, prompt, nil
+}
+
+func workspaceTaskName(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || hasControl(value) {
+		return "", errors.New("工作区名称无效，无法新建任务")
+	}
+	return value + " · 新任务", nil
 }
 
 func projectByID(projects []domain.Project, id string) (domain.Project, bool) {

@@ -315,27 +315,42 @@ func (client *Client) CreateDraftThread(ctx context.Context, cwd, name string) (
 	return started.Thread.ID, nil
 }
 
-func (client *Client) StartBridgeThread(ctx context.Context, cwd, name string) (string, error) {
+type BridgeThreadStart struct {
+	ID        string
+	CWD       string
+	ProjectID string
+}
+
+func (client *Client) StartBridgeThread(ctx context.Context, cwd, name string) (BridgeThreadStart, error) {
 	var started struct {
 		Thread struct {
-			ID string `json:"id"`
+			ID        string  `json:"id"`
+			CWD       string  `json:"cwd"`
+			ProjectID *string `json:"projectId"`
 		} `json:"thread"`
 	}
 	params := map[string]any{
-		"cwd": cwd, "approvalPolicy": "never", "sandbox": "danger-full-access",
+		"approvalPolicy": "never", "sandbox": "danger-full-access",
 		"personality": "pragmatic", "serviceName": "codex_feishu_bridge_go", "threadSource": "user", "ephemeral": false,
 		"developerInstructions": "The user is interacting through an authorized Feishu bridge. Never expose credentials or hidden identifiers. Ask for desktop interaction when secret input or approval is required.",
 	}
+	if strings.TrimSpace(cwd) != "" {
+		params["cwd"] = cwd
+	}
 	if err := client.Call(ctx, "thread/start", params, &started); err != nil {
-		return "", err
+		return BridgeThreadStart{}, err
 	}
 	if started.Thread.ID == "" {
-		return "", errors.New("thread/start returned an empty thread id")
+		return BridgeThreadStart{}, errors.New("thread/start returned an empty thread id")
 	}
 	if strings.TrimSpace(name) != "" {
 		_ = client.Call(ctx, "thread/name/set", map[string]any{"threadId": started.Thread.ID, "name": name}, nil)
 	}
-	return started.Thread.ID, nil
+	result := BridgeThreadStart{ID: started.Thread.ID, CWD: started.Thread.CWD}
+	if started.Thread.ProjectID != nil {
+		result.ProjectID = *started.Thread.ProjectID
+	}
+	return result, nil
 }
 
 func (client *Client) StartBridgeTurn(ctx context.Context, threadID, cwd, text string) (string, error) {
@@ -349,8 +364,11 @@ func (client *Client) StartBridgeTurnWithMode(ctx context.Context, threadID, cwd
 		} `json:"turn"`
 	}
 	params := map[string]any{
-		"threadId": threadID, "input": []map[string]any{{"type": "text", "text": text}}, "cwd": cwd,
+		"threadId": threadID, "input": []map[string]any{{"type": "text", "text": text}},
 		"approvalPolicy": "never", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "summary": "auto",
+	}
+	if strings.TrimSpace(cwd) != "" {
+		params["cwd"] = cwd
 	}
 	if collaborationMode != nil {
 		params["collaborationMode"] = collaborationMode

@@ -98,6 +98,9 @@ test('both platform packages include task and toolchain executables plus full Sk
   const build = fs.readFileSync(path.join(repoRoot, 'scripts/build-core.sh'), 'utf8');
   assert.match(build, /darwin-arm64 darwin-x64 windows-x64 windows-arm64/);
   assert.match(build, /for component in toolchain task/);
+  assert.equal((build.match(/go build -buildvcs=false/g) || []).length, 3);
+  const windowsBuild = fs.readFileSync(path.join(repoRoot, 'Windows/scripts/build-core.mjs'), 'utf8');
+  assert.equal((windowsBuild.match(/'build', '-buildvcs=false'/g) || []).length, 3);
 });
 
 test('Windows signing reseals packaged hashes without losing official provenance', async () => {

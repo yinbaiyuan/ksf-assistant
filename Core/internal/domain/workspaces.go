@@ -86,9 +86,13 @@ func BuildCodexWorkspaceDashboard(platform, ksfRoot string, threads []CodexThrea
 			name = thread.Name
 			cwd = thread.CWD
 		}
-		_, workspaceIdentity := normalizedWorkspacePath(cwd, platform)
-		if workspaceWithinRoot(workspaceIdentity, normalizedKSFRoot) {
-			continue
+		if thread.LaunchScope == "projectless" {
+			cwd = ""
+		} else {
+			_, workspaceIdentity := normalizedWorkspacePath(cwd, platform)
+			if workspaceWithinRoot(workspaceIdentity, normalizedKSFRoot) {
+				continue
+			}
 		}
 		aggregate := workspaceForPath(aggregates, cwd, platform, workspaceNames)
 		task := CodexWorkspaceTask{ID: key, ThreadID: observation.ID, TaskKey: PublicTaskKey(observation.ID), HostID: observation.HostID, Name: name, Classification: classification, WaitingReason: WaitingReason(observation), CreatedAt: createdAt, UpdatedAt: updatedAt, WorkspaceID: aggregate.id}
@@ -102,16 +106,22 @@ func BuildCodexWorkspaceDashboard(platform, ksfRoot string, threads []CodexThrea
 
 	for _, thread := range threadsByID {
 		key := "local:" + thread.ID
-		if activeIDs[thread.ID] || ksfOwned[key] || ksfOwnedThreads[thread.ID] || thread.ParentThreadID != nil || nonEmpty(thread.AgentNickname) || thread.Path == nil || strings.TrimSpace(thread.CWD) == "" {
+		projectless := thread.LaunchScope == "projectless"
+		if activeIDs[thread.ID] || ksfOwned[key] || ksfOwnedThreads[thread.ID] || thread.ParentThreadID != nil || nonEmpty(thread.AgentNickname) || thread.Path == nil || (!projectless && strings.TrimSpace(thread.CWD) == "") || !nonEmpty(thread.Name) {
 			continue
 		}
 		createdAt := time.Unix(thread.CreatedAt, 0)
 		updatedAt := time.Unix(thread.UpdatedAt, 0)
-		_, workspaceIdentity := normalizedWorkspacePath(thread.CWD, platform)
-		if _, exists := workspaceNames[workspaceIdentity]; !exists || workspaceWithinRoot(workspaceIdentity, normalizedKSFRoot) {
-			continue
+		cwd := thread.CWD
+		if projectless {
+			cwd = ""
+		} else {
+			_, workspaceIdentity := normalizedWorkspacePath(cwd, platform)
+			if _, exists := workspaceNames[workspaceIdentity]; !exists || workspaceWithinRoot(workspaceIdentity, normalizedKSFRoot) {
+				continue
+			}
 		}
-		aggregate := workspaceForPath(aggregates, thread.CWD, platform, workspaceNames)
+		aggregate := workspaceForPath(aggregates, cwd, platform, workspaceNames)
 		aggregate.tasks = append(aggregate.tasks, CodexWorkspaceTask{ID: key, ThreadID: thread.ID, TaskKey: PublicTaskKey(thread.ID), HostID: "local", Name: thread.Name, Classification: "completed", CreatedAt: createdAt, UpdatedAt: updatedAt, WorkspaceID: aggregate.id})
 		aggregate.totalTaskCount++
 		setLatest(&aggregate.latestActivity, updatedAt)
@@ -147,15 +157,41 @@ func BuildCodexWorkspaceDashboard(platform, ksfRoot string, threads []CodexThrea
 	return CodexWorkspaceSnapshot{Availability: "available", Workspaces: items, ObservedAt: now}
 }
 
-func RemoveUnassignedProjectTasks(snapshot ProjectDashboardSnapshot) ProjectDashboardSnapshot {
+func RemoveWorkspaceTasksFromUnassignedProjects(snapshot ProjectDashboardSnapshot, workspaces CodexWorkspaceSnapshot) ProjectDashboardSnapshot {
+	workspaceTasks := map[string]bool{}
+	for _, workspace := range workspaces.Workspaces {
+		for _, task := range workspace.Tasks {
+			workspaceTasks[task.HostID+":"+task.ThreadID] = true
+		}
+	}
 	items := make([]ProjectDashboardItem, 0, len(snapshot.Projects))
 	for _, item := range snapshot.Projects {
 		if item.Kind != "unassigned" {
+			items = append(items, item)
+			continue
+		}
+		remaining := make([]ProjectTask, 0, len(item.Tasks))
+		for _, task := range item.Tasks {
+			if !workspaceTasks[task.HostID+":"+task.ThreadID] {
+				remaining = append(remaining, task)
+			}
+		}
+		if len(remaining) > 0 {
+			item.Tasks = remaining
 			items = append(items, item)
 		}
 	}
 	snapshot.Projects = items
 	return snapshot
+}
+
+func CodexWorkspaceID(platform, value string) string {
+	_, identity := normalizedWorkspacePath(value, platform)
+	if identity == "" {
+		return OtherCodexTasksWorkspaceID
+	}
+	digest := sha256.Sum256([]byte(identity))
+	return "workspace://" + fmt.Sprintf("%x", digest[:])
 }
 
 func codexWorkspaceNames(platform string, projects []CodexProject) map[string]string {
@@ -184,12 +220,10 @@ func workspaceWithinRoot(identity, root string) bool {
 
 func workspaceForPath(aggregates map[string]*workspaceAggregate, value, platform string, names map[string]string) *workspaceAggregate {
 	displayPath, identity := normalizedWorkspacePath(value, platform)
-	id := OtherCodexTasksWorkspaceID
+	id := CodexWorkspaceID(platform, value)
 	kind := "other"
 	name := "其他任务"
 	if identity != "" {
-		digest := sha256.Sum256([]byte(identity))
-		id = "workspace://" + fmt.Sprintf("%x", digest[:])
 		kind = "workspace"
 		name = workspaceBaseName(displayPath, platform)
 		if projectName := names[identity]; projectName != "" {

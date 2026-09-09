@@ -43,6 +43,8 @@ final class UsageViewModel: ObservableObject {
     @Published private(set) var creatingProjectTaskIDs: Set<String> = []
     @Published private(set) var archivingProjectTaskIDs: Set<String> = []
     @Published private(set) var projectTaskCreationErrors: [String: String] = [:]
+    @Published private(set) var creatingWorkspaceTaskIDs: Set<String> = []
+    @Published private(set) var workspaceTaskCreationErrors: [String: String] = [:]
     @Published private(set) var ksfRootPath: String
     @Published private(set) var isOnboardingComplete: Bool
     @Published private(set) var onboardingInProgress = false
@@ -580,6 +582,11 @@ final class UsageViewModel: ObservableObject {
         NSWorkspace.shared.open(URL(fileURLWithPath: project.projectDirectory, isDirectory: true))
     }
 
+    func openWorkspaceDirectory(_ workspace: CodexWorkspaceItem) {
+        guard !workspace.path.isEmpty else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: workspace.path, isDirectory: true))
+    }
+
     func openEngineering(_ mapping: KSFEngineeringMapping) {
         NSWorkspace.shared.open(URL(fileURLWithPath: mapping.rootPath, isDirectory: true))
     }
@@ -611,6 +618,34 @@ final class UsageViewModel: ObservableObject {
 
     func createArchiveTask(for project: KSFProject) {
         createTask(for: project, purpose: .archiveProject)
+    }
+
+    func createTask(for workspace: CodexWorkspaceItem) {
+        guard workspace.kind == "workspace", !workspace.path.isEmpty,
+              !creatingWorkspaceTaskIDs.contains(workspace.id) else { return }
+        guard coreServiceEnabled else {
+            workspaceTaskCreationErrors[workspace.id] = "核心服务不可用，无法新建任务。"
+            return
+        }
+        workspaceTaskCreationErrors[workspace.id] = nil
+        creatingWorkspaceTaskIDs.insert(workspace.id)
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.creatingWorkspaceTaskIDs.remove(workspace.id) }
+            do {
+                let created = try await self.coreService.createWorkspaceTask(
+                    workspaceID: workspace.id,
+                    path: workspace.path,
+                    name: workspace.name,
+                    ksfRoot: self.ksfRootPath
+                )
+                try self.taskOpener.openTask(id: created.threadId)
+                self.workspaceTaskCreationErrors[workspace.id] = nil
+                await self.refreshSharedDashboard()
+            } catch {
+                self.workspaceTaskCreationErrors[workspace.id] = self.taskCreationErrorMessage(for: error)
+            }
+        }
     }
 
     private func createTask(for project: KSFProject, purpose: ProjectTaskPurpose) {
@@ -681,6 +716,32 @@ final class UsageViewModel: ObservableObject {
         localTokenHistoryError = nil
         onboardingError = nil
         completeOnboarding()
+    }
+
+    func cancelKSFRoot() {
+        guard isOnboardingComplete, !onboardingInProgress else { return }
+        onboardingInProgress = true
+        onboardingError = nil
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                if self.coreServiceEnabled {
+                    try await self.coreService.updateIntegrationContext(ksfRoot: "")
+                }
+                self.ksfRootPath = ""
+                self.defaults.removeObject(forKey: "ksfRootPath")
+                self.defaults.set(false, forKey: "onboardingComplete")
+                self.isOnboardingComplete = false
+                self.projectDashboard = ProjectDashboardSnapshot(availability: .unavailable)
+                self.onboardingError = nil
+                if self.coreServiceEnabled {
+                    await self.refreshSharedDashboard()
+                }
+            } catch {
+                self.onboardingError = error.localizedDescription
+            }
+            self.onboardingInProgress = false
+        }
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
@@ -806,7 +867,9 @@ final class UsageViewModel: ObservableObject {
         feishuTaskLinkActions.insert(task.id)
         feishuTaskLinkErrors.removeValue(forKey: task.id)
         feishuFeedback = nil
-        let projectName = projectDashboard.projects.first(where: { $0.id == task.projectID })?.project?.name
+        let projectItem = projectDashboard.projects.first(where: { $0.id == task.projectID })
+        let projectName = projectItem?.project?.name
+            ?? (projectItem?.isUnassigned == true ? "无项目" : nil)
             ?? workspaceDashboard.workspaces.first(where: { $0.id == task.projectID })?.name
             ?? "其他任务"
         let title = task.name?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? task.name! : "未命名任务"

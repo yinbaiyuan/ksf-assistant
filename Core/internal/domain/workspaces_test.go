@@ -45,8 +45,8 @@ func TestCodexWorkspacesGroupByPathAndExcludeKSFOwnedTasks(t *testing.T) {
 func TestCodexWorkspacesNormalizeWindowsPathsAndKeepFallbackTasks(t *testing.T) {
 	now := time.Unix(100, 0)
 	threads := []CodexThread{
-		{ID: "one", CWD: `C:\\Work\\Alpha`, CreatedAt: 1, UpdatedAt: 2, Path: stringPtr("one")},
-		{ID: "two", CWD: `c:/work/alpha/.`, CreatedAt: 2, UpdatedAt: 3, Path: stringPtr("two")},
+		{ID: "one", Name: stringPtr("One"), CWD: `C:\\Work\\Alpha`, CreatedAt: 1, UpdatedAt: 2, Path: stringPtr("one")},
+		{ID: "two", Name: stringPtr("Two"), CWD: `c:/work/alpha/.`, CreatedAt: 2, UpdatedAt: 3, Path: stringPtr("two")},
 		{ID: "child", CWD: `C:\\Work\\Alpha`, ParentThreadID: stringPtr("one"), CreatedAt: 3, UpdatedAt: 4, Path: stringPtr("child")},
 		{ID: "no-cwd-completed", CreatedAt: 4, UpdatedAt: 5, Path: stringPtr("no-cwd-completed")},
 	}
@@ -88,7 +88,7 @@ func TestCodexWorkspaceTaskLimitKeepsEveryActiveTask(t *testing.T) {
 	}
 	for index := 0; index < 5; index++ {
 		id := "done-" + string(rune('a'+index))
-		threads = append(threads, CodexThread{ID: id, CWD: "/work/alpha", CreatedAt: int64(index), UpdatedAt: int64(50 + index), Path: stringPtr(id)})
+		threads = append(threads, CodexThread{ID: id, Name: stringPtr(id), CWD: "/work/alpha", CreatedAt: int64(index), UpdatedAt: int64(50 + index), Path: stringPtr(id)})
 	}
 
 	codexProjects := []CodexProject{{ID: "alpha", Name: "Alpha", Roots: []CodexProjectRoot{{Path: "/work/alpha"}}}}
@@ -109,7 +109,7 @@ func TestCodexWorkspaceTaskLimitFillsRecentCompletedTasksToTen(t *testing.T) {
 	}
 	for index := 0; index < 12; index++ {
 		id := "done-" + string(rune('a'+index))
-		threads = append(threads, CodexThread{ID: id, CWD: "/work/alpha", CreatedAt: int64(index), UpdatedAt: int64(50 + index), Path: stringPtr(id)})
+		threads = append(threads, CodexThread{ID: id, Name: stringPtr(id), CWD: "/work/alpha", CreatedAt: int64(index), UpdatedAt: int64(50 + index), Path: stringPtr(id)})
 	}
 
 	codexProjects := []CodexProject{{ID: "alpha", Name: "Alpha", Roots: []CodexProjectRoot{{Path: "/work/alpha"}}}}
@@ -122,13 +122,16 @@ func TestCodexWorkspaceTaskLimitFillsRecentCompletedTasksToTen(t *testing.T) {
 	}
 }
 
-func TestRemoveUnassignedProjectTasks(t *testing.T) {
+func TestRemoveWorkspaceTasksFromUnassignedProjects(t *testing.T) {
 	project := Project{ID: "project", Name: "Project"}
-	snapshot := RemoveUnassignedProjectTasks(ProjectDashboardSnapshot{Projects: []ProjectDashboardItem{
-		{ID: UnassignedProjectID, Kind: "unassigned"},
+	snapshot := RemoveWorkspaceTasksFromUnassignedProjects(ProjectDashboardSnapshot{Projects: []ProjectDashboardItem{
+		{ID: UnassignedProjectID, Kind: "unassigned", Tasks: []ProjectTask{
+			{ThreadID: "ordinary", HostID: "local"},
+			{ThreadID: "ksf-root", HostID: "local"},
+		}},
 		{ID: "project", Kind: "project", Project: &project},
-	}})
-	if len(snapshot.Projects) != 1 || snapshot.Projects[0].ID != "project" {
+	}}, CodexWorkspaceSnapshot{Workspaces: []CodexWorkspaceItem{{Tasks: []CodexWorkspaceTask{{ThreadID: "ordinary", HostID: "local"}}}}})
+	if len(snapshot.Projects) != 2 || snapshot.Projects[0].Tasks[0].ThreadID != "ksf-root" || snapshot.Projects[1].ID != "project" {
 		t.Fatalf("unexpected project snapshot: %#v", snapshot)
 	}
 }
@@ -136,7 +139,7 @@ func TestRemoveUnassignedProjectTasks(t *testing.T) {
 func TestCodexWorkspacesExcludeKSFRootAndRemovedCodexProjects(t *testing.T) {
 	now := time.Unix(100, 0)
 	threads := []CodexThread{
-		{ID: "current", CWD: "/work/current", CreatedAt: 1, UpdatedAt: 3, Path: stringPtr("current")},
+		{ID: "current", Name: stringPtr("Current"), CWD: "/work/current", CreatedAt: 1, UpdatedAt: 3, Path: stringPtr("current")},
 		{ID: "ksf", CWD: "/work/KSF/nested", CreatedAt: 1, UpdatedAt: 2, Path: stringPtr("ksf")},
 		{ID: "removed", CWD: "/work/removed", CreatedAt: 1, UpdatedAt: 1, Path: stringPtr("removed")},
 	}
@@ -144,10 +147,18 @@ func TestCodexWorkspacesExcludeKSFRootAndRemovedCodexProjects(t *testing.T) {
 		{ID: "current", Name: "测试", Roots: []CodexProjectRoot{{Path: "/work/current"}}},
 		{ID: "ksf", Name: "KSF", Roots: []CodexProjectRoot{{Path: "/work/KSF"}}},
 	}
+	projects := ProjectDashboardSnapshot{Projects: []ProjectDashboardItem{{
+		ID: UnassignedProjectID, Kind: "unassigned", Tasks: []ProjectTask{{ThreadID: "ksf", HostID: "local", Classification: "running"}},
+	}}}
+	observations := []TaskObservation{{ID: "ksf", HostID: "local", RuntimeStatus: "active"}}
 
-	snapshot := BuildCodexWorkspaceDashboard("darwin", "/work/KSF", threads, codexProjects, nil, ProjectDashboardSnapshot{}, nil, now)
+	snapshot := BuildCodexWorkspaceDashboard("darwin", "/work/KSF", threads, codexProjects, observations, projects, nil, now)
 	if len(snapshot.Workspaces) != 1 || snapshot.Workspaces[0].Name != "测试" || snapshot.Workspaces[0].Tasks[0].ThreadID != "current" {
 		t.Fatalf("unexpected filtered workspaces: %#v", snapshot.Workspaces)
+	}
+	filteredProjects := RemoveWorkspaceTasksFromUnassignedProjects(projects, snapshot)
+	if len(filteredProjects.Projects) != 1 || len(filteredProjects.Projects[0].Tasks) != 1 || filteredProjects.Projects[0].Tasks[0].ThreadID != "ksf" {
+		t.Fatalf("KSF-root unassigned active task disappeared: %#v", filteredProjects.Projects)
 	}
 }
 
@@ -165,5 +176,35 @@ func TestCodexWorkspaceDashboardKeepsCurrentEmptyProjectsAndPinnedState(t *testi
 	second := BuildCodexWorkspaceDashboard("darwin", "", nil, projects, nil, ProjectDashboardSnapshot{}, []string{pinnedID}, now)
 	if len(second.Workspaces) != 2 || second.Workspaces[0].ID != pinnedID || !second.Workspaces[0].IsPinned || second.Workspaces[1].IsPinned {
 		t.Fatalf("pinned workspace must be marked and sorted first: %#v", second.Workspaces)
+	}
+}
+
+func TestCodexWorkspacesKeepActiveUnnamedTasksButExcludeCompletedUnnamedThreads(t *testing.T) {
+	now := time.Unix(100, 0)
+	threads := []CodexThread{
+		{ID: "active", CWD: "/work/alpha", CreatedAt: 1, UpdatedAt: 3, Path: stringPtr("active")},
+		{ID: "unnamed-history", CWD: "/work/alpha", CreatedAt: 1, UpdatedAt: 2, Path: stringPtr("unnamed-history")},
+		{ID: "named-history", Name: stringPtr("Named"), CWD: "/work/alpha", CreatedAt: 1, UpdatedAt: 1, Path: stringPtr("named-history")},
+	}
+	projects := []CodexProject{{ID: "alpha", Name: "Alpha", Roots: []CodexProjectRoot{{Path: "/work/alpha"}}}}
+	observations := []TaskObservation{{ID: "active", HostID: "local", RuntimeStatus: "active"}}
+
+	workspace := BuildCodexWorkspaceDashboard("darwin", "", threads, projects, observations, ProjectDashboardSnapshot{}, nil, now).Workspaces[0]
+	if workspace.TotalTaskCount != 2 || len(workspace.Tasks) != 2 || workspace.Tasks[0].ThreadID != "active" || workspace.Tasks[1].ThreadID != "named-history" {
+		t.Fatalf("completed unnamed thread must not become a workspace task: %#v", workspace)
+	}
+}
+
+func TestProjectlessThreadsUseOtherTasksInsteadOfCapturedHomeDirectory(t *testing.T) {
+	now := time.Unix(100, 0)
+	threads := []CodexThread{
+		{ID: "active", Name: stringPtr("Active"), CWD: "/Users/example", LaunchScope: "projectless", CreatedAt: 1, UpdatedAt: 3, Path: stringPtr("active")},
+		{ID: "completed", Name: stringPtr("Completed"), CWD: "/Users/example", LaunchScope: "projectless", CreatedAt: 1, UpdatedAt: 2, Path: stringPtr("completed")},
+	}
+	observations := []TaskObservation{{ID: "active", HostID: "local", RuntimeStatus: "active"}}
+
+	snapshot := BuildCodexWorkspaceDashboard("darwin", "", threads, nil, observations, ProjectDashboardSnapshot{}, nil, now)
+	if len(snapshot.Workspaces) != 1 || snapshot.Workspaces[0].ID != OtherCodexTasksWorkspaceID || snapshot.Workspaces[0].Kind != "other" || snapshot.Workspaces[0].Path != "" || snapshot.Workspaces[0].TotalTaskCount != 2 {
+		t.Fatalf("projectless threads leaked into the captured cwd workspace: %#v", snapshot.Workspaces)
 	}
 }

@@ -182,6 +182,15 @@ actor CoreServiceProcessClient {
         ])
     }
 
+    func createWorkspaceTask(workspaceID: String, path: String, name: String, ksfRoot: String) async throws -> CoreServiceCreatedTask {
+        try await decode(method: "workspace/task/create", params: [
+            "workspaceId": workspaceID,
+            "path": path,
+            "name": name,
+            "ksfRoot": ksfRoot,
+        ])
+    }
+
     func submitTask(threadID: String, cwd: String, prompt: String) async throws {
         _ = try await requestData(method: "task/submit", params: [
             "threadId": threadID,
@@ -426,6 +435,7 @@ private struct WorkspaceItemDTO: Decodable {
     let path: String?
     let isPinned: Bool?
     let tasks: [WorkspaceTaskDTO]
+    let usage: ProjectUsageSummary?
     let runningCount: Int
     let waitingCount: Int
     let totalTaskCount: Int
@@ -440,6 +450,7 @@ private struct WorkspaceItemDTO: Decodable {
             path: path ?? "",
             isPinned: isPinned ?? false,
             tasks: tasks.map(\.value),
+            usage: usage,
             runningCount: runningCount,
             waitingCount: waitingCount,
             totalTaskCount: totalTaskCount,
