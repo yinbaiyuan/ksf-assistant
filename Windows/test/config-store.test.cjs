@@ -19,6 +19,7 @@ test('settings keep only bounded platform-neutral fields', () => {
     feishuBridgeRoot: 'C:\\legacy-bridge-that-must-be-ignored',
     selectedFeishuTargetAlias: '测试用户',
     pinnedProjectIds: ['a', 'a', '', 'b'],
+    pinnedWorkspaceIds: ['workspace://a', 'workspace://a', '', 'workspace://b'],
     launchAtLogin: true,
     selectedPricingPlanId: 'custom:team',
     customPricingPlans: [{ id: 'custom:team', provider: '团队', model: '模型', regularInputMicroUsdPerMillion: 1, cachedInputMicroUsdPerMillion: 2, outputMicroUsdPerMillion: 3 }],
@@ -27,6 +28,7 @@ test('settings keep only bounded platform-neutral fields', () => {
     ksfRoot: 'C:\\KSF',
     selectedFeishuTargetAlias: '测试用户',
     pinnedProjectIds: ['a', 'b'],
+    pinnedWorkspaceIds: ['workspace://a', 'workspace://b'],
     launchAtLogin: true,
     selectedPricingPlanId: 'custom:team',
     customPricingPlans: [{ id: 'custom:team', provider: '团队', model: '模型', variant: '', displayName: '', regularInputMicroUsdPerMillion: 1, cachedInputMicroUsdPerMillion: 2, outputMicroUsdPerMillion: 3, builtIn: false }],
@@ -63,9 +65,10 @@ test('Astra is the fresh default and both new and existing selections persist', 
 });
 
 test('settings reject control characters', () => {
-  const value = sanitize({ ksfRoot: 'C:\\safe\u0000bad', pinnedProjectIds: ['ok', 'bad\nvalue'] });
+  const value = sanitize({ ksfRoot: 'C:\\safe\u0000bad', pinnedProjectIds: ['ok', 'bad\nvalue'], pinnedWorkspaceIds: ['workspace://ok', 'bad\nvalue'] });
   assert.equal(value.ksfRoot, '');
   assert.deepEqual(value.pinnedProjectIds, ['ok']);
+  assert.deepEqual(value.pinnedWorkspaceIds, ['workspace://ok']);
 });
 
 function settingsFixture(t, value) {

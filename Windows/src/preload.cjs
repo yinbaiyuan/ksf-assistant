@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('ksfAssistant', Object.freeze({
   openExternal: (url) => ipcRenderer.invoke('external:open', url),
   chooseDirectory: (kind) => ipcRenderer.invoke('directory:choose', kind),
   setPinned: (projectId, pinned) => ipcRenderer.invoke('project:set-pinned', { projectId, pinned }),
+  setWorkspacePinned: (workspaceId, pinned) => ipcRenderer.invoke('workspace:set-pinned', { workspaceId, pinned }),
   openPath: (targetPath) => ipcRenderer.invoke('path:open', targetPath),
   openTask: (threadId) => ipcRenderer.invoke('task:open', threadId),
   createTask: (projectId, purpose) => ipcRenderer.invoke('task:create', { projectId, purpose }),

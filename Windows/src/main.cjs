@@ -140,6 +140,7 @@ function dashboardParams(forceAccountRefresh = false) {
   return {
     ksfRoot: settings.ksfRoot,
     pinnedProjectIds: settings.pinnedProjectIds,
+    pinnedWorkspaceIds: settings.pinnedWorkspaceIds,
     forceAccountRefresh,
     pricingSelection: {
       planId: settings.selectedPricingPlanId,
@@ -222,6 +223,12 @@ function registerIPC() {
     const values = new Set(store.get().pinnedProjectIds);
     if (pinned) values.add(projectId); else values.delete(projectId);
     return store.update({ pinnedProjectIds: [...values] });
+  });
+  ipcMain.handle('workspace:set-pinned', (_event, { workspaceId, pinned }) => {
+    if (typeof workspaceId !== 'string' || !workspaceId || /[\u0000-\u001f\u007f]/.test(workspaceId)) throw new Error('工作区标识无效');
+    const values = new Set(store.get().pinnedWorkspaceIds);
+    if (pinned) values.add(workspaceId); else values.delete(workspaceId);
+    return store.update({ pinnedWorkspaceIds: [...values] });
   });
   ipcMain.handle('path:open', async (_event, targetPath) => {
     const safePath = allowedLocalPath(targetPath);

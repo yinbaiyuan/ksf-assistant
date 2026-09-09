@@ -34,7 +34,9 @@ final class UsageViewModel: ObservableObject {
     @Published private(set) var localTokenHistoryError: String?
     @Published private(set) var taskActivity = TaskActivitySnapshot(availability: .loading)
     @Published private(set) var projectDashboard = ProjectDashboardSnapshot()
+    @Published private(set) var workspaceDashboard = CodexWorkspaceSnapshot()
     @Published private(set) var pinnedProjectIDs: Set<String>
+    @Published private(set) var pinnedWorkspaceIDs: Set<String>
     @Published private(set) var isRefreshingProjects = false
     @Published private(set) var projectActionError: String?
     @Published private(set) var taskOpenFailure: ProjectTaskOpenFailure?
@@ -129,6 +131,7 @@ final class UsageViewModel: ObservableObject {
         }
         isOnboardingComplete = defaults.bool(forKey: "onboardingComplete")
         pinnedProjectIDs = Set(defaults.stringArray(forKey: "pinnedProjectIDs") ?? [])
+        pinnedWorkspaceIDs = Set(defaults.stringArray(forKey: "pinnedWorkspaceIDs") ?? [])
         projectUsage = projectUsageStore.load()
         projectListOrder = KSFProjectListOrdering.reconcile(
             previous: defaults.stringArray(forKey: "projectListOrder") ?? [],
@@ -292,6 +295,11 @@ final class UsageViewModel: ObservableObject {
             projectDashboard = ProjectDashboardSnapshot(
                 availability: .unavailable,
                 projects: unavailablePinnedProjects(),
+                observedAt: Date(),
+                message: "核心服务不可用。"
+            )
+            workspaceDashboard = CodexWorkspaceSnapshot(
+                availability: .offline,
                 observedAt: Date(),
                 message: "核心服务不可用。"
             )
@@ -497,6 +505,14 @@ final class UsageViewModel: ObservableObject {
         KSFProjectWorkset.select(from: projectDashboard.projects)
     }
 
+    var homeWorkspaceItems: [CodexWorkspaceItem] {
+        CodexWorkspaceWorkset.select(from: workspaceDashboard.workspaces)
+    }
+
+    var workspaceLibraryItems: [CodexWorkspaceItem] {
+        workspaceDashboard.workspaces
+    }
+
     var projectLibraryItems: [ProjectDashboardItem] {
         let current = Dictionary(uniqueKeysWithValues: projectDashboard.projects.map { ($0.id, $0) })
         var items = projectDashboard.catalog.map { project in
@@ -535,6 +551,18 @@ final class UsageViewModel: ObservableObject {
         }
         defaults.set(Array(pinnedProjectIDs).sorted(), forKey: "pinnedProjectIDs")
         defaults.set(projectListOrder, forKey: "projectListOrder")
+        if coreServiceEnabled {
+            Task { [weak self] in await self?.refreshSharedDashboard() }
+        }
+    }
+
+    func toggleWorkspacePinned(_ id: String) {
+        if pinnedWorkspaceIDs.contains(id) {
+            pinnedWorkspaceIDs.remove(id)
+        } else {
+            pinnedWorkspaceIDs.insert(id)
+        }
+        defaults.set(Array(pinnedWorkspaceIDs).sorted(), forKey: "pinnedWorkspaceIDs")
         if coreServiceEnabled {
             Task { [weak self] in await self?.refreshSharedDashboard() }
         }
@@ -778,7 +806,9 @@ final class UsageViewModel: ObservableObject {
         feishuTaskLinkActions.insert(task.id)
         feishuTaskLinkErrors.removeValue(forKey: task.id)
         feishuFeedback = nil
-        let projectName = projectDashboard.projects.first(where: { $0.id == task.projectID })?.project?.name ?? "未分配项目"
+        let projectName = projectDashboard.projects.first(where: { $0.id == task.projectID })?.project?.name
+            ?? workspaceDashboard.workspaces.first(where: { $0.id == task.projectID })?.name
+            ?? "其他任务"
         let title = task.name?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? task.name! : "未命名任务"
         let target = selectedFeishuTargetAlias
         Task { [weak self] in
@@ -882,6 +912,7 @@ final class UsageViewModel: ObservableObject {
             let dashboard = try await coreService.dashboard(
                 ksfRoot: activeKSFRoot,
                 pinnedProjectIDs: pinnedProjectIDs,
+                pinnedWorkspaceIDs: pinnedWorkspaceIDs,
                 pricingSelection: pricingSelection,
                 forceAccountRefresh: forceAccountRefresh
             )
@@ -898,6 +929,7 @@ final class UsageViewModel: ObservableObject {
             lastErrorMessage = dashboard.rateError
             tokenErrorMessage = dashboard.tokenError
             taskActivity = dashboard.activity
+            workspaceDashboard = dashboard.workspaces
 
             projectUsage = Dictionary(uniqueKeysWithValues: dashboard.projects.projects.compactMap { item in
                 item.usage.map { (item.id, $0) }
@@ -953,6 +985,13 @@ final class UsageViewModel: ObservableObject {
                 projectDashboard = ProjectDashboardSnapshot(
                     availability: .unavailable,
                     projects: unavailablePinnedProjects(),
+                    observedAt: Date(),
+                    message: error.localizedDescription
+                )
+            }
+            if workspaceDashboard.availability == .loading {
+                workspaceDashboard = CodexWorkspaceSnapshot(
+                    availability: .offline,
                     observedAt: Date(),
                     message: error.localizedDescription
                 )

@@ -42,7 +42,7 @@ func init() {
 		result := any(map[string]any{})
 		switch request.Method {
 		case "initialize":
-		case "thread/list":
+		case "thread/list", "project/list":
 			result = map[string]any{"data": []any{}}
 		case "account/rateLimits/read":
 			result = map[string]any{"rateLimits": map[string]any{"limitId": "codex", "primary": map[string]any{"usedPercent": account.UsedPercent}}}

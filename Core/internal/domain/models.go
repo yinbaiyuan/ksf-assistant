@@ -161,6 +161,17 @@ type CodexThread struct {
 	Turns          []map[string]any `json:"turns,omitempty"`
 }
 
+type CodexProjectRoot struct {
+	Path string `json:"path"`
+}
+
+type CodexProject struct {
+	ID       string             `json:"id"`
+	Name     string             `json:"name"`
+	Position int64              `json:"position"`
+	Roots    []CodexProjectRoot `json:"roots"`
+}
+
 type ThreadStatus struct {
 	Type        string   `json:"type"`
 	ActiveFlags []string `json:"activeFlags,omitempty"`
@@ -350,6 +361,41 @@ type ProjectDashboardSnapshot struct {
 	Message      string                 `json:"message,omitempty"`
 }
 
+type CodexWorkspaceTask struct {
+	ID             string            `json:"id"`
+	ThreadID       string            `json:"threadId"`
+	TaskKey        string            `json:"taskKey"`
+	HostID         string            `json:"hostId"`
+	Name           *string           `json:"name,omitempty"`
+	Classification string            `json:"classification"`
+	WaitingReason  *string           `json:"waitingReason,omitempty"`
+	TaskRuntime    *TaskRuntimeState `json:"taskRuntime,omitempty"`
+	CreatedAt      time.Time         `json:"createdAt"`
+	UpdatedAt      time.Time         `json:"updatedAt"`
+	WorkspaceID    string            `json:"workspaceId"`
+}
+
+type CodexWorkspaceItem struct {
+	ID              string               `json:"id"`
+	Kind            string               `json:"kind"`
+	Name            string               `json:"name"`
+	Path            string               `json:"path,omitempty"`
+	IsPinned        bool                 `json:"isPinned"`
+	Tasks           []CodexWorkspaceTask `json:"tasks"`
+	RunningCount    int                  `json:"runningCount"`
+	WaitingCount    int                  `json:"waitingCount"`
+	TotalTaskCount  int                  `json:"totalTaskCount"`
+	HiddenTaskCount int                  `json:"hiddenTaskCount"`
+	LatestActivity  *time.Time           `json:"latestActivity,omitempty"`
+}
+
+type CodexWorkspaceSnapshot struct {
+	Availability string               `json:"availability"`
+	Workspaces   []CodexWorkspaceItem `json:"workspaces"`
+	ObservedAt   time.Time            `json:"observedAt"`
+	Message      string               `json:"message,omitempty"`
+}
+
 type FeishuControls struct {
 	CanSend            bool `json:"canSend"`
 	CanSteer           bool `json:"canSteer"`
@@ -461,5 +507,6 @@ type DashboardSnapshot struct {
 	Usage       UsageSnapshot            `json:"usage"`
 	Activity    TaskActivitySnapshot     `json:"activity"`
 	Projects    ProjectDashboardSnapshot `json:"projects"`
+	Workspaces  CodexWorkspaceSnapshot   `json:"workspaces"`
 	Feishu      FeishuSnapshot           `json:"feishu"`
 }

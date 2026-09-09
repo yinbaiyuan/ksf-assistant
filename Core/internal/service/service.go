@@ -39,6 +39,7 @@ const (
 type DashboardRequest struct {
 	KSFRoot             string                  `json:"ksfRoot"`
 	PinnedProjectIDs    []string                `json:"pinnedProjectIds"`
+	PinnedWorkspaceIDs  []string                `json:"pinnedWorkspaceIds"`
 	PricingSelection    domain.PricingSelection `json:"pricingSelection,omitempty"`
 	ForceAccountRefresh bool                    `json:"forceAccountRefresh,omitempty"`
 }
@@ -133,6 +134,7 @@ type Service struct {
 	accountReadMu           sync.Mutex
 	lastUsage               domain.UsageSnapshot
 	lastThreads             []domain.CodexThread
+	lastCodexProjects       []domain.CodexProject
 	lastRateAttempt         time.Time
 	lastLocalTokenAttempt   time.Time
 	lastThreadAttempt       time.Time
@@ -271,7 +273,7 @@ func (service *Service) Dashboard(ctx context.Context, request DashboardRequest)
 	activity := service.desktop.Snapshot(now)
 	desktopActivity := activity
 	activeHint := activity.RunningCount > 0 || activity.WaitingCount > 0
-	usage, threads := service.readCodex(ctx, now, activeHint, request.ForceAccountRefresh)
+	usage, threads, codexProjects := service.readCodexState(ctx, now, activeHint, request.ForceAccountRefresh)
 	plan, _ := pricing.Resolve(request.PricingSelection)
 	if usage.LocalDailyUsage != nil {
 		estimate := pricing.Estimate(plan, usage.LocalDailyUsage.Tokens, usage.LocalDailyUsage.Breakdown)
@@ -288,11 +290,13 @@ func (service *Service) Dashboard(ctx context.Context, request DashboardRequest)
 	}
 	projects := service.readProjects(ctx, request, threads, observations, now)
 	service.enrichTaskRuntime(ctx, request.KSFRoot, &projects, desktopActivity, now)
+	workspaces := domain.BuildCodexWorkspaceDashboard(runtime.GOOS, request.KSFRoot, threads, codexProjects, observations, projects, request.PinnedWorkspaceIDs, now)
+	projects = domain.RemoveUnassignedProjectTasks(projects)
 	feishu := normalizedFeishuSnapshot(domain.FeishuSnapshot{Availability: "notConfigured"})
 	if service.hasFeishuRuntime() {
 		feishu = service.readFeishu(ctx, now)
 	}
-	return domain.DashboardSnapshot{Protocol: domain.Protocol, CoreVersion: Version, Platform: runtime.GOOS, ObservedAt: now, Usage: usage, Activity: activity, Projects: projects, Feishu: feishu}
+	return domain.DashboardSnapshot{Protocol: domain.Protocol, CoreVersion: Version, Platform: runtime.GOOS, ObservedAt: now, Usage: usage, Activity: activity, Projects: projects, Workspaces: workspaces, Feishu: feishu}
 }
 
 func (service *Service) hasFeishuRuntime() bool {
@@ -1101,11 +1105,17 @@ func (service *Service) Close() {
 }
 
 func (service *Service) readCodex(ctx context.Context, now time.Time, active, forceAccountRefresh bool) (domain.UsageSnapshot, []domain.CodexThread) {
+	usage, threads, _ := service.readCodexState(ctx, now, active, forceAccountRefresh)
+	return usage, threads
+}
+
+func (service *Service) readCodexState(ctx context.Context, now time.Time, active, forceAccountRefresh bool) (domain.UsageSnapshot, []domain.CodexThread, []domain.CodexProject) {
 	service.accountReadMu.Lock()
 	defer service.accountReadMu.Unlock()
 	service.mu.Lock()
 	usage := service.lastUsage
 	threads := service.lastThreads
+	codexProjects := service.lastCodexProjects
 	needRate := forceAccountRefresh || service.lastRateAttempt.IsZero() || now.Sub(service.lastRateAttempt) >= rateRefreshInterval
 	localInterval := idleLocalTokenInterval
 	if active {
@@ -1132,17 +1142,18 @@ func (service *Service) readCodex(ctx context.Context, now time.Time, active, fo
 		service.mu.Lock()
 		service.lastUsage = usage
 		service.mu.Unlock()
-		return usage, nil
+		return usage, nil, nil
 	}
-	var threadErr error
+	var threadErr, projectErr error
 	var wait sync.WaitGroup
 	if needRate {
 		wait.Add(1)
 		go func() { defer wait.Done(); service.refreshAccountUsage(ctx, &usage, now) }()
 	}
 	if needThreads {
-		wait.Add(1)
+		wait.Add(2)
 		go func() { defer wait.Done(); threads, threadErr = service.codex.FetchThreads(ctx) }()
+		go func() { defer wait.Done(); codexProjects, projectErr = service.codex.FetchProjects(ctx) }()
 	}
 	wait.Wait()
 	if needLocal {
@@ -1155,8 +1166,13 @@ func (service *Service) readCodex(ctx context.Context, now time.Time, active, fo
 	} else if threadErr != nil {
 		threads = service.lastThreads
 	}
+	if needThreads && projectErr == nil {
+		service.lastCodexProjects = codexProjects
+	} else if projectErr != nil {
+		codexProjects = service.lastCodexProjects
+	}
 	service.mu.Unlock()
-	return usage, threads
+	return usage, threads, codexProjects
 }
 
 func (service *Service) refreshAccountUsage(ctx context.Context, usage *domain.UsageSnapshot, now time.Time) {

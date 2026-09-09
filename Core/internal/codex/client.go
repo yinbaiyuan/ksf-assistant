@@ -162,7 +162,10 @@ func (client *Client) Start(ctx context.Context) error {
 	client.exitDone = make(chan struct{})
 	go client.readLoop(stdout, command, client.exitDone)
 	client.stateMu.Unlock()
-	_, initErr := client.callStarted(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "ksf_assistant_core", "title": "KSFAssistant Core", "version": "0.11.0-preview.4"}})
+	_, initErr := client.callStarted(ctx, "initialize", map[string]any{
+		"clientInfo":   map[string]any{"name": "ksf_assistant_core", "title": "KSFAssistant Core", "version": "0.11.0-preview.4"},
+		"capabilities": map[string]any{"experimentalApi": true},
+	})
 	if initErr == nil {
 		initErr = client.notify("initialized", map[string]any{})
 	}
@@ -235,6 +238,32 @@ func (client *Client) FetchThreads(ctx context.Context) ([]domain.CodexThread, e
 			NextCursor *string              `json:"nextCursor"`
 		}
 		if err := client.Call(ctx, "thread/list", params, &page); err != nil {
+			return nil, err
+		}
+		result = append(result, page.Data...)
+		cursor = page.NextCursor
+		if cursor == nil || *cursor == "" {
+			break
+		}
+	}
+	return result, nil
+}
+
+func (client *Client) FetchProjects(ctx context.Context) ([]domain.CodexProject, error) {
+	result := []domain.CodexProject{}
+	var cursor *string
+	for len(result) < 10000 {
+		params := map[string]any{
+			"limit": 100, "sortKey": "position", "sortDirection": "asc",
+		}
+		if cursor != nil {
+			params["cursor"] = *cursor
+		}
+		var page struct {
+			Data       []domain.CodexProject `json:"data"`
+			NextCursor *string               `json:"nextCursor"`
+		}
+		if err := client.Call(ctx, "project/list", params, &page); err != nil {
 			return nil, err
 		}
 		result = append(result, page.Data...)

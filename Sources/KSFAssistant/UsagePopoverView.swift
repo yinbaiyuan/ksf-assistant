@@ -7,6 +7,7 @@ struct UsagePopoverView: View {
     var refreshOnAppear = true
     @State private var page: Page = .home
     @State private var showAllProjects = false
+    @State private var showAllWorkspaces = false
     @State private var selectedTaskID: String?
     @State private var selectedLocalHistoryDate: String?
     @State private var editingPricingPlanID: String?
@@ -34,6 +35,8 @@ struct UsagePopoverView: View {
                 tokenHistoryPage
             case .projectLibrary:
                 projectLibraryPage
+            case .workspaceLibrary:
+                workspaceLibraryPage
             case .taskDetail:
                 taskDetailPage
             case .settings:
@@ -50,6 +53,7 @@ struct UsagePopoverView: View {
         .onChange(of: viewModel.popoverPresentationID) { _ in
             page = .home
             showAllProjects = false
+            showAllWorkspaces = false
             selectedTaskID = nil
             selectedLocalHistoryDate = nil
             pendingFeishuAction = nil
@@ -84,6 +88,14 @@ struct UsagePopoverView: View {
                 projectWorksetList
                 if let actionError = viewModel.projectActionError {
                     compactStatus(actionError, color: .red, symbol: "exclamationmark.circle.fill")
+                }
+            }
+
+            if !viewModel.workspaceLibraryItems.isEmpty {
+                Divider()
+                workspaceSectionHeader
+                if !viewModel.homeWorkspaceItems.isEmpty {
+                    workspaceWorksetList
                 }
             }
         }
@@ -131,6 +143,42 @@ struct UsagePopoverView: View {
         }
     }
 
+    private var workspaceSectionHeader: some View {
+        HStack(spacing: 6) {
+            Text("Codex 工作区")
+                .font(.subheadline.weight(.semibold))
+            Text("\(viewModel.workspaceLibraryItems.count)")
+                .font(.caption2)
+                .monospacedDigit()
+                .foregroundStyle(.tertiary)
+            Spacer()
+            headerIconButton(systemName: "square.grid.2x2", label: "Codex 工作区列表") {
+                page = .workspaceLibrary
+            }
+        }
+    }
+
+    private var workspaceWorksetList: some View {
+        let items = viewModel.homeWorkspaceItems
+        let visibleItems = showAllWorkspaces ? items : Array(items.prefix(4))
+        return VStack(spacing: 5) {
+            ForEach(visibleItems) { item in
+                workspaceContainer(item, showsHistoryNotice: false)
+            }
+            if items.count > 4 {
+                if showAllWorkspaces {
+                    projectListDisclosure(title: "收起", symbol: "chevron.up") {
+                        showAllWorkspaces = false
+                    }
+                } else {
+                    projectListDisclosure(title: "更多 \(items.count - 4) 个工作区", symbol: "chevron.down") {
+                        showAllWorkspaces = true
+                    }
+                }
+            }
+        }
+    }
+
     @ViewBuilder
     private var projectWorksetList: some View {
         let items = viewModel.homeProjectItems
@@ -146,7 +194,7 @@ struct UsagePopoverView: View {
             emptyState("暂无当前项目", detail: "这里仅显示已固定项目，以及有运行中或等待任务的项目。")
         } else {
             let visibleItems = showAllProjects ? items : Array(items.prefix(4))
-            VStack(spacing: 6) {
+            VStack(spacing: 5) {
                 ForEach(visibleItems) { item in
                     projectContainer(item)
                 }
@@ -183,7 +231,7 @@ struct UsagePopoverView: View {
     @ViewBuilder
     private func projectContainer(_ item: ProjectDashboardItem) -> some View {
         if item.isUnassigned {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 7) {
                     Image(systemName: "folder.badge.questionmark")
                         .font(.system(size: 11, weight: .medium))
@@ -203,7 +251,7 @@ struct UsagePopoverView: View {
                         }
                     }
                 }
-                .padding(.vertical, 1)
+                .padding(.vertical, 0)
 
                 if let failure = viewModel.taskOpenFailure, failure.projectID == item.id {
                     Label(failure.message, systemImage: "exclamationmark.circle.fill")
@@ -217,7 +265,7 @@ struct UsagePopoverView: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel(projectAccessibilityLabel(item))
         } else if let project = item.project {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 7) {
                     Text(project.name)
                         .font(.subheadline.weight(.semibold))
@@ -236,13 +284,13 @@ struct UsagePopoverView: View {
                 if !item.tasks.isEmpty {
                     VStack(spacing: 0) {
                         ForEach(Array(item.tasks.enumerated()), id: \.element.id) { index, task in
-                            projectTaskRow(task)
+                            projectTaskRow(task, showsKSFRoute: true)
                             if index < item.tasks.count - 1 {
                                 Divider().opacity(0.45).padding(.leading, 16)
                             }
                         }
                     }
-                    .padding(.vertical, 1)
+                    .padding(.vertical, 0)
                 }
 
                 if let failure = viewModel.taskOpenFailure, failure.projectID == item.id {
@@ -289,11 +337,66 @@ struct UsagePopoverView: View {
         }
     }
 
-    private func projectTaskRow(_ task: ProjectTaskItem) -> some View {
+    private func workspaceContainer(_ item: CodexWorkspaceItem, showsHistoryNotice: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 7) {
+                Image(systemName: item.kind == "other" ? "tray.full" : "folder")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Text(item.name)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                workspaceTaskStatus(item)
+                projectRowIconButton(
+                    systemName: item.isPinned ? "pin.fill" : "pin",
+                    label: item.isPinned ? "取消固定" : "固定工作区",
+                    tint: .secondary
+                ) {
+                    viewModel.toggleWorkspacePinned(item.id)
+                }
+            }
+            if !item.path.isEmpty {
+                Text(item.path)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            VStack(spacing: 0) {
+                ForEach(Array(item.tasks.enumerated()), id: \.element.id) { index, task in
+                    projectTaskRow(task, showsKSFRoute: false)
+                    if index < item.tasks.count - 1 {
+                        Divider().opacity(0.45).padding(.leading, 16)
+                    }
+                }
+            }
+            .padding(.vertical, 0)
+
+            if showsHistoryNotice, item.hiddenTaskCount > 0 {
+                Text("另有 \(item.hiddenTaskCount) 个较早任务未显示")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            if let failure = viewModel.taskOpenFailure, failure.projectID == item.id {
+                Label(failure.message, systemImage: "exclamationmark.circle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+            }
+        }
+        .padding(8)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(item.name)，\(item.runningCount) 个任务运行中，\(item.waitingCount) 个任务等待处理")
+    }
+
+    private func projectTaskRow(_ task: ProjectTaskItem, showsKSFRoute: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .top, spacing: 5) {
                 Button { viewModel.openTask(task) } label: {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 5) {
                             Image(systemName: taskStatusSymbol(task))
                                 .font(.system(size: 9, weight: .semibold))
@@ -310,19 +413,21 @@ struct UsagePopoverView: View {
                             )
                         }
                         .frame(height: 20, alignment: .center)
-                        if let route = task.route, task.taskRuntime == nil || task.taskRuntime?.routeFreshness == "current" {
-                            taskRouteSummaryLine(route)
-                            taskAbilitySummaryLine(route)
-                        } else {
-                            Label("未绑定 KSF 路由", systemImage: "link.badge.plus")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
-                                .padding(.leading, 16)
+                        if showsKSFRoute {
+                            if let route = task.route, task.taskRuntime == nil || task.taskRuntime?.routeFreshness == "current" {
+                                taskRouteSummaryLine(route)
+                                taskAbilitySummaryLine(route)
+                            } else {
+                                Label("未绑定 KSF 路由", systemImage: "link.badge.plus")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                                    .padding(.leading, 16)
+                            }
+                            Text(task.taskRuntime?.reportLabel ?? "暂无可用的 Agent 上报")
+                                .font(.caption2).foregroundStyle(.secondary)
+                                .lineLimit(1).padding(.leading, 16)
                         }
-                        Text(task.taskRuntime?.reportLabel ?? "暂无可用的 Agent 上报")
-                            .font(.caption2).foregroundStyle(.secondary)
-                            .lineLimit(1).padding(.leading, 16)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
@@ -356,7 +461,7 @@ struct UsagePopoverView: View {
                     .accessibilityLabel("飞书连接失败：\(error)")
             }
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 4)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(taskAccessibilityLabel(task))
     }
@@ -531,7 +636,7 @@ struct UsagePopoverView: View {
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(taskStatusColor(context.task))
                     }
-                    Label(context.projectName, systemImage: "folder")
+                    Label(context.containerName, systemImage: "folder")
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -540,27 +645,29 @@ struct UsagePopoverView: View {
                 .padding(10)
                 .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
 
-                VStack(alignment: .leading, spacing: 9) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "point.3.connected.trianglepath.dotted")
-                            .foregroundStyle(Color.indigo)
-                        Text("KSF 路由")
-                            .foregroundStyle(.primary)
+                if context.showsKSFRoute {
+                    VStack(alignment: .leading, spacing: 9) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "point.3.connected.trianglepath.dotted")
+                                .foregroundStyle(Color.indigo)
+                            Text("KSF 路由")
+                                .foregroundStyle(.primary)
+                        }
+                        .font(.caption.weight(.semibold))
+                        Text(context.task.taskRuntime?.routeLabel ?? (context.task.route == nil ? "尚无 KSF 已验证来源" : "KSF 投影 · 时效未知"))
+                            .font(.caption2).foregroundStyle(.secondary)
+                        if let route = context.task.route, context.task.taskRuntime == nil || context.task.taskRuntime?.routeFreshness == "current" {
+                            taskRouteDetails(route)
+                        } else {
+                            Text("该任务尚未绑定 KSF 路由。")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+                        }
                     }
-                    .font(.caption.weight(.semibold))
-                    Text(context.task.taskRuntime?.routeLabel ?? (context.task.route == nil ? "尚无 KSF 已验证来源" : "KSF 投影 · 时效未知"))
-                        .font(.caption2).foregroundStyle(.secondary)
-                    if let route = context.task.route, context.task.taskRuntime == nil || context.task.taskRuntime?.routeFreshness == "current" {
-                        taskRouteDetails(route)
-                    } else {
-                        Text("该任务尚未绑定 KSF 路由。")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
-                    }
+                    .padding(10)
+                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
                 }
-                .padding(10)
-                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
 
                 taskDetailActions(context.task)
 
@@ -667,14 +774,25 @@ struct UsagePopoverView: View {
         .padding(.top, 1)
     }
 
-    private var selectedTaskContext: (task: ProjectTaskItem, projectName: String)? {
+    private var selectedTaskContext: TaskDetailContext? {
         guard let selectedTaskID else { return nil }
         for item in viewModel.projectDashboard.projects {
             if let task = item.tasks.first(where: { $0.id == selectedTaskID }) {
-                return (task, item.project?.name ?? "无项目")
+                return TaskDetailContext(task: task, containerName: item.project?.name ?? "KSF 项目", showsKSFRoute: true)
+            }
+        }
+        for item in viewModel.workspaceDashboard.workspaces {
+            if let task = item.tasks.first(where: { $0.id == selectedTaskID }) {
+                return TaskDetailContext(task: task, containerName: item.name, showsKSFRoute: false)
             }
         }
         return nil
+    }
+
+    private struct TaskDetailContext {
+        let task: ProjectTaskItem
+        let containerName: String
+        let showsKSFRoute: Bool
     }
 
     private func projectInlineMetric(_ label: String, value: String) -> some View {
@@ -706,7 +824,7 @@ struct UsagePopoverView: View {
                 viewModel.openProjectCard(project)
             }
         }
-        .padding(.top, 7)
+        .padding(.top, 6)
         .overlay(alignment: .top) { Divider().opacity(0.55) }
     }
 
@@ -837,6 +955,20 @@ struct UsagePopoverView: View {
                 if item.waitingCount > 0 {
                     projectTaskCount("\(item.waitingCount)", systemImage: "person.fill.questionmark", color: .orange)
                 }
+            }
+        }
+        .monospacedDigit()
+    }
+
+    private func workspaceTaskStatus(_ item: CodexWorkspaceItem) -> some View {
+        HStack(spacing: 5) {
+            projectTaskCount(
+                "\(item.runningCount)",
+                systemImage: "play.fill",
+                color: item.runningCount > 0 ? .blue : .secondary
+            )
+            if item.waitingCount > 0 {
+                projectTaskCount("\(item.waitingCount)", systemImage: "person.fill.questionmark", color: .orange)
             }
         }
         .monospacedDigit()
@@ -1305,6 +1437,21 @@ struct UsagePopoverView: View {
 
             if let actionError = viewModel.projectActionError {
                 compactStatus(actionError, color: .red, symbol: "exclamationmark.circle.fill")
+            }
+        }
+    }
+
+    private var workspaceLibraryPage: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            secondaryHeader(title: "Codex 工作区", backLabel: "返回主页") { page = .home }
+            if viewModel.workspaceLibraryItems.isEmpty {
+                emptyState("没有可用工作区", detail: "当前没有可展示的普通 Codex 工作区。")
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(viewModel.workspaceLibraryItems) { item in
+                        workspaceContainer(item, showsHistoryNotice: true)
+                    }
+                }
             }
         }
     }
@@ -2451,6 +2598,7 @@ struct UsagePopoverView: View {
         case home
         case tokenHistory
         case projectLibrary
+        case workspaceLibrary
         case taskDetail
         case settings
         case pricing

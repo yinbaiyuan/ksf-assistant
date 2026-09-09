@@ -41,6 +41,7 @@ struct CoreServiceDashboard {
     let tokenError: String?
     let activity: TaskActivitySnapshot
     let projects: ProjectDashboardSnapshot
+    let workspaces: CodexWorkspaceSnapshot
     let feishu: FeishuServiceSnapshot
     let feishuLinks: [FeishuTaskLinkSnapshot]
 }
@@ -136,12 +137,14 @@ actor CoreServiceProcessClient {
     func dashboard(
         ksfRoot: String,
         pinnedProjectIDs: Set<String>,
+        pinnedWorkspaceIDs: Set<String>,
         pricingSelection: PricingSelection,
         forceAccountRefresh: Bool = false
     ) async throws -> CoreServiceDashboard {
         let data = try await requestData(method: "dashboard/read", params: [
             "ksfRoot": ksfRoot,
             "pinnedProjectIds": Array(pinnedProjectIDs).sorted(),
+            "pinnedWorkspaceIds": Array(pinnedWorkspaceIDs).sorted(),
             "pricingSelection": Self.pricingSelectionObject(pricingSelection),
             "forceAccountRefresh": forceAccountRefresh,
         ])
@@ -381,6 +384,7 @@ private struct DashboardDTO: Decodable {
     let usage: UsageDTO
     let activity: ActivityDTO
     let projects: ProjectsDTO
+    let workspaces: WorkspacesDTO?
     let feishu: FeishuDTO
 
     var value: CoreServiceDashboard {
@@ -392,9 +396,99 @@ private struct DashboardDTO: Decodable {
             tokenError: usage.tokenError,
             activity: activity.snapshot,
             projects: projects.snapshot,
+            workspaces: workspaces?.snapshot ?? CodexWorkspaceSnapshot(availability: .available),
             feishu: feishu.snapshot,
             feishuLinks: feishu.links ?? []
         )
+    }
+}
+
+private struct WorkspacesDTO: Decodable {
+    let availability: String
+    let workspaces: [WorkspaceItemDTO]
+    let observedAt: Date
+    let message: String?
+
+    var snapshot: CodexWorkspaceSnapshot {
+        CodexWorkspaceSnapshot(
+            availability: CodexWorkspaceAvailability(rawValue: availability) ?? .offline,
+            workspaces: workspaces.map(\.value),
+            observedAt: observedAt,
+            message: message
+        )
+    }
+}
+
+private struct WorkspaceItemDTO: Decodable {
+    let id: String
+    let kind: String
+    let name: String
+    let path: String?
+    let isPinned: Bool?
+    let tasks: [WorkspaceTaskDTO]
+    let runningCount: Int
+    let waitingCount: Int
+    let totalTaskCount: Int
+    let hiddenTaskCount: Int
+    let latestActivity: Date?
+
+    var value: CodexWorkspaceItem {
+        CodexWorkspaceItem(
+            id: id,
+            kind: kind,
+            name: name,
+            path: path ?? "",
+            isPinned: isPinned ?? false,
+            tasks: tasks.map(\.value),
+            runningCount: runningCount,
+            waitingCount: waitingCount,
+            totalTaskCount: totalTaskCount,
+            hiddenTaskCount: hiddenTaskCount,
+            latestActivity: latestActivity
+        )
+    }
+}
+
+private struct WorkspaceTaskDTO: Decodable {
+    let threadId: String
+    let hostId: String
+    let name: String?
+    let classification: String
+    let waitingReason: String?
+    let taskRuntime: ProjectTaskRuntime?
+    let createdAt: Date
+    let workspaceId: String
+
+    var value: ProjectTaskItem {
+        ProjectTaskItem(
+            threadID: threadId,
+            hostID: hostId,
+            name: name,
+            classification: classificationValue,
+            waitingReason: waitingReasonValue,
+            taskRuntime: taskRuntime,
+            createdAt: createdAt,
+            projectID: workspaceId
+        )
+    }
+
+    private var classificationValue: TaskActivityClassifier.Classification {
+        switch classification {
+        case "waiting": return .waiting
+        case "running": return .running
+        case "completed": return .completed
+        default: return .ignored
+        }
+    }
+
+    private var waitingReasonValue: ProjectTaskWaitingReason? {
+        switch waitingReason {
+        case "approval": return .approval
+        case "planConfirmation": return .planConfirmation
+        case "userInput": return .userInput
+        case "actionRequired": return .actionRequired
+        default: return nil
+        }
     }
 }
 

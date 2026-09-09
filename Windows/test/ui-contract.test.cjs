@@ -56,6 +56,19 @@ test('project workset and dynamic panel height remain explicit', () => {
   assert.match(main, /isLoadingMainFrame\(\)/);
 });
 
+test('ordinary Codex workspaces are independent, conditional and KSF-free', () => {
+  assert.match(app, /function selectHomeWorkspaces/);
+  assert.match(app, /workspaceLibrary\.length \? `<div class="section-header"><h2 class="section-title">Codex 工作区/);
+  assert.match(app, /workspaces\.map\(\(item\) => renderWorkspaceCard\(item\)\)/);
+  assert.match(app, /return items\.filter\(\(item\) => item\.isPinned \|\| item\.runningCount > 0 \|\| item\.waitingCount > 0\)/);
+  assert.match(app, /data-action="workspace-pin"/);
+  assert.match(preload, /setWorkspacePinned/);
+  assert.match(main, /workspace:set-pinned/);
+  assert.match(app, /project \? `<span class="task-detail">/);
+  assert.match(app, /showsKSFRoute \? `<div class="section-header"><h2 class="section-title">KSF 路由/);
+  assert.match(app, /state\.dashboard\?\.workspaces\?\.workspaces/);
+});
+
 test('Token hierarchy matches the six-cell shared product contract', () => {
   const historyPage = app.slice(
     app.indexOf('function renderHistoryPage()'),

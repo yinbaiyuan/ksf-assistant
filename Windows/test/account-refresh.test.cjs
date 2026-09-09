@@ -15,7 +15,7 @@ test('main preserves the tray during forced refresh and clears it on RPC failure
   let failRequest;
   const context = vm.createContext({
     dashboardPromise: null,
-    store: { get: () => ({ pinnedProjectIds: [] }) },
+    store: { get: () => ({ pinnedProjectIds: [], pinnedWorkspaceIds: [] }) },
     core: { request: (method, params) => { calls.push([method, params.forceAccountRefresh]); return new Promise((_resolve, reject) => { failRequest = reject; }); } },
     updateTrayStatus: (snapshot) => tray.push(snapshot),
   });

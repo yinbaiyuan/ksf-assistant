@@ -144,9 +144,14 @@ button { color: inherit; }
 .project-stack { display: grid; gap: 9px; }
 .project-card { padding: 11px 11px 9px; }
 .project-card-head { display: flex; align-items: center; min-height: 28px; gap: 8px; }
+.workspace-symbol { display: inline-flex; width: 16px; color: var(--text-secondary); }
+.workspace-symbol svg { width: 16px; height: 16px; }
+.workspace-path { margin: -1px 0 4px 24px; color: var(--text-tertiary); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.workspace-history { margin-top: 5px; color: var(--text-tertiary); font-size: 10px; }
 .project-name { flex: 1; min-width: 0; font-size: 15px; font-weight: 670; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .activity-count { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-weight: 650; font-variant-numeric: tabular-nums; }
 .activity-count svg { width: 13px; height: 13px; fill: currentColor; stroke: none; }
+.activity-count.waiting-count { color: var(--warning); }
 .task-list { margin-top: 5px; }
 .task-row { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 7px; min-height: 34px; padding: 4px 0; }
 .task-row + .task-row { border-top: 1px solid var(--divider); }

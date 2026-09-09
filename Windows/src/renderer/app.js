@@ -81,7 +81,6 @@ function header(title, extraActions = '') {
     ${secondary ? buttonIcon('back', 'back', '返回') : ''}
     <h1 class="app-title">${escapeHTML(title)}${accountLoading ? '<span class="account-spinner" role="status" aria-label="正在读取 Codex 用量"></span>' : ''}</h1>
     <div class="header-actions">${extraActions}
-      ${state.page === 'home' ? buttonIcon('projects', 'grid', '项目列表') : ''}
       ${state.page === 'home' ? buttonIcon('settings', 'settings', '设置') : ''}
       ${buttonIcon('refresh', 'refresh', '刷新')}
     </div>
@@ -95,6 +94,7 @@ function render() {
     return;
   }
   if (state.page === 'projects') root.innerHTML = renderProjectsPage();
+  else if (state.page === 'workspaces') root.innerHTML = renderWorkspacesPage();
   else if (state.page === 'settings') root.innerHTML = renderSettingsPage();
   else if (state.page === 'project') root.innerHTML = renderProjectPage();
   else if (state.page === 'task') root.innerHTML = renderTaskPage();
@@ -113,11 +113,14 @@ function renderHome() {
   const remaining = headlineRemaining(bucket);
   const window = shortestWindow(bucket);
   const projects = selectHomeProjects(dashboard.projects.projects);
+  const workspaceLibrary = dashboard.workspaces?.workspaces || [];
+  const workspaces = selectHomeWorkspaces(workspaceLibrary);
   return `${header('Codex 用量')}
     ${renderQuota(bucket, remaining, window)}
     <div class="section-header"><h2 class="section-title">Token 活动</h2><span class="section-action">${buttonIcon('history', 'chart', '查看每日 Token 历史')}</span></div>
     ${renderTokens(dashboard.usage)}
     ${state.settings?.ksfRoot ? `<div class="section-header"><h2 class="section-title">KSF 项目</h2><span class="section-meta">${projects.length}</span><span class="section-action">${buttonIcon('projects', 'grid', '查看全部项目')}</span></div>${renderProjectSection(projects, dashboard.projects)}` : ''}
+    ${workspaceLibrary.length ? `<div class="section-header"><h2 class="section-title">Codex 工作区</h2><span class="section-meta">${workspaceLibrary.length}</span><span class="section-action">${buttonIcon('workspaces', 'grid', '查看全部 Codex 工作区')}</span></div>${workspaces.length ? `<section class="project-stack">${workspaces.map((item) => renderWorkspaceCard(item)).join('')}</section>` : ''}` : ''}
     ${state.error ? `<p class="support-copy">${escapeHTML(state.error)}</p>` : ''}`;
 }
 
@@ -343,26 +346,43 @@ function renderProjectCard(item) {
   </article>`;
 }
 
-function renderTask(task, project) {
+function renderTask(task, project, workspace = null) {
   const link = state.dashboard.feishu.links.find((item) => item.taskKey === task.taskKey);
   const linkActive = link?.linkState === 'active';
   const detail = taskDetail(task, link);
   return `<div class="task-row">
     ${taskStateIcon(task.classification)}
-    <div class="task-copy"><span class="task-name">${escapeHTML(task.name || '未命名任务')}</span><span class="task-detail">${escapeHTML(detail)}</span><span class="task-detail">${escapeHTML(taskReportLabel(task.taskRuntime))}</span></div>
+    <div class="task-copy"><span class="task-name">${escapeHTML(task.name || '未命名任务')}</span><span class="task-detail">${escapeHTML(detail)}</span>${project ? `<span class="task-detail">${escapeHTML(taskReportLabel(task.taskRuntime))}</span>` : ''}</div>
     <div class="task-actions">
       <button class="icon-button" type="button" data-action="task-detail" data-task="${escapeHTML(task.id)}" title="任务详情" aria-label="任务详情">${icon('info')}</button>
       ${link?.controls?.canInterrupt ? `<button class="icon-button" type="button" data-action="interrupt-link" data-thread="${escapeHTML(task.threadId)}" title="停止本轮" aria-label="停止本轮">${icon('stop')}</button>` : ''}
-      <button class="icon-button" type="button" data-action="toggle-link" data-thread="${escapeHTML(task.threadId)}" data-title="${escapeHTML(task.name || '未命名任务')}" data-project="${escapeHTML(project?.name || '')}" data-linked="${linkActive}" title="${linkActive ? '解除飞书连接' : '连接到飞书'}" aria-label="${linkActive ? '解除飞书连接' : '连接到飞书'}" >${icon(linkActive ? 'close' : 'send')}</button>
+      <button class="icon-button" type="button" data-action="toggle-link" data-thread="${escapeHTML(task.threadId)}" data-title="${escapeHTML(task.name || '未命名任务')}" data-project="${escapeHTML(project?.name || workspace?.name || '其他任务')}" data-linked="${linkActive}" title="${linkActive ? '解除飞书连接' : '连接到飞书'}" aria-label="${linkActive ? '解除飞书连接' : '连接到飞书'}" >${icon(linkActive ? 'close' : 'send')}</button>
       <button class="icon-button" type="button" data-action="open-task" data-thread="${escapeHTML(task.threadId)}" title="在 Codex 中打开" aria-label="在 Codex 中打开">${icon('open')}</button>
     </div>
   </div>`;
 }
 
+function renderWorkspaceCard(item, activeOnly = false) {
+  const tasks = activeOnly ? item.tasks.filter((task) => ['running', 'waiting'].includes(task.classification)) : item.tasks;
+  return `<article class="card project-card workspace-card" data-workspace-id="${escapeHTML(item.id)}">
+    <div class="project-card-head">
+      <span class="workspace-symbol">${icon(item.kind === 'other' ? 'info' : 'folder')}</span>
+      <span class="project-name">${escapeHTML(item.name)}</span>
+      <span class="activity-count" title="运行中任务">${playIcon()} ${item.runningCount}</span>
+      ${item.waitingCount ? `<span class="activity-count waiting-count" title="等待任务">待 ${item.waitingCount}</span>` : ''}
+      <button class="icon-button" type="button" data-action="workspace-pin" data-id="${escapeHTML(item.id)}" data-pinned="${Boolean(item.isPinned)}" title="${item.isPinned ? '取消固定' : '固定工作区'}" aria-label="${item.isPinned ? '取消固定' : '固定工作区'}">${icon('pin')}</button>
+    </div>
+    ${item.path ? `<div class="workspace-path" title="${escapeHTML(item.path)}">${escapeHTML(item.path)}</div>` : ''}
+    <div class="task-list">${tasks.map((task) => renderTask(task, null, item)).join('')}</div>
+    ${!activeOnly && item.hiddenTaskCount ? `<div class="workspace-history">另有 ${item.hiddenTaskCount} 个较早任务未显示</div>` : ''}
+  </article>`;
+}
+
 function renderTaskPage() {
   const resolved = findTask(state.selectedTaskId);
   if (!resolved) return `${header('任务详情')}<section class="card empty"><strong>任务已不可用</strong>它可能已经被归档或暂未同步。</section>`;
-  const { task, project } = resolved;
+  const { task, project, workspace } = resolved;
+  const showsKSFRoute = Boolean(project);
   const link = state.dashboard.feishu.links.find((item) => item.taskKey === task.taskKey);
   const linkActive = link?.linkState === 'active';
   const route = !task.taskRuntime || task.taskRuntime.routeFreshness === 'current' ? task.route : null;
@@ -373,14 +393,14 @@ function renderTaskPage() {
   if (route?.dispatchableSkills?.length) routeRows.push(['Skill', `${route.dispatchableSkills.length} 项可调度`, '']);
   return `${header(task.name || '未命名任务')}
     <section class="card detail-hero">
-      <div class="detail-status"><span class="status-chip ${escapeHTML(task.classification)}">${escapeHTML(taskClassificationText(task))}</span><span>${escapeHTML(project?.name || '无项目')}</span></div>
+      <div class="detail-status"><span class="status-chip ${escapeHTML(task.classification)}">${escapeHTML(taskClassificationText(task))}</span><span>${escapeHTML(project?.name || workspace?.name || '其他任务')}</span></div>
       <p class="detail-summary">${escapeHTML(taskDetail(task, link))}</p>
       ${renderTaskRuntimeDetails(task.taskRuntime)}
-      <div class="detail-actions"><button class="button primary" type="button" data-action="open-task" data-thread="${escapeHTML(task.threadId)}">打开 Codex</button><button class="button" type="button" data-action="toggle-link" data-thread="${escapeHTML(task.threadId)}" data-title="${escapeHTML(task.name || '未命名任务')}" data-project="${escapeHTML(project?.name || '')}" data-linked="${linkActive}" >${linkActive ? '解除飞书' : '连接飞书'}</button>${link?.controls?.canInterrupt ? `<button class="button danger" type="button" data-action="interrupt-link" data-thread="${escapeHTML(task.threadId)}">停止本轮</button>` : ''}</div>
+      <div class="detail-actions"><button class="button primary" type="button" data-action="open-task" data-thread="${escapeHTML(task.threadId)}">打开 Codex</button><button class="button" type="button" data-action="toggle-link" data-thread="${escapeHTML(task.threadId)}" data-title="${escapeHTML(task.name || '未命名任务')}" data-project="${escapeHTML(project?.name || workspace?.name || '其他任务')}" data-linked="${linkActive}" >${linkActive ? '解除飞书' : '连接飞书'}</button>${link?.controls?.canInterrupt ? `<button class="button danger" type="button" data-action="interrupt-link" data-thread="${escapeHTML(task.threadId)}">停止本轮</button>` : ''}</div>
     </section>
-    <div class="section-header"><h2 class="section-title">KSF 路由</h2></div>
+    ${showsKSFRoute ? `<div class="section-header"><h2 class="section-title">KSF 路由</h2></div>
     <div class="setting-description">${escapeHTML(taskRouteSourceLabel(task.taskRuntime, Boolean(task.route)))}</div>
-    <section class="card route-list">${routeRows.length ? routeRows.map(([label, value, validation]) => `<div class="route-row"><span>${escapeHTML(label)}</span><strong>${escapeHTML(value)}</strong>${validation ? `<small>${escapeHTML(validation)}</small>` : ''}</div>`).join('') : '<div class="empty"><strong>尚无已验证路由</strong>任务完成 KSF 路由后会在这里显示。</div>'}</section>`;
+    <section class="card route-list">${routeRows.length ? routeRows.map(([label, value, validation]) => `<div class="route-row"><span>${escapeHTML(label)}</span><strong>${escapeHTML(value)}</strong>${validation ? `<small>${escapeHTML(validation)}</small>` : ''}</div>`).join('') : '<div class="empty"><strong>尚无已验证路由</strong>任务完成 KSF 路由后会在这里显示。</div>'}</section>` : ''}`;
 }
 
 function taskReportLabel(runtime) {
@@ -416,6 +436,12 @@ function renderProjectsPage() {
       const active = item?.tasks?.filter((task) => task.classification === 'running' || task.classification === 'waiting').length || 0;
       return `<div class="library-row"><button class="project-name icon-button-text" type="button" data-action="project-detail" data-id="${escapeHTML(project.id)}"><span class="library-name">${escapeHTML(project.name)}</span><span class="library-summary">${escapeHTML(project.summary || project.focus || '暂无摘要')}</span></button><div class="task-actions">${active ? `<span class="status-chip running">${active} 活跃</span>` : ''}<button class="icon-button" type="button" data-action="pin" data-id="${escapeHTML(project.id)}" data-pinned="${Boolean(item?.isPinned)}" title="${item?.isPinned ? '取消固定' : '固定项目'}">${icon('pin')}</button></div></div>`;
     }).join('') : '<div class="empty"><strong>没有匹配项目</strong>调整搜索词后重试。</div>'}</section>`;
+}
+
+function renderWorkspacesPage() {
+  const workspaces = state.dashboard?.workspaces?.workspaces || [];
+  return `${header('Codex 工作区')}
+    <section class="project-stack">${workspaces.length ? workspaces.map((item) => renderWorkspaceCard(item)).join('') : '<div class="card empty"><strong>没有可用工作区</strong>当前没有可展示的普通 Codex 工作区。</div>'}</section>`;
 }
 
 function renderProjectPage() {
@@ -727,6 +753,10 @@ function selectHomeProjects(items = []) {
   return items.filter((item) => item.isPinned || item.tasks.some((task) => ['running', 'waiting'].includes(task.classification)));
 }
 
+function selectHomeWorkspaces(items = []) {
+  return items.filter((item) => item.isPinned || item.runningCount > 0 || item.waitingCount > 0);
+}
+
 function headlineRemaining(bucket) {
   if (!bucket) return null;
   const windows = [bucket.primary, bucket.secondary].filter(Boolean);
@@ -907,8 +937,10 @@ async function handleAction(action, element) {
   else if (action === 'refresh') return state.page === 'feishu' ? readFeishuConfiguration(true) : refreshDashboard();
   else if (action === 'quit') return api.quit();
   else if (action === 'project-detail') { state.selectedProjectId = element.dataset.id; state.page = 'project'; }
+  else if (action === 'workspaces') { state.page = 'workspaces'; }
   else if (action === 'task-detail') { state.selectedTaskId = element.dataset.task; state.page = 'task'; }
   else if (action === 'pin') { await api.setPinned(element.dataset.id, element.dataset.pinned !== 'true'); return refreshDashboard({ quiet: true }); }
+  else if (action === 'workspace-pin') { await api.setWorkspacePinned(element.dataset.id, element.dataset.pinned !== 'true'); return refreshDashboard({ quiet: true }); }
   else if (action === 'choose-ksf') { if (await api.chooseDirectory('ksfRoot')) return refreshDashboard(); }
   else if (action === 'feishu-show-existing' || action === 'feishu-show-new') {
     if (state.feishuSetupBusy || state.feishuConfigurationLoading || feishuAction('connect_app')?.enabled !== true) return;
@@ -953,6 +985,10 @@ function findTask(id) {
   for (const item of state.dashboard?.projects?.projects || []) {
     const task = item.tasks?.find((candidate) => candidate.id === id);
     if (task) return { task, project: item.project };
+  }
+  for (const workspace of state.dashboard?.workspaces?.workspaces || []) {
+    const task = workspace.tasks?.find((candidate) => candidate.id === id);
+    if (task) return { task, project: null, workspace };
   }
   return null;
 }
