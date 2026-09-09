@@ -64,6 +64,8 @@ Windows 的 Electron 仍使用自身的 Node 环境；“不携带独立 Node �
 
 各数据源按独立刷新策略缓存，飞书状态来自子进程推送后的内存快照；一次界面刷新不等于重新扫描全部文件或调用全部外部接口。实现入口见 [service.go](../Core/internal/service/service.go)。
 
+账号额度与服务器 Token 活动在同一轮独立短连接中读取，不复用任务连接的长期认证状态，也不读取或复制凭据文件。两项账号数据默认每五分钟一起刷新；打开面板、唤醒和显式刷新通过 `forceAccountRefresh` 绕过间隔。账号读取和服务器历史刷新串行合并；刷新进行中由标题旁的小型进度指示器表达，状态栏与详情页继续显示上一份已确认数据，刷新成功后原子替换，失败时才清除无法确认归属的账号缓存并保留本机 Token。宿主启动缓存只保存本机统计。强制刷新遇到进行中的旧请求时，macOS/Windows 宿主追加一次刷新并丢弃旧响应。代价是账号采样多一次有界子进程启动，服务器 Token 刷新从三十分钟调整为跟随额度的五分钟；任务和飞书连接不重启。
+
 ### 项目任务创建与执行
 
 用户选择项目后，Core 校验 KSF 根目录、读取项目目录并生成任务名称和提示词，再通过独立 App Server 创建任务并用 `thread/inject_items` 保存任务名称、目录等初始化信息。Core 等待该进程退出、释放会话写入权后，返回 `desktop-prepared-context`。宿主打开对应任务，再调用 `task/submit`；Core 通过独立控制连接等待 Desktop 接管，通过正常文本输入提交完整首条指令，使用户消息和回复均进入桌面记录，指令只提交一次。提交只允许匹配的准备记录消费一次，超时不重放。创建与开始执行是两个步骤，不能把创建成功当作任务已经运行。
@@ -95,7 +97,7 @@ Core 事件执行分为 `preparing` 与 `executing`：只有可证明尚未开�
 ## 边界
 
 - KSFAssistant 桌面应用负责原生窗口、托盘/菜单栏、目录选择、登录项和安全外部链接。
-- KSFAssistant Core 是唯一跨平台业务核心，统一持有 Codex App Server、Desktop IPC 与 KSF 桥客户端；KSF 正文解释留在外部桥。额度、任务目录和飞书任务控制复用同一个长期 App Server 客户端。
+- KSFAssistant Core 是唯一跨平台业务核心，统一持有 Codex App Server、Desktop IPC 与 KSF 桥客户端；KSF 正文解释留在外部桥。任务目录和飞书任务控制复用长期 App Server 客户端，账号额度与服务器 Token 使用独立短连接，避免复用切换账号前的认证状态。
 - KSFAssistant 飞书服务只负责飞书传输、卡片、授权、幂等、审计与队列状态机。它通过 `ksfassistant-feishu-v2` 交付通用事件，不拥有 Codex 控制端口、任务链接存储或 KSF 读取权限。
 - 核心服务与飞书服务只使用受管子进程的匿名 stdin/stdout 管道；协议帧限制 4 MiB，支持双向并发、超时、取消与 EOF 生命周期，不新增 HTTP 业务端口。原生 CLI 另经 Core 的 Unix Domain Socket（macOS）或当前用户 ACL 的 Named Pipe（Windows）接入；端点绑定当前用户与规范化数据根。固定 DTO 严格拒绝未知字段、尾随 JSON、畸形可选参数以及无参数方法上的额外载荷，并保留 JSON 数字精度。
 - 飞书服务保持独立进程以隔离网络、OAuth、队列与外部命令故障。它不能注册为系统常驻服务，生命周期唯一所有者是 KSFAssistant。

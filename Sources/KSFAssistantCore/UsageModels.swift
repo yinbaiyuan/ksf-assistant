@@ -432,4 +432,18 @@ public struct UsageSnapshot: Codable, Equatable {
     public func accountDailyUsage(on startDate: String) -> DailyUsageBucket? {
         dailyUsageBuckets.first { $0.startDate == startDate }
     }
+
+    public func localCost(on startDate: String) -> TokenCostEstimate? {
+        guard localDailyUsage?.startDate == startDate else { return nil }
+        return localDailyCost
+    }
+
+    public var localOnly: UsageSnapshot {
+        UsageSnapshot(
+            localDailyUsage: localDailyUsage,
+            localPreviousDailyUsage: localPreviousDailyUsage,
+            localDailyCost: localDailyCost,
+            localTokenUpdatedAt: localTokenUpdatedAt
+        )
+    }
 }

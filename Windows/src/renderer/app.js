@@ -76,13 +76,14 @@ function buttonIcon(action, name, label, extra = '', disabled = false) {
 
 function header(title, extraActions = '') {
   const secondary = state.page !== 'home';
+  const accountLoading = title === 'Codex 用量' && (state.loading || state.refreshing);
   return `<header class="app-header">
     ${secondary ? buttonIcon('back', 'back', '返回') : ''}
-    <h1 class="app-title">${escapeHTML(title)}</h1>
+    <h1 class="app-title">${escapeHTML(title)}${accountLoading ? '<span class="account-spinner" role="status" aria-label="正在读取 Codex 用量"></span>' : ''}</h1>
     <div class="header-actions">${extraActions}
       ${state.page === 'home' ? buttonIcon('projects', 'grid', '项目列表') : ''}
       ${state.page === 'home' ? buttonIcon('settings', 'settings', '设置') : ''}
-      ${buttonIcon('refresh', 'refresh', '刷新', state.refreshing ? 'spin' : '')}
+      ${buttonIcon('refresh', 'refresh', '刷新')}
     </div>
   </header>`;
 }
@@ -134,18 +135,24 @@ function renderQuota(bucket, remaining, window) {
 
 function renderTokens(usage) {
   const latest = usage.dailyUsageBuckets?.at(-1);
-  const local = usage.localDailyUsage;
+  const today = new Date();
+  const dateKey = (offset) => {
+    const date = new Date(today.getFullYear(), today.getMonth(), today.getDate() + offset);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  };
+  const local = usage.localDailyUsage?.startDate === dateKey(0) ? usage.localDailyUsage : null;
+  const previous = usage.localPreviousDailyUsage?.startDate === dateKey(-1) ? usage.localPreviousDailyUsage : null;
   const localBreakdown = local?.breakdown;
   const metrics = [
     ['模型普通输入', localBreakdown ? formatTokens(localBreakdown.regularInputTokens) : '—'],
     ['模型缓存输入', localBreakdown ? formatTokens(localBreakdown.cachedInputTokens) : '—'],
     ['模型输出', localBreakdown ? formatTokens(localBreakdown.outputTokens) : '—'],
     [accountLatestLabel(latest?.startDate), latest ? formatTokens(latest.tokens) : '未同步'],
-    ['本机昨日', usage.localPreviousDailyUsage ? formatTokens(usage.localPreviousDailyUsage.tokens) : '—'],
+    ['本机昨日', previous ? formatTokens(previous.tokens) : '—'],
     ['本机今日', local ? formatTokens(local.tokens) : '—'],
   ];
   const plan = selectedPricingPlan();
-  return `<section class="card token-card">${metrics.map(([label, value]) => `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`).join('')}<div class="token-cost-row"><span><small>API 估算</small><strong>${escapeHTML(compactPricingName(plan))}</strong></span><b>今日 ${formatCostEstimate(usage.localDailyCost)}</b></div></section>
+  return `<section class="card token-card">${metrics.map(([label, value]) => `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`).join('')}<div class="token-cost-row"><span><small>API 估算</small><strong>${escapeHTML(compactPricingName(plan))}</strong></span><b>今日 ${formatCostEstimate(local ? usage.localDailyCost : null)}</b></div></section>
     <p class="support-copy">账号数据可能延迟；本机统计覆盖此电脑的 Codex 会话。</p>`;
 }
 
@@ -812,21 +819,35 @@ async function refreshStaticData({ page = state.page, force = false } = {}) {
   state.staticDataLoaded = true;
 }
 
-async function refreshDashboard({ quiet = false } = {}) {
-  if (state.refreshing) return;
+async function refreshDashboard({ quiet = false, forceAccountRefresh = !quiet } = {}) {
+  const clearAccountUsage = () => {
+    if (!state.dashboard) return;
+    state.dashboard = { ...state.dashboard, usage: { ...state.dashboard.usage, buckets: [], tokenSummary: null, dailyUsageBuckets: [], rateUpdatedAt: null, tokenUpdatedAt: null } };
+  };
+  if (state.refreshing) {
+    state.pendingAccountRefresh = state.pendingAccountRefresh || forceAccountRefresh;
+    return;
+  }
   state.refreshing = true;
-  if (!quiet) render();
+  if (!quiet || forceAccountRefresh) render();
   try {
-    state.dashboard = await api.dashboard();
+    const dashboard = await api.dashboard(forceAccountRefresh);
+    if (!state.pendingAccountRefresh) state.dashboard = dashboard;
     state.error = '';
   } catch (error) {
+    clearAccountUsage();
     state.error = error.message;
     if (!quiet) showToast(error.message, true);
   } finally {
     state.loading = false;
     state.refreshing = false;
     render();
-    scheduleRefresh();
+    if (state.pendingAccountRefresh) {
+      state.pendingAccountRefresh = false;
+      await refreshDashboard({ quiet: true, forceAccountRefresh: true });
+    } else {
+      scheduleRefresh();
+    }
   }
 }
 
@@ -1038,7 +1059,7 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 window.addEventListener('keydown', (event) => { if (event.key === 'Escape') state.page === 'home' ? api.hide() : handleAction('back', root); });
-window.addEventListener('focus', () => refreshDashboard({ quiet: true }));
+window.addEventListener('focus', () => refreshDashboard({ quiet: true, forceAccountRefresh: true }));
 
 async function start() {
   await refreshStaticData({ page: state.page });

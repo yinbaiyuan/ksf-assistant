@@ -92,6 +92,7 @@ final class UsageViewModel: ObservableObject {
     private var shutdownStarted = false
     private var quitRequested = false
     private var refreshingCoreService = false
+    private var pendingAccountRefresh = false
     private var started = false
     private var refreshActivityDepth = 0
     private var rateTimerTask: Task<Void, Never>?
@@ -115,7 +116,7 @@ final class UsageViewModel: ObservableObject {
         defaults.removeObject(forKey: "selectedProjectID")
         let cached = store.load()
         snapshot = cached
-        status = cached?.headlineRemainingPercent == nil ? .loading : .stale
+        status = .loading
         launchAtLoginEnabled = defaults.bool(forKey: "launchAtLoginEnabled")
         resetNotificationsEnabled = defaults.bool(forKey: "resetNotificationsEnabled")
         ksfRootPath = defaults.string(forKey: "ksfRootPath") ?? ""
@@ -238,9 +239,14 @@ final class UsageViewModel: ObservableObject {
         return snapshot?.localPreviousDailyUsage
     }
 
+    var localTodayCost: TokenCostEstimate? {
+        snapshot?.localCost(on: todayDateString)
+    }
+
     var statusMessage: String? {
+        if isRefreshing || status == .loading { return nil }
         switch status {
-        case .loading: return "正在读取 Codex 用量…"
+        case .loading: return nil
         case .available: return nil
         case .stale: return "刷新失败，正在显示上次成功数据。"
         case .codexMissing: return "未找到可用的 Codex。"
@@ -279,8 +285,9 @@ final class UsageViewModel: ObservableObject {
             return
         } catch {
             coreServiceEnabled = false
-            status = snapshot?.headlineRemainingPercent == nil ? .offline : .stale
-            lastErrorMessage = "核心服务不可用；正在显示缓存数据。"
+            snapshot = snapshot?.localOnly
+            status = .offline
+            lastErrorMessage = "核心服务不可用；账号额度暂不可用，本机统计保留缓存。"
             taskActivity = TaskActivitySnapshot(availability: .offline)
             projectDashboard = ProjectDashboardSnapshot(
                 availability: .unavailable,
@@ -302,7 +309,7 @@ final class UsageViewModel: ObservableObject {
 
     func refreshAll() async {
         if coreServiceEnabled {
-            await refreshSharedDashboard()
+            await refreshSharedDashboard(forceAccountRefresh: true)
         }
     }
 
@@ -312,7 +319,7 @@ final class UsageViewModel: ObservableObject {
         popoverIsOpen = true
         if coreServiceEnabled {
             startCoreServicePolling()
-            Task { [weak self] in await self?.refreshSharedDashboard() }
+            Task { [weak self] in await self?.refreshSharedDashboard(forceAccountRefresh: true) }
             return
         }
         Task { [weak self] in await self?.refreshAll() }
@@ -854,21 +861,31 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    private func refreshSharedDashboard() async {
-        guard coreServiceEnabled, !refreshingCoreService else { return }
+    private func refreshSharedDashboard(forceAccountRefresh: Bool = false) async {
+        guard coreServiceEnabled, !shutdownStarted else { return }
+        if refreshingCoreService {
+            pendingAccountRefresh = pendingAccountRefresh || forceAccountRefresh
+            return
+        }
         refreshingCoreService = true
         beginRefreshActivity()
         defer {
             refreshingCoreService = false
             endRefreshActivity()
+            if pendingAccountRefresh {
+                pendingAccountRefresh = false
+                Task { [weak self] in await self?.refreshSharedDashboard(forceAccountRefresh: true) }
+            }
         }
         do {
             let activeKSFRoot = isOnboardingComplete ? ksfRootPath : ""
             let dashboard = try await coreService.dashboard(
                 ksfRoot: activeKSFRoot,
                 pinnedProjectIDs: pinnedProjectIDs,
-                pricingSelection: pricingSelection
+                pricingSelection: pricingSelection,
+                forceAccountRefresh: forceAccountRefresh
             )
+            guard !pendingAccountRefresh else { return }
             snapshot = dashboard.usage
             store.save(dashboard.usage)
             switch dashboard.usageStatus {
@@ -921,7 +938,8 @@ final class UsageViewModel: ObservableObject {
             }
             feishuFeedback = nil
         } catch {
-            status = snapshot?.headlineRemainingPercent == nil ? .offline : .stale
+            snapshot = snapshot?.localOnly
+            status = .offline
             lastErrorMessage = error.localizedDescription
             if taskActivity.availability == .loading {
                 taskActivity = TaskActivitySnapshot(
@@ -971,7 +989,8 @@ final class UsageViewModel: ObservableObject {
                 repriceOnly: true
             )
             applyTokenHistoryComparison(comparison)
-            if let todayCost = comparison.days.last(where: { $0.startDate == todayDateString })?.localCost {
+            if localTodayUsage != nil,
+               let todayCost = comparison.days.last(where: { $0.startDate == todayDateString })?.localCost {
                 var updated = snapshot ?? UsageSnapshot()
                 updated.localDailyCost = todayCost
                 snapshot = updated

@@ -16,11 +16,11 @@ struct SnapshotStore {
 
     func load() -> UsageSnapshot? {
         guard let data = try? Data(contentsOf: fileURL) else { return nil }
-        return try? JSONDecoder().decode(UsageSnapshot.self, from: data)
+        return try? JSONDecoder().decode(UsageSnapshot.self, from: data).localOnly
     }
 
     func save(_ snapshot: UsageSnapshot) {
-        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        guard let data = try? JSONEncoder().encode(snapshot.localOnly) else { return }
         try? data.write(to: fileURL, options: .atomic)
         try? FileManager.default.setAttributes(
             [.posixPermissions: NSNumber(value: Int16(0o600))],

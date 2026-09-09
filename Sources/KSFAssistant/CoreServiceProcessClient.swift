@@ -136,12 +136,14 @@ actor CoreServiceProcessClient {
     func dashboard(
         ksfRoot: String,
         pinnedProjectIDs: Set<String>,
-        pricingSelection: PricingSelection
+        pricingSelection: PricingSelection,
+        forceAccountRefresh: Bool = false
     ) async throws -> CoreServiceDashboard {
         let data = try await requestData(method: "dashboard/read", params: [
             "ksfRoot": ksfRoot,
             "pinnedProjectIds": Array(pinnedProjectIDs).sorted(),
             "pricingSelection": Self.pricingSelectionObject(pricingSelection),
+            "forceAccountRefresh": forceAccountRefresh,
         ])
         let dto = try Self.decoder().decode(DashboardDTO.self, from: data)
         return dto.value

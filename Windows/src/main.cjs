@@ -135,11 +135,12 @@ function showWindow() {
   window.webContents.send('ksfassistant:visible');
 }
 
-function dashboardParams() {
+function dashboardParams(forceAccountRefresh = false) {
   const settings = store.get();
   return {
     ksfRoot: settings.ksfRoot,
     pinnedProjectIds: settings.pinnedProjectIds,
+    forceAccountRefresh,
     pricingSelection: {
       planId: settings.selectedPricingPlanId,
       customPlans: settings.customPricingPlans,
@@ -147,13 +148,16 @@ function dashboardParams() {
   };
 }
 
-async function readDashboard() {
+async function readDashboard(forceAccountRefresh = false) {
   if (dashboardPromise) return dashboardPromise;
-  dashboardPromise = core.request('dashboard/read', dashboardParams());
+  dashboardPromise = core.request('dashboard/read', dashboardParams(forceAccountRefresh));
   try {
     const snapshot = await dashboardPromise;
     updateTrayStatus(snapshot);
     return snapshot;
+  } catch (error) {
+    updateTrayStatus(null);
+    throw error;
   } finally {
     dashboardPromise = null;
   }
@@ -168,7 +172,7 @@ function showWindowWhenReady() {
 }
 
 function registerIPC() {
-  ipcMain.handle('dashboard:read', readDashboard);
+  ipcMain.handle('dashboard:read', (_event, forceAccountRefresh) => readDashboard(forceAccountRefresh === true));
   ipcMain.handle('token-history:read', (_event, options = {}) => {
     const settings = store.get();
     return core.request('token/history/compare', {

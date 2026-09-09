@@ -3,7 +3,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('ksfAssistant', Object.freeze({
-  dashboard: () => ipcRenderer.invoke('dashboard:read'),
+  dashboard: (forceAccountRefresh = false) => ipcRenderer.invoke('dashboard:read', forceAccountRefresh === true),
   tokenHistory: (options = { dayCount: 30 }) => ipcRenderer.invoke('token-history:read', options),
   pricingCatalog: () => ipcRenderer.invoke('pricing-catalog:read'),
   settings: () => ipcRenderer.invoke('settings:read'),

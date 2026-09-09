@@ -37,7 +37,7 @@ test('periodic refresh only reads the dashboard while static settings load on de
     app.indexOf('async function refreshDashboard('),
     app.indexOf('function scheduleRefresh()')
   );
-  assert.match(periodicRefresh, /api\.dashboard\(\)/);
+  assert.match(periodicRefresh, /api\.dashboard\(forceAccountRefresh\)/);
   assert.doesNotMatch(periodicRefresh, /api\.settings\(\)|api\.pricingCatalog\(\)|api\.readFeishuSetup\(\)|api\.feishuOverview\(\)/);
   assert.match(app, /async function refreshStaticData\(/);
   assert.match(app, /await refreshStaticData\(\{ page: state\.page \}\)/);

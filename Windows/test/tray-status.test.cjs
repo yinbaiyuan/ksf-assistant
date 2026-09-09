@@ -11,16 +11,24 @@ test('tray status exposes the general quota and live activity', () => {
         { limitId: 'codex_bengalfox', primary: { usedPercent: 12 } },
         { limitId: 'codex', primary: { usedPercent: 27 }, secondary: { usedPercent: 41 } },
       ],
-      localDailyUsage: { tokens: 81_596_442 },
+      localDailyUsage: { startDate: '2026-09-09', tokens: 81_596_442 },
     },
     activity: { runningCount: 2, waitingCount: 1 },
-  });
+  }, new Date(2026, 8, 9, 11, 38, 56));
 
   assert.equal(status.remainingPercent, 59);
   assert.equal(status.label, '59');
   assert.match(status.tooltip, /通用额度剩余 59%/);
   assert.match(status.tooltip, /2 个运行中，1 个等待/);
   assert.match(status.tooltip, /本机今日 81\.6M Token/);
+});
+
+test('tray never labels a cached prior-day amount as today', () => {
+  const now = new Date(2026, 8, 9, 0, 0, 1);
+  const stale = buildTrayStatus({ usage: { localDailyUsage: { startDate: '2026-09-08', tokens: 120 } } }, now);
+  assert.doesNotMatch(stale.tooltip, /本机今日/);
+  const zero = buildTrayStatus({ usage: { localDailyUsage: { startDate: '2026-09-09', tokens: 0 } } }, now);
+  assert.match(zero.tooltip, /本机今日 0 Token/);
 });
 
 test('tray icon is a colored PNG data URL and unavailable data stays explicit', () => {

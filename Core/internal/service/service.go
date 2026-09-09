@@ -29,7 +29,6 @@ const Version = "0.11.0-preview.4"
 
 const (
 	rateRefreshInterval      = 5 * time.Minute
-	tokenRefreshInterval     = 30 * time.Minute
 	activeLocalTokenInterval = 10 * time.Second
 	idleLocalTokenInterval   = 30 * time.Minute
 	threadRefreshInterval    = 10 * time.Second
@@ -38,9 +37,10 @@ const (
 )
 
 type DashboardRequest struct {
-	KSFRoot          string                  `json:"ksfRoot"`
-	PinnedProjectIDs []string                `json:"pinnedProjectIds"`
-	PricingSelection domain.PricingSelection `json:"pricingSelection,omitempty"`
+	KSFRoot             string                  `json:"ksfRoot"`
+	PinnedProjectIDs    []string                `json:"pinnedProjectIds"`
+	PricingSelection    domain.PricingSelection `json:"pricingSelection,omitempty"`
+	ForceAccountRefresh bool                    `json:"forceAccountRefresh,omitempty"`
 }
 
 type InitializeRequest struct {
@@ -130,10 +130,10 @@ type Service struct {
 	ksf                     bridge.KSFClient
 	desktop                 *desktop.ActivityClient
 	mu                      sync.Mutex
+	accountReadMu           sync.Mutex
 	lastUsage               domain.UsageSnapshot
 	lastThreads             []domain.CodexThread
 	lastRateAttempt         time.Time
-	lastTokenAttempt        time.Time
 	lastLocalTokenAttempt   time.Time
 	lastThreadAttempt       time.Time
 	projectSources          map[string]projectSourceCache
@@ -271,7 +271,7 @@ func (service *Service) Dashboard(ctx context.Context, request DashboardRequest)
 	activity := service.desktop.Snapshot(now)
 	desktopActivity := activity
 	activeHint := activity.RunningCount > 0 || activity.WaitingCount > 0
-	usage, threads := service.readCodex(ctx, now, activeHint)
+	usage, threads := service.readCodex(ctx, now, activeHint, request.ForceAccountRefresh)
 	plan, _ := pricing.Resolve(request.PricingSelection)
 	if usage.LocalDailyUsage != nil {
 		estimate := pricing.Estimate(plan, usage.LocalDailyUsage.Tokens, usage.LocalDailyUsage.Breakdown)
@@ -1036,38 +1036,27 @@ func applyPricingToHistory(days []domain.TokenHistoryComparisonDay, selection do
 }
 
 func (service *Service) readServerTokenHistory(ctx context.Context, cachedOnly bool) ([]domain.DailyUsageBucket, error) {
+	service.accountReadMu.Lock()
+	defer service.accountReadMu.Unlock()
 	now := time.Now()
 	service.mu.Lock()
-	if !service.lastServerHistoryAt.IsZero() && now.Sub(service.lastServerHistoryAt) < 30*time.Second {
-		cached := append([]domain.DailyUsageBucket(nil), service.lastServerHistory...)
-		service.mu.Unlock()
-		return cached, nil
-	}
 	cached := append([]domain.DailyUsageBucket(nil), service.lastServerHistory...)
 	if len(cached) == 0 {
 		cached = append(cached, service.lastUsage.DailyUsageBuckets...)
 	}
+	usage := service.lastUsage
 	service.mu.Unlock()
-	if cachedOnly && len(cached) > 0 {
+	if cachedOnly {
 		return cached, nil
 	}
-
-	if service.codex == nil {
-		return cached, errors.New("Codex App Server is unavailable")
-	}
-	response, err := service.codex.FetchTokenUsage(ctx)
-	if err != nil {
-		return cached, err
-	}
-	values := normalizedDays(response.DailyUsageBuckets, 90)
+	service.refreshAccountUsage(ctx, &usage, now)
 	service.mu.Lock()
-	service.lastServerHistoryAt = now
-	service.lastServerHistory = append([]domain.DailyUsageBucket(nil), values...)
-	service.lastUsage.TokenSummary = &response.Summary
-	service.lastUsage.DailyUsageBuckets = append([]domain.DailyUsageBucket(nil), values...)
-	service.lastUsage.TokenUpdatedAt = &now
-	service.lastUsage.TokenError = ""
+	service.lastUsage = usage
+	values := append([]domain.DailyUsageBucket(nil), service.lastServerHistory...)
 	service.mu.Unlock()
+	if usage.TokenError != "" {
+		return nil, errors.New(usage.TokenError)
+	}
 	return values, nil
 }
 
@@ -1111,23 +1100,22 @@ func (service *Service) Close() {
 	}
 }
 
-func (service *Service) readCodex(ctx context.Context, now time.Time, active bool) (domain.UsageSnapshot, []domain.CodexThread) {
+func (service *Service) readCodex(ctx context.Context, now time.Time, active, forceAccountRefresh bool) (domain.UsageSnapshot, []domain.CodexThread) {
+	service.accountReadMu.Lock()
+	defer service.accountReadMu.Unlock()
 	service.mu.Lock()
 	usage := service.lastUsage
 	threads := service.lastThreads
-	needRate := service.lastRateAttempt.IsZero() || now.Sub(service.lastRateAttempt) >= rateRefreshInterval
-	needToken := service.lastTokenAttempt.IsZero() || now.Sub(service.lastTokenAttempt) >= tokenRefreshInterval
+	needRate := forceAccountRefresh || service.lastRateAttempt.IsZero() || now.Sub(service.lastRateAttempt) >= rateRefreshInterval
 	localInterval := idleLocalTokenInterval
 	if active {
 		localInterval = activeLocalTokenInterval
 	}
-	needLocal := service.lastLocalTokenAttempt.IsZero() || now.Sub(service.lastLocalTokenAttempt) >= localInterval
+	needLocal := service.lastLocalTokenAttempt.IsZero() || now.Sub(service.lastLocalTokenAttempt) >= localInterval ||
+		service.lastLocalTokenAttempt.In(now.Location()).Format("2006-01-02") != now.Format("2006-01-02")
 	needThreads := service.lastThreadAttempt.IsZero() || now.Sub(service.lastThreadAttempt) >= threadRefreshInterval
 	if needRate {
 		service.lastRateAttempt = now
-	}
-	if needToken {
-		service.lastTokenAttempt = now
 	}
 	if needLocal {
 		service.lastLocalTokenAttempt = now
@@ -1137,8 +1125,7 @@ func (service *Service) readCodex(ctx context.Context, now time.Time, active boo
 	}
 	service.mu.Unlock()
 	if service.codex == nil {
-		usage.Status = "codexMissing"
-		usage.RateError = "未找到 Codex。"
+		service.refreshAccountUsage(ctx, &usage, now)
 		if needLocal {
 			service.mergeLocalTokens(&usage, now)
 		}
@@ -1147,47 +1134,17 @@ func (service *Service) readCodex(ctx context.Context, now time.Time, active boo
 		service.mu.Unlock()
 		return usage, nil
 	}
-	var rateResponse domain.RateLimitsResponse
-	var tokenResponse domain.TokenUsageResponse
-	var rateErr, tokenErr, threadErr error
+	var threadErr error
 	var wait sync.WaitGroup
 	if needRate {
 		wait.Add(1)
-		go func() { defer wait.Done(); rateResponse, rateErr = service.codex.FetchRateLimits(ctx) }()
-	}
-	if needToken {
-		wait.Add(1)
-		go func() { defer wait.Done(); tokenResponse, tokenErr = service.codex.FetchTokenUsage(ctx) }()
+		go func() { defer wait.Done(); service.refreshAccountUsage(ctx, &usage, now) }()
 	}
 	if needThreads {
 		wait.Add(1)
 		go func() { defer wait.Done(); threads, threadErr = service.codex.FetchThreads(ctx) }()
 	}
 	wait.Wait()
-	if needRate && rateErr == nil {
-		usage.Buckets = domain.NormalizeRateLimits(rateResponse)
-		usage.RateUpdatedAt = &now
-		usage.RateError = ""
-		usage.Status = "available"
-		if general := domain.GeneralBucket(usage.Buckets); general == nil || domain.HeadlineRemaining(*general) == nil {
-			usage.Status = "unsupportedProtocol"
-		}
-	} else if needRate {
-		usage.RateError = recoveryMessage(rateErr)
-		if domain.GeneralBucket(usage.Buckets) != nil {
-			usage.Status = "stale"
-		} else {
-			usage.Status = "offline"
-		}
-	}
-	if needToken && tokenErr == nil {
-		usage.TokenSummary = &tokenResponse.Summary
-		usage.DailyUsageBuckets = normalizedDays(tokenResponse.DailyUsageBuckets, 14)
-		usage.TokenUpdatedAt = &now
-		usage.TokenError = ""
-	} else if needToken {
-		usage.TokenError = "Token 活动暂不可用，额度信息不受影响。"
-	}
 	if needLocal {
 		service.mergeLocalTokens(&usage, now)
 	}
@@ -1202,8 +1159,56 @@ func (service *Service) readCodex(ctx context.Context, now time.Time, active boo
 	return usage, threads
 }
 
+func (service *Service) refreshAccountUsage(ctx context.Context, usage *domain.UsageSnapshot, now time.Time) {
+	usage.Buckets = []domain.RateLimitBucket{}
+	usage.TokenSummary = nil
+	usage.DailyUsageBuckets = []domain.DailyUsageBucket{}
+	usage.RateUpdatedAt = nil
+	usage.TokenUpdatedAt = nil
+	usage.Status = "offline"
+	usage.RateError = "账号额度暂不可用。"
+	usage.TokenError = "账号 Token 活动暂不可用，本机统计不受影响。"
+	var serverDays []domain.DailyUsageBucket
+	if service.codex == nil {
+		usage.Status = "codexMissing"
+		usage.RateError = "未找到 Codex。"
+	} else {
+		rates, tokens, rateErr, tokenErr := service.codex.FetchAccountUsage(ctx)
+		if rateErr != nil {
+			usage.RateError = recoveryMessage(rateErr)
+		} else {
+			usage.Buckets = domain.NormalizeRateLimits(rates)
+			usage.RateUpdatedAt = &now
+			usage.RateError = ""
+			usage.Status = "available"
+			if general := domain.GeneralBucket(usage.Buckets); general == nil || domain.HeadlineRemaining(*general) == nil {
+				usage.Status = "unsupportedProtocol"
+			}
+			if tokenErr == nil {
+				usage.TokenSummary = &tokens.Summary
+				usage.DailyUsageBuckets = normalizedDays(tokens.DailyUsageBuckets, 14)
+				usage.TokenUpdatedAt = &now
+				usage.TokenError = ""
+				serverDays = normalizedDays(tokens.DailyUsageBuckets, 90)
+			}
+		}
+	}
+	service.mu.Lock()
+	service.lastRateAttempt = now
+	service.lastServerHistory = serverDays
+	service.lastServerHistoryAt = time.Time{}
+	if usage.TokenError == "" {
+		service.lastServerHistoryAt = now
+	}
+	service.mu.Unlock()
+}
+
 func (service *Service) mergeLocalTokens(usage *domain.UsageSnapshot, now time.Time) {
 	reader := tokens.Reader{Roots: tokens.DefaultRoots(service.home)}
+	usage.LocalDailyUsage = nil
+	usage.LocalPreviousDailyUsage = nil
+	usage.LocalDailyCost = nil
+	usage.LocalTokenUpdatedAt = nil
 	if values, err := reader.ReadHistory(now, 2); err == nil && len(values) == 2 {
 		usage.LocalPreviousDailyUsage = &values[0]
 		usage.LocalDailyUsage = &values[1]

@@ -202,6 +202,23 @@ func (client *Client) FetchTokenUsage(ctx context.Context) (domain.TokenUsageRes
 	return result, err
 }
 
+func (client *Client) FetchAccountUsage(ctx context.Context) (domain.RateLimitsResponse, domain.TokenUsageResponse, error, error) {
+	account := &Client{Executable: client.Executable, Timeout: client.Timeout}
+	defer account.Close()
+	var rates domain.RateLimitsResponse
+	var tokens domain.TokenUsageResponse
+	if err := account.Start(ctx); err != nil {
+		return rates, tokens, err, err
+	}
+	var rateErr, tokenErr error
+	var wait sync.WaitGroup
+	wait.Add(2)
+	go func() { defer wait.Done(); rates, rateErr = account.FetchRateLimits(ctx) }()
+	go func() { defer wait.Done(); tokens, tokenErr = account.FetchTokenUsage(ctx) }()
+	wait.Wait()
+	return rates, tokens, rateErr, tokenErr
+}
+
 func (client *Client) FetchThreads(ctx context.Context) ([]domain.CodexThread, error) {
 	result := []domain.CodexThread{}
 	var cursor *string

@@ -43,11 +43,13 @@ function formatTokens(value) {
   return String(Math.round(value));
 }
 
-function buildTrayStatus(snapshot) {
+function buildTrayStatus(snapshot, now = new Date()) {
   const remainingPercent = generalRemaining(snapshot);
   const running = Math.max(0, Math.floor(snapshot?.activity?.runningCount || 0));
   const waiting = Math.max(0, Math.floor(snapshot?.activity?.waitingCount || 0));
-  const tokens = formatTokens(snapshot?.usage?.localDailyUsage?.tokens);
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const local = snapshot?.usage?.localDailyUsage;
+  const tokens = local?.startDate === today ? formatTokens(local.tokens) : null;
   const lines = [
     'KSFAssistant',
     remainingPercent == null ? '额度暂不可用' : `通用额度剩余 ${remainingPercent}%`,

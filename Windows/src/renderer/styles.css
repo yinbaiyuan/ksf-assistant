@@ -66,7 +66,8 @@ button { color: inherit; }
 #app { min-height: 320px; padding: 14px; }
 
 .app-header { display: flex; align-items: center; min-height: 34px; margin-bottom: 12px; }
-.app-title { flex: 1; min-width: 0; margin: 0; font-size: 20px; line-height: 1.25; font-weight: 670; letter-spacing: -0.015em; }
+.app-title { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; margin: 0; font-size: 20px; line-height: 1.25; font-weight: 670; letter-spacing: -0.015em; }
+.account-spinner { width: 11px; height: 11px; border: 1.5px solid var(--divider); border-top-color: var(--text-secondary); border-radius: 50%; animation: spin 900ms linear infinite; }
 .header-actions { display: flex; gap: 3px; }
 .icon-button { display: inline-grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 7px; background: transparent; cursor: pointer; }
 .icon-button:hover { background: var(--surface-pressed); }

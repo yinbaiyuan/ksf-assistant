@@ -93,6 +93,13 @@ struct UsagePopoverView: View {
         HStack(spacing: 8) {
             Text("Codex 用量")
                 .font(.headline)
+            if viewModel.isRefreshing || viewModel.status == .loading {
+                ProgressView()
+                    .controlSize(.mini)
+                    .scaleEffect(0.72)
+                    .frame(width: 11, height: 11)
+                    .accessibilityLabel("正在读取 Codex 用量")
+            }
             Spacer()
             headerIconButton(systemName: "gearshape", label: "设置") {
                 page = .settings
@@ -924,7 +931,7 @@ struct UsagePopoverView: View {
                             pricingPlanMenu
                         }
                         Spacer(minLength: 8)
-                        Text("今日 \(formattedCost(viewModel.snapshot?.localDailyCost))")
+                        Text("今日 \(formattedCost(viewModel.localTodayCost))")
                             .font(.system(.callout, design: .rounded, weight: .semibold))
                             .monospacedDigit()
                     }

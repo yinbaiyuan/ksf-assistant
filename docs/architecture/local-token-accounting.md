@@ -21,6 +21,15 @@ Explicit foreign ownership excludes replay even when the source is missing. Reso
 
 Production Go history is recomputed from logs and held in memory for ten seconds. This correction needs no schema migration and does not modify Codex logs or old standalone Swift history caches. Deploying the new Core allows the next fresh scan to recompute available history. Logs that no longer exist cannot be recovered by this change.
 
+The dashboard's local refresh interval expires at a natural local date change,
+even without active tasks. A readable source with no events for today produces a
+dated zero bucket, zero composition and a zero API estimate; a missing source is
+unavailable, not zero. Failed local scans clear the local usage and cost fields
+without clearing account quota or server history. Both home views date-check
+local buckets, and today's estimate is shown only alongside a current-day local
+bucket. Restored or failed-refresh snapshots must not label yesterday's cost as
+today's. Repricing history does not attach today's cost to a stale local bucket.
+
 ## API estimate
 
 API cost estimation uses the selected catalog plan, independently of the model
