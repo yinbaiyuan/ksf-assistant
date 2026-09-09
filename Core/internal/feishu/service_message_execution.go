@@ -134,14 +134,19 @@ func (transport *ServiceTransport) executeMessage(ctx context.Context, capabilit
 		if err != nil {
 			return err
 		}
-		// Cancelled/expired reviews with no execution can be prepared afresh.
-		// Keep the old audit record; never reprepare an attempted or uncertain effect.
-		if (view.Status == OperationExpired || view.Status == OperationCancelled) && view.AttemptCount == 0 && ledger.Phase == "queued" {
+		// Cancelled/expired reviews and local authorization contention can be
+		// prepared afresh because neither condition can reach the remote write.
+		// Keep the old audit record; never reprepare an uncertain remote effect.
+		if serviceMessageCanReprepare(view, ledger) {
 			prepared, err := operations.PrepareBoundMessage(capabilityID, input, "core-service-transport")
 			if err != nil {
 				return err
 			}
-			ledger.OperationID, ledger.UpdatedAt = prepared.Operation.ID, time.Now().UTC()
+			ledger.OperationID = prepared.Operation.ID
+			ledger.Phase = "queued"
+			ledger.Status = ""
+			ledger.MessageID = ""
+			ledger.UpdatedAt = time.Now().UTC()
 			if err := writePrivateJSON(path, ledger); err != nil {
 				return err
 			}
@@ -197,6 +202,13 @@ func (transport *ServiceTransport) executeMessage(ctx context.Context, capabilit
 		return err
 	})
 	return messageID, err
+}
+
+func serviceMessageCanReprepare(view OperationView, ledger transportExecution) bool {
+	if (view.Status == OperationExpired || view.Status == OperationCancelled) && view.AttemptCount == 0 && ledger.Phase == "queued" {
+		return true
+	}
+	return view.Status == OperationFailed && view.ErrorCode == "approval_authorization_busy" && ledger.Phase == "terminal" && ledger.Status == "failed"
 }
 
 func (transport *ServiceTransport) Send(ctx context.Context, target MessageTarget, format, value, id string) (string, error) {

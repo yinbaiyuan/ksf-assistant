@@ -29,13 +29,20 @@ func TaskLinkCardMessageID(link TaskLink) string {
 }
 
 func TaskLinkCardSyncPending(link TaskLink) bool {
-	var state CardSyncState
-	link.ExtraValue("cardSync", &state)
-	if state.State == "needs_review" || time.Now().Before(state.NextAttemptAt) {
+	var pending bool
+	if !link.ExtraValue("cardSyncPending", &pending) || !pending {
 		return false
 	}
-	var pending bool
-	return link.ExtraValue("cardSyncPending", &pending) && pending
+	var state CardSyncState
+	link.ExtraValue("cardSync", &state)
+	if state.State == "needs_review" {
+		fingerprint, err := taskLinkCardFingerprint(link, "")
+		return err == nil && supersedesUncertainCardTarget(state, fingerprint)
+	}
+	if time.Now().Before(state.NextAttemptAt) {
+		return false
+	}
+	return true
 }
 
 // SyncTaskLinkCard patches the bot-owned task card and only then clears the
@@ -70,19 +77,26 @@ func SyncTaskLinkCard(ctx context.Context, store TaskLinkStore, patcher TaskLink
 		}
 		var state CardSyncState
 		link.ExtraValue("cardSync", &state)
-		if state.State == "needs_review" {
-			cardSyncSkipped.Add(1)
-			return errors.New("card_sync_needs_review")
-		}
-		if time.Now().Before(state.NextAttemptAt) {
-			cardSyncSkipped.Add(1)
-			return errors.New("card_sync_backoff")
-		}
 		card, err := TaskLinkCardJSON(link)
 		if err != nil {
 			return err
 		}
 		fingerprint := cardDigest(messageID + card)
+		if state.State == "needs_review" {
+			if !supersedesUncertainCardTarget(state, fingerprint) {
+				cardSyncSkipped.Add(1)
+				return errors.New("card_sync_needs_review")
+			}
+			state.State = "pending"
+			state.Attempts = 0
+			state.ErrorCode = ""
+			state.FirstFailureAt = time.Time{}
+			state.NextAttemptAt = time.Time{}
+		}
+		if time.Now().Before(state.NextAttemptAt) {
+			cardSyncSkipped.Add(1)
+			return errors.New("card_sync_backoff")
+		}
 		if state.SyncedVersion == fingerprint {
 			cardSyncSkipped.Add(1)
 			return saveCardSync(store, link.ID, state, false)
@@ -166,6 +180,22 @@ func CardSyncDiagnostics() map[string]uint64 {
 	return map[string]uint64{"attempts": cardSyncAttempts.Load(), "updates": cardSyncUpdates.Load(), "skipped": cardSyncSkipped.Load()}
 }
 func cardDigest(s string) string { v := sha256.Sum256([]byte(s)); return hex.EncodeToString(v[:]) }
+func taskLinkCardFingerprint(link TaskLink, messageID string) (string, error) {
+	if messageID == "" {
+		messageID = TaskLinkCardMessageID(link)
+	}
+	if messageID == "" {
+		return "", nil
+	}
+	card, err := TaskLinkCardJSON(link)
+	if err != nil {
+		return "", err
+	}
+	return cardDigest(messageID + card), nil
+}
+func supersedesUncertainCardTarget(state CardSyncState, fingerprint string) bool {
+	return state.ErrorCode == "outcome_unknown" && state.TargetVersion != "" && fingerprint != "" && fingerprint != state.TargetVersion
+}
 func saveCardSync(store TaskLinkStore, id string, state CardSyncState, pending bool) error {
 	if id == "" {
 		return nil

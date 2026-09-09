@@ -145,6 +145,31 @@ func TestServiceTransportReplyAndPatchUseFixedProfileAndRealPolicies(t *testing.
 	}
 }
 
+func TestServiceTransportPatchRepreparesAfterLocalAuthorizationContention(t *testing.T) {
+	client := &transportClientFixture{}
+	root, transport := newTransportFixture(t, client)
+	inbound := InboundMessage{MessageID: "om_inbound", ChatType: "p2p", SenderOpenID: "ou_fixture"}
+	if err := transport.BindInbound(inbound); err != nil {
+		t.Fatal(err)
+	}
+	result, err := transport.Message(context.Background(), true, feishuprotocol.MessageRequest{MessageID: inbound.MessageID, Format: "card", Content: `{"elements":[]}`, IdempotencyKey: "fixture-reply"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch := feishuprotocol.CardRequest{MessageID: result.MessageID, Content: `{"elements":[{"tag":"hr"}]}`}
+	client.err = &UserApprovalError{Code: "approval_authorization_busy"}
+	if err := transport.Patch(context.Background(), patch); err == nil {
+		t.Fatal("authorization contention unexpectedly succeeded")
+	}
+	client.err = nil
+	if err := NewServiceTransport(root, client).Patch(context.Background(), patch); err != nil {
+		t.Fatal(err)
+	}
+	if client.calls.Load() != 3 {
+		t.Fatalf("patch was not retried exactly once: calls=%d", client.calls.Load())
+	}
+}
+
 func TestServiceTransportTimeoutCannotReplayAfterRestart(t *testing.T) {
 	client := &transportClientFixture{err: context.DeadlineExceeded}
 	root, transport := newTransportFixture(t, client)

@@ -20,9 +20,13 @@ func TestPermanentCardFailureStopsBackgroundRetries(t *testing.T) {
 	l, _ = s.UpdateByID(l.ID, func(l *TaskLink) { l.RootMessageID = "card"; l.SetExtraValue("cardSyncPending", true) })
 	p := &countFailPatch{}
 	_ = SyncTaskLinkCard(context.Background(), s, p, l, "")
+	l, _ = s.UpdateByID(l.ID, func(l *TaskLink) {
+		l.Detail = "new text"
+		l.SetExtraValue("cardSyncPending", true)
+	})
 	_ = SyncTaskLinkCard(context.Background(), s, p, l, "")
 	if p.calls != 1 {
-		t.Fatalf("permanent failure retried %d times", p.calls)
+		t.Fatalf("permanent failure retried after content changed: %d", p.calls)
 	}
 }
 
@@ -60,6 +64,49 @@ func TestCardBackoffSurvivesNewContentAndSuccessSkipsUnchanged(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatal("unchanged card was patched")
+	}
+}
+
+func TestNewCardVersionSupersedesUncertainOutcome(t *testing.T) {
+	s := NewTaskLinkStore(t.TempDir())
+	l, _ := s.Upsert("thread", "title", "", "me")
+	l, _ = s.UpdateByID(l.ID, func(l *TaskLink) {
+		l.RootMessageID = "card"
+		l.Detail = "old text"
+		l.SetExtraValue("cardSyncPending", true)
+	})
+	calls := 0
+	p := updatingCardPatcher(func(context.Context, string, string) error {
+		calls++
+		if calls == 1 {
+			return errors.New("outcome_unknown")
+		}
+		return nil
+	})
+	if err := SyncTaskLinkCard(context.Background(), s, p, l, ""); err == nil {
+		t.Fatal("uncertain card update unexpectedly succeeded")
+	}
+	l, _, _ = s.FindByID(l.ID)
+	var uncertain CardSyncState
+	l.ExtraValue("cardSync", &uncertain)
+	if uncertain.State != "needs_review" || TaskLinkCardSyncPending(l) {
+		t.Fatalf("uncertain version was not quarantined: %#v", uncertain)
+	}
+	l, _ = s.UpdateByID(l.ID, func(l *TaskLink) {
+		l.Detail = "new text"
+		l.SetExtraValue("cardSyncPending", true)
+	})
+	if !TaskLinkCardSyncPending(l) {
+		t.Fatal("new card version did not supersede the uncertain version")
+	}
+	if err := SyncTaskLinkCard(context.Background(), s, p, l, ""); err != nil {
+		t.Fatal(err)
+	}
+	l, _, _ = s.FindByID(l.ID)
+	var synced CardSyncState
+	l.ExtraValue("cardSync", &synced)
+	if calls != 2 || synced.State != "synced" || TaskLinkCardSyncPending(l) {
+		t.Fatalf("new card version did not converge: calls=%d sync=%#v", calls, synced)
 	}
 }
 
