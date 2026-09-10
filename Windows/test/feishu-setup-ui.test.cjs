@@ -105,7 +105,7 @@ test('optional user authorization does not appear as a required setup action', (
   const { context } = harness(snapshot({
     facts: [
       { id: 'application', title: '接入应用', state: 'present', value: '已验证' },
-      { id: 'robot', title: '飞书机器人', state: 'present', value: '尹超 Codex' },
+      { id: 'robot', title: '飞书机器人', state: 'present', value: '示例 Codex' },
       { id: 'authorizedUser', title: '用户能力授权', state: 'missing', value: '按需授权（不影响消息和卡片）' },
       { id: 'taskConnection', title: '任务连接', state: 'present', value: '正常' },
     ],
