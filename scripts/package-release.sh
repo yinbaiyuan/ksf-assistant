@@ -4,7 +4,9 @@ export LC_ALL=C
 export LANG=C
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-version="${RELEASE_VERSION:-0.11.0-preview.4}"
+product_version="$(node -p "require(process.argv[1]).productVersion" "$repo_root/version.json")"
+version="${RELEASE_VERSION:-$product_version}"
+[[ "$version" == "$product_version" ]] || { echo "RELEASE_VERSION must match version.json." >&2; exit 1; }
 release_root="$repo_root/dist/release-$version"
 app_path="$repo_root/dist/KSFAssistant.app"
 zip_path="$release_root/KSFAssistant-$version-macOS-universal.zip"

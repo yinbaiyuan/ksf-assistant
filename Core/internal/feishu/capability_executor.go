@@ -106,6 +106,12 @@ func CapabilityOperationErrorCode(err error) string {
 	var executionError *CapabilityExecutionError
 	if errors.As(err, &executionError) {
 		switch executionError.Phase {
+		case "authorization":
+			var required *ProgressiveAuthorizationRequiredError
+			if errors.As(executionError.Err, &required) {
+				return "progressive_authorization_required"
+			}
+			return "authorization_check_failed"
 		case "preflight":
 			return "preflight_failed"
 		case "write":
@@ -148,6 +154,9 @@ func (runner CapabilityExecutor) ReadPreflight(ctx context.Context, id string, i
 	}
 	if err := requireLongTailCapability(definition); err != nil {
 		return nil, err
+	}
+	if err := ensureCapabilityUserAuthorization(ctx, runner, definition); err != nil {
+		return nil, &CapabilityExecutionError{Phase: "authorization", Err: err}
 	}
 	if err := validateCapabilityInput(definition, input); err != nil {
 		return nil, err
@@ -195,6 +204,9 @@ func (runner CapabilityExecutor) ExecuteWithOptions(ctx context.Context, id stri
 	}
 	if err := requireLongTailCapability(definition); err != nil {
 		return nil, err
+	}
+	if err := ensureCapabilityUserAuthorization(ctx, runner, definition); err != nil {
+		return nil, &CapabilityExecutionError{Phase: "authorization", Err: err}
 	}
 	if err := validateCapabilityInput(definition, input); err != nil {
 		return nil, err
@@ -1137,7 +1149,7 @@ func (runner CapabilityExecutor) runBusinessProcess(parent context.Context, args
 	defer cancel()
 	command := exec.CommandContext(ctx, runner.Binary, full...)
 	command.WaitDelay = 2 * time.Second
-	command.Env = authEnvironment()
+	command.Env = authEnvironment(runner.DataRoot)
 	command.Dir = cwd
 	command.Stdin = bytes.NewReader(stdin)
 	stdout := boundedCommandBuffer{limit: maximumCapabilityOutputBytes}

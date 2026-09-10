@@ -12,13 +12,13 @@ import (
 	"ksfassistant/core/internal/userapproval"
 )
 
-const registrationURLFixture = "https://open.feishu.cn/page/cli?user_code=ABC-123&lpv=1.0.93&ocv=1.0.93&from=cli"
+const registrationURLFixture = "https://open.feishu.cn/page/cli?user_code=ABC-123&lpv=" + PinnedLarkCLIUpstreamVersion + "&ocv=" + PinnedLarkCLIUpstreamVersion + "&from=cli"
 const registrationConfigFixture = `{"apps":[{"name":"default","appId":"cli_fixture","appSecret":{"source":"keychain","id":"appsecret:cli_fixture"},"brand":"feishu","lang":"zh_cn","users":[]}]}`
 
 func fakeAppRegistrationCLI(t *testing.T, ending string) CapabilityExecutor {
 	t.Helper()
 	runner := fakeAuthCLI(t, `case "$1" in
---version) printf 'lark-cli version 1.0.93'; exit 0 ;;
+--version) printf 'lark-cli version 1.0.93-ksfassistant.1'; exit 0 ;;
 schema) printf '{"name":"approval.approvals.get","inputSchema":{}}'; exit 0 ;;
 auth) exit 1 ;;
 esac
@@ -54,11 +54,36 @@ func successfulRegistrationScript() string {
 printf '{"appId":"cli_fixture","appSecret":"****","brand":"feishu"}'`
 }
 
+func TestAppRegistrationBindsReturnedUserWithoutOAuth(t *testing.T) {
+	ending := strings.Replace(successfulRegistrationScript(), `"brand":"feishu"}`, `"brand":"feishu","registrationUser":{"openId":"ou_fixture","tenantBrand":"feishu"}}`, 1)
+	runner := fakeAppRegistrationCLI(t, ending)
+	if _, err := StartAppConfiguration(context.Background(), runner, runner.DataRoot, "default", true); err != nil {
+		t.Fatal(err)
+	}
+	completeRegistration(t, runner)
+	result, err := FinishAppConfiguration(context.Background(), runner, runner.DataRoot)
+	if err != nil || result["operatorBound"] != true || result["operatorAuthorizationRequired"] != false {
+		t.Fatalf("one-scan binding failed: %#v %v", result, err)
+	}
+	config, err := NewClientConfigStore(runner.DataRoot).Load()
+	if err != nil || config.Operator == nil || config.Operator.AppID != "cli_fixture" || config.Operator.OpenID != "ou_fixture" || config.MessageTargets["我"].ID != "ou_fixture" {
+		t.Fatalf("app-bound operator missing: %#v %v", config, err)
+	}
+	encoded, _ := json.Marshal(result)
+	if strings.Contains(string(encoded), "ou_fixture") {
+		t.Fatal("raw registration identity crossed the bridge result")
+	}
+}
+
 func TestAppRegistrationStagesThenPublishesOnce(t *testing.T) {
 	runner := fakeAppRegistrationCLI(t, successfulRegistrationScript())
 	status, err := StartAppConfiguration(context.Background(), runner, runner.DataRoot, "default", true)
 	if err != nil || status["status"] != "pending" || status["verificationUrl"] != registrationURLFixture || status["flow"] != "app-create" {
 		t.Fatalf("start=%#v err=%v", status, err)
+	}
+	args, err := os.ReadFile(filepath.Join(runner.DataRoot, "args"))
+	if err != nil || strings.Contains("\n"+string(args), "\n--json\n") {
+		t.Fatalf("config init used an unsupported JSON flag: %q (%v)", args, err)
 	}
 	destination := filepath.Join(os.Getenv("LARKSUITE_CLI_CONFIG_DIR"), "config.json")
 	if _, err := os.Stat(destination); !os.IsNotExist(err) {
@@ -191,8 +216,35 @@ func TestAppRegistrationRefusesExistingBusinessChannels(t *testing.T) {
 	}
 }
 
-func TestAppRegistrationRefusesHistoricalBindingsAndWork(t *testing.T) {
-	for _, relative := range []string{"client.json", "task-links-v1.json", "integration-events-v1.json", "private-cache/inbound-work/old.json", "private-cache/workbox-v3/outbox/pending/old.json", "private-cache/workbox-v3/docbox/pending/old.json", "logs/docbox.jsonl", "integration-event-receipts-v1/old.json"} {
+func TestAppRegistrationPreSubmissionFailureIsExplicitAndRecoverable(t *testing.T) {
+	root := t.TempDir()
+	runner := CapabilityExecutor{Binary: filepath.Join(root, "missing-lark-cli"), Profile: "default", DataRoot: root, WorkingDirectory: root}
+	_, err := StartAppConfiguration(context.Background(), runner, root, "default", true)
+	if err == nil || !IsAppConfigurationNotStarted(err) {
+		t.Fatalf("pre-submission failure was ambiguous: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "user-authorization-execution-v1.lock")); !os.IsNotExist(statErr) {
+		t.Fatal("failed preflight crossed the execution lease boundary")
+	}
+}
+
+func TestAppRegistrationFailureBeforeVerificationURLIsRetryable(t *testing.T) {
+	runner := fakeAuthCLI(t, `case "$1" in
+--version) printf 'lark-cli version 1.0.93-ksfassistant.1'; exit 0 ;;
+schema) printf '{"name":"approval.approvals.get","inputSchema":{}}'; exit 0 ;;
+*) exit 1 ;;
+esac`)
+	_, err := StartAppConfiguration(context.Background(), runner, runner.DataRoot, "default", true)
+	if err == nil || !IsAppConfigurationNotStarted(err) {
+		t.Fatalf("failure before a user-visible verification URL was treated as possibly submitted: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(runner.DataRoot, "user-authorization-execution-v1.lock")); statErr != nil {
+		t.Fatalf("fixture did not cross the local process boundary: %v", statErr)
+	}
+}
+
+func TestAppRegistrationPreservesInactiveHistoricalWork(t *testing.T) {
+	for _, relative := range []string{"integration-events-v1.json", "private-cache/inbound-work/old.json", "private-cache/workbox-v3/outbox/pending/old.json", "private-cache/workbox-v3/docbox/pending/old.json", "logs/docbox.jsonl", "integration-event-receipts-v1/old.json"} {
 		t.Run(relative, func(t *testing.T) {
 			runner := fakeAppRegistrationCLI(t, successfulRegistrationScript())
 			path := filepath.Join(runner.DataRoot, filepath.FromSlash(relative))
@@ -202,8 +254,8 @@ func TestAppRegistrationRefusesHistoricalBindingsAndWork(t *testing.T) {
 			if err := os.WriteFile(path, []byte("historical-fact"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := StartAppConfiguration(context.Background(), runner, runner.DataRoot, "default", true); err == nil {
-				t.Fatal("historical business state admitted new application")
+			if _, err := StartAppConfiguration(context.Background(), runner, runner.DataRoot, "default", true); err != nil {
+				t.Fatalf("inactive history blocked a fresh isolated connection: %v", err)
 			}
 			data, err := os.ReadFile(path)
 			if err != nil || string(data) != "historical-fact" {
@@ -229,13 +281,14 @@ func TestReuseRequiresActualFeishuApplication(t *testing.T) {
 
 func TestAppRegistrationURLAndResultContracts(t *testing.T) {
 	if !validAppRegistrationURL(registrationURLFixture) {
-		t.Fatal("fixed upstream URL rejected")
+		t.Fatal("fixed upstream protocol URL rejected")
 	}
 	for _, value := range []string{
 		strings.Replace(registrationURLFixture, "open.feishu.cn", "open.feishu.cn.evil.test", 1),
 		registrationURLFixture + "&device_code=secret",
 		registrationURLFixture + "&user_code=OTHER",
-		strings.ReplaceAll(registrationURLFixture, "1.0.93", "1.0.94"),
+		strings.ReplaceAll(registrationURLFixture, PinnedLarkCLIUpstreamVersion, PinnedLarkCLIVersion),
+		strings.ReplaceAll(registrationURLFixture, PinnedLarkCLIUpstreamVersion, "1.0.94"),
 		strings.Replace(registrationURLFixture, "/page/cli", "/redirect", 1),
 	} {
 		if validAppRegistrationURL(value) {

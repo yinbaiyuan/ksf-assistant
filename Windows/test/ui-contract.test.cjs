@@ -124,7 +124,8 @@ test('Feishu settings use the packaged service and keep secrets out of persisted
   assert.doesNotMatch(app, /choose-feishu|feishuBridgeRoot/);
   assert.match(app, /function renderFeishuPage/);
   assert.match(main, /action\.confirmation/);
-  assert.match(app, /接入已有应用/);
+  assert.match(app, /create_app/);
+  assert.doesNotMatch(app, /接入已有应用|feishu-app-secret|connect_app/);
   assert.doesNotMatch(app, /本机事件|主设备|仅手动能力|feishuProfileText|data-field="feishu-profile"/);
   assert.doesNotMatch(preload, /setFeishuProfile|feishu:profile-set/);
   assert.doesNotMatch(main, /feishu:profile-set|feishu\/profile\/set/);

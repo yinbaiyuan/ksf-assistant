@@ -35,11 +35,14 @@ type ConfigurationFact struct {
 }
 
 type ConfigurationAction struct {
-	ID           string `json:"id"`
-	Title        string `json:"title"`
-	Enabled      bool   `json:"enabled"`
-	Reason       string `json:"reason,omitempty"`
-	Confirmation string `json:"confirmation,omitempty"`
+	ID                     string   `json:"id"`
+	Title                  string   `json:"title"`
+	Enabled                bool     `json:"enabled"`
+	Reason                 string   `json:"reason,omitempty"`
+	Confirmation           string   `json:"confirmation,omitempty"`
+	AuthorizationRequestID string   `json:"authorizationRequestId,omitempty"`
+	Purpose                string   `json:"purpose,omitempty"`
+	Scopes                 []string `json:"scopes,omitempty"`
 }
 
 type ConfigurationIssue struct {
@@ -68,18 +71,19 @@ type ConfigurationSnapshot struct {
 }
 
 type ConfigurationActionRequest struct {
-	Action          string `json:"action"`
-	RequestID       string `json:"requestId"`
-	Epoch           string `json:"epoch"`
-	Revision        uint64 `json:"revision"`
-	ContextRevision string `json:"contextRevision"`
-	Confirm         bool   `json:"confirm"`
-	AppID           string `json:"appId,omitempty"`
-	AppSecret       string `json:"appSecret,omitempty"`
-	TargetAlias     string `json:"targetAlias,omitempty"`
-	Feature         string `json:"feature,omitempty"`
-	Mode            string `json:"mode,omitempty"`
-	FlowID          string `json:"flowId,omitempty"`
+	Action                 string `json:"action"`
+	RequestID              string `json:"requestId"`
+	Epoch                  string `json:"epoch"`
+	Revision               uint64 `json:"revision"`
+	ContextRevision        string `json:"contextRevision"`
+	Confirm                bool   `json:"confirm"`
+	AppID                  string `json:"appId,omitempty"`
+	AppSecret              string `json:"appSecret,omitempty"`
+	TargetAlias            string `json:"targetAlias,omitempty"`
+	Feature                string `json:"feature,omitempty"`
+	Mode                   string `json:"mode,omitempty"`
+	FlowID                 string `json:"flowId,omitempty"`
+	AuthorizationRequestID string `json:"authorizationRequestId,omitempty"`
 }
 
 type ConfigurationActionResult struct {
@@ -87,6 +91,9 @@ type ConfigurationActionResult struct {
 	Outcome  string                `json:"outcome"`
 	Snapshot ConfigurationSnapshot `json:"snapshot"`
 	Message  string                `json:"message"`
+	// receiptFlowID is private Core bookkeeping. The public snapshot already
+	// carries the validated flow projection needed by the desktop.
+	receiptFlowID string
 }
 
 type configurationRequestRecord struct {
@@ -338,7 +345,7 @@ func (state *configurationRuntime) snapshot(now time.Time) ConfigurationSnapshot
 	evidence := data.evidence
 	stale := data.invalidated || data.evidenceFailed || data.evidenceAt.IsZero() || now.Sub(data.evidenceAt) > 2*time.Minute
 	quickStale := data.quickFailed || data.quickAt.IsZero() || now.Sub(data.quickAt) > 10*time.Second
-	result := ConfigurationSnapshot{SchemaVersion: 1, Epoch: state.epoch, Revision: state.revision, ObservedAt: now.UTC().Format(time.RFC3339Nano), Refreshing: state.refreshing && state.refreshingSlow || state.acting,
+	result := ConfigurationSnapshot{SchemaVersion: 2, Epoch: state.epoch, Revision: state.revision, ObservedAt: now.UTC().Format(time.RFC3339Nano), Refreshing: state.refreshing && state.refreshingSlow || state.acting,
 		Setup: data.setup, Auth: evidence.Auth, Connection: data.connection, Flow: data.flow, Facts: []ConfigurationFact{}, Actions: []ConfigurationAction{}, Issues: []ConfigurationIssue{}}
 	if evidence.ContextRevision != "" && data.settings != nil {
 		result.ContextRevision = configurationHash([]any{evidence.ContextRevision, data.settings})
@@ -410,8 +417,12 @@ func (state *configurationRuntime) snapshot(now time.Time) ConfigurationSnapshot
 		result.Summary = ConfigurationSummary{"unavailable", "暂时无法读取飞书服务状态", "请检查运行组件；这不代表应用未配置或用户授权已失效。", "warning"}
 	case data.invalidated && !data.evidenceFailed:
 		result.Summary = ConfigurationSummary{"checking", "正在核验配置变更", "保留此前状态，等待本次操作后的检查结果。", "neutral"}
+	case evidence.CleanupPending && !stale:
+		result.Summary = ConfigurationSummary{"cleanup_required", "飞书本地清理尚未完成", "连接保持关闭；请使用“继续清理”，完成前不会恢复消息或能力操作。", "warning"}
+	case evidence.ApplicationState == "missing" && evidence.CreationBlocked && !stale:
+		result.Summary = ConfigurationSummary{"cleanup_required", "需要清理旧飞书连接", "本机仍有旧应用的消息或任务绑定；清理后即可重新扫码连接。", "warning"}
 	case evidence.ApplicationState == "missing" && !stale:
-		result.Summary = ConfigurationSummary{"not_configured", "尚未配置飞书应用", "扫码创建应用，或接入已有应用。", "neutral"}
+		result.Summary = ConfigurationSummary{"not_configured", "尚未连接飞书", "扫码后可在飞书官方页面创建或选择应用。", "neutral"}
 	case evidence.ApplicationState == "present" && !stale && connectionState == "present" && !quickStale:
 		result.Summary = ConfigurationSummary{"connected", "飞书消息连接正常", "用户授权、远程控制与各项功能分别管理；连接成功不代表任务卡片全部验收通过。", "success"}
 	case evidence.ApplicationState == "present" && !stale:
@@ -430,6 +441,9 @@ func (state *configurationRuntime) snapshot(now time.Time) ConfigurationSnapshot
 	}
 	for _, problem := range evidence.Problems {
 		result.Issues = append(result.Issues, ConfigurationIssue{"evidence", problem, "部分配置证据未能验证，请重新检查。"})
+	}
+	if evidence.CleanupPending {
+		result.Issues = append(result.Issues, ConfigurationIssue{"cleanup", "local_cleanup_pending", "上次注销未完成本地清理；连接保持关闭，可以安全重试。"})
 	}
 	flowPending := result.Flow != nil && result.Flow.State == "pending"
 	if result.Flow != nil && result.Flow.ExpiresAt != "" {
@@ -459,13 +473,13 @@ func (state *configurationRuntime) snapshot(now time.Time) ConfigurationSnapshot
 			case stale || quickStale:
 				action.Reason = "请先取得当前配置与运行状态的有效检查结果。"
 			case id == "create_app" && evidence.CreationBlocked:
-				action.Reason = "已有业务配置或历史记录，请恢复原应用；不会清理数据后创建替代应用。"
+				action.Reason = "仍有活动飞书连接，请先完成注销清理。"
 			case id == "create_app" || id == "connect_app":
 				action.Reason = "已有应用配置，不会覆盖或重复创建。"
 			case id == "bind_operator":
 				action.Reason = "仅当前用户身份已验证且尚未绑定时可操作。"
 			case id == "logout":
-				action.Reason = "当前没有已验证的用户授权可注销。"
+				action.Reason = "当前没有 KSFAssistant 管理的飞书连接可清理。"
 			case id == "enable_outbound":
 				action.Reason = "需要机器人身份可用，且主动出站尚未启用。"
 			case id == "test_message":
@@ -476,25 +490,32 @@ func (state *configurationRuntime) snapshot(now time.Time) ConfigurationSnapshot
 		}
 		result.Actions = append(result.Actions, action)
 	}
-	addAction("create_app", "扫码创建应用", ready && evidence.ApplicationState == "missing" && !evidence.CreationBlocked && !flowPending, "将通过官方 CLI 创建新的飞书应用，不会自动进行用户授权。")
-	addAction("connect_app", "接入已有应用", ready && evidence.ApplicationState == "missing" && !flowPending, "将保存提供的飞书应用配置，不会自动绑定远程操作者。")
-	authTitle := "授权用户身份"
-	if userState == "present" {
-		authTitle = "重新授权"
-		if permissionState == "missing" {
-			authTitle = "补充用户授权"
-		}
+	addAction("create_app", "扫码连接飞书", ready && evidence.ApplicationState == "missing" && !evidence.CreationBlocked && !flowPending, "将在飞书官方网页创建或选择应用；首次扫码返回本人身份时会自动完成绑定。")
+	startAuthTitle := "补充本人授权"
+	startAuthEnabled := app && evidence.OperatorState == "missing" && len(evidence.MissingApplicationScopes) == 0 && !flowPending
+	startAuthConfirmation := "仅在首次扫码未返回本人身份时，补充申请 contact:user.base:readonly；绑定后立即清除临时用户令牌。"
+	if evidence.AuthorizationRequest != nil {
+		startAuthTitle = "授权本次飞书功能"
+		startAuthEnabled = app && len(evidence.MissingApplicationScopes) == 0 && !flowPending
+		startAuthConfirmation = "将为“" + evidence.AuthorizationRequest.Purpose + "”申请以下缺少权限：" + strings.Join(evidence.AuthorizationRequest.Scopes, "、") + "。授权成功后不会自动重放原操作。"
 	}
-	addAction("start_auth", authTitle, app && !flowPending, "将申请当前功能所需用户权限；不会自动授予远程控制权限。")
-	addAction("logout", "注销用户授权", app && userState == "present" && !flowPending, "先断开已连接任务并尝试更新飞书卡片，再退出登录；卡片更新失败也会注销，不会停止 Codex 任务。")
-	operatorLabel := evidence.UserName
-	if operatorLabel == "" && len(evidence.IdentityRevision) >= 12 {
-		operatorLabel = "身份 " + evidence.IdentityRevision[:12]
+	addAction("start_auth", startAuthTitle, startAuthEnabled, startAuthConfirmation)
+	if len(evidence.MissingApplicationScopes) > 0 {
+		result.Actions[len(result.Actions)-1].Reason = "请先在飞书开放平台为当前应用开通所需权限。"
 	}
-	if operatorLabel == "" {
-		operatorLabel = "当前 CLI 用户"
+	if evidence.AuthorizationRequest != nil {
+		result.Actions[len(result.Actions)-1].AuthorizationRequestID = evidence.AuthorizationRequest.ID
+		result.Actions[len(result.Actions)-1].Purpose = evidence.AuthorizationRequest.Purpose
+		result.Actions[len(result.Actions)-1].Scopes = append([]string{}, evidence.AuthorizationRequest.Scopes...)
 	}
-	addAction("bind_operator", "绑定当前用户为远程操作者", app && userState == "present" && evidence.OperatorState == "missing" && !flowPending, "允许当前已验证的飞书用户（"+operatorLabel+"）通过消息控制已授权的 Codex 任务，并更新“我”目标。")
+	residualConnection := ready && evidence.ApplicationState == "missing" && evidence.CreationBlocked
+	logoutTitle := "注销并清除飞书"
+	if evidence.CleanupPending {
+		logoutTitle = "继续清理"
+	} else if residualConnection {
+		logoutTitle = "清理旧连接数据"
+	}
+	addAction("logout", logoutTitle, (app || evidence.CleanupPending || residualConnection) && !flowPending, "断开任务连接，关闭与旧应用相关的群聊和邮件入口，并删除 KSFAssistant 保存的应用凭据、用户令牌、本人绑定、授权会话和专属主密钥；不会删除飞书后台应用或 Codex 任务。")
 	addAction("test_message", "发送测试消息", app && evidence.BotState == "present" && evidence.OperatorState == "present" && !flowPending, "以机器人身份向已核验的本人单聊发送一条固定测试消息；结果未知时不会重发。")
 	addAction("restart", "重新连接飞书服务", !state.acting && !state.closed && !flowPending, "重启受管飞书服务，短暂中断消息连接；保留配置与业务队列。")
 	flowReady := !state.acting && !state.closed && !data.flowFailed && result.Flow != nil
@@ -525,13 +546,13 @@ func configurationActionByID(snapshot ConfigurationSnapshot, id string) (Configu
 }
 
 func validateConfigurationAction(request ConfigurationActionRequest) error {
-	if request.Action == "set_feature" || request.Action == "enable_outbound" {
+	if request.Action == "set_feature" || request.Action == "enable_outbound" || request.Action == "connect_app" || request.Action == "bind_operator" {
 		return errors.New("configuration_action_retired")
 	}
-	if request.RequestID == "" || len(request.RequestID) > 128 || strings.ContainsAny(request.RequestID, "\x00\r\n") || len(request.AppSecret) > 4096 || len(request.AppID) > 128 || len(request.TargetAlias) > 200 {
+	if request.RequestID == "" || len(request.RequestID) > 128 || strings.ContainsAny(request.RequestID, "\x00\r\n") || len(request.AppSecret) > 4096 || len(request.AppID) > 128 || len(request.TargetAlias) > 200 || len(request.AuthorizationRequestID) > 128 {
 		return errors.New("configuration_invalid_request")
 	}
-	if request.Action != "connect_app" && (request.AppID != "" || request.AppSecret != "") || request.Action != "test_message" && request.TargetAlias != "" || request.Action != "set_feature" && (request.Feature != "" || request.Mode != "") {
+	if request.Action != "connect_app" && (request.AppID != "" || request.AppSecret != "") || request.Action != "test_message" && request.TargetAlias != "" || request.Action != "set_feature" && (request.Feature != "" || request.Mode != "") || request.Action != "start_auth" && request.AuthorizationRequestID != "" {
 		return errors.New("configuration_unexpected_parameters")
 	}
 	if request.Action == "connect_app" && (strings.TrimSpace(request.AppID) == "" || request.AppSecret == "") {
@@ -621,17 +642,35 @@ func (service *Service) applyFeishuConfiguration(ctx context.Context, request Co
 	if request.Action == "restart" {
 		contextMatches = true
 	}
+	if request.Action == "start_auth" && checkedAction.AuthorizationRequestID != request.AuthorizationRequestID {
+		contextMatches = false
+	}
 	if state.closed || ctx.Err() != nil || !contextMatches || !allowed || !checkedAction.Enabled || request.Action == "test_message" && (request.TargetAlias != fresh.evidence.OperatorAlias || !containsString(fresh.connection.TargetAliases, request.TargetAlias)) {
 		state.mu.Unlock()
 		return ConfigurationActionResult{Outcome: "failed", Snapshot: checked, Message: "操作前复核未通过或状态已变化；尚未执行，请检查当前状态。"}, nil
 	}
-	if err := service.saveConfigurationReceipt(ConfigurationReceipt{SchemaVersion: 1, RequestID: request.RequestID, Digest: digest, Action: request.Action, ContextRevision: request.ContextRevision, Outcome: "unknown", Stage: "submitted", ApplicationID: fresh.evidence.ApplicationID, PermissionRevision: fresh.evidence.PermissionRevision, Message: "已提交，正在核验执行结果。"}); err != nil {
+	if err := service.saveConfigurationReceipt(ConfigurationReceipt{SchemaVersion: 1, RequestID: request.RequestID, Digest: digest, Action: request.Action, ContextRevision: request.ContextRevision, FlowID: request.FlowID, Outcome: "unknown", Stage: "submitted", ApplicationID: fresh.evidence.ApplicationID, PermissionRevision: fresh.evidence.PermissionRevision, Message: "已提交，正在核验执行结果。"}); err != nil {
 		state.mu.Unlock()
 		return ConfigurationActionResult{}, err
 	}
 	state.requests[request.RequestID] = configurationRequestRecord{digest: digest, outcome: "unknown", message: "执行结果尚未确认，不会重复执行。"}
 	state.mu.Unlock()
 	outcome, message, code := service.executeConfigurationAction(ctx, request, checked, fresh.settings, fresh.evidence)
+	receiptFlowID := request.FlowID
+	if outcome == "pending" && (request.Action == "create_app" || request.Action == "start_auth") {
+		kind := "app"
+		if request.Action == "start_auth" {
+			kind = "user"
+		}
+		var flow feishuprotocol.ConfigurationFlow
+		flowErr := service.managedFeishuSupervisor.Call(ctx, feishuprotocol.MethodConfigurationFlow, map[string]any{}, &flow)
+		if flowErr != nil || flow.ID == "" || flow.Kind != kind || flow.State != "pending" {
+			outcome, code = "unknown", "configuration_flow_unverified"
+			message = "操作已经提交，但本地流程标识尚未核实；请查询原请求，禁止重复执行。"
+		} else {
+			receiptFlowID = flow.ID
+		}
+	}
 	state.mu.Lock()
 	state.acting = false
 	// A read or message result is not an identity transition. Keep the visible
@@ -650,25 +689,25 @@ func (service *Service) applyFeishuConfiguration(ctx context.Context, request Co
 	state.forceSlow = true
 	state.requests[request.RequestID] = configurationRequestRecord{digest: digest, outcome: outcome, message: message}
 	state.mu.Unlock()
-	return ConfigurationActionResult{Outcome: outcome, Code: code, Snapshot: service.ReadFeishuConfiguration(ctx, true), Message: message}, nil
+	return ConfigurationActionResult{Outcome: outcome, Code: code, Snapshot: service.ReadFeishuConfiguration(ctx, true), Message: message, receiptFlowID: receiptFlowID}, nil
 }
 
 func (service *Service) executeConfigurationAction(ctx context.Context, request ConfigurationActionRequest, snapshot ConfigurationSnapshot, expected *managedfeishu.Settings, expectedIdentity feishuprotocol.ConfigurationEvidence) (string, string, string) {
 	var err error
 	pending := false
+	remoteRevocationUnconfirmed := false
 	switch request.Action {
 	case "create_app":
 		var result map[string]any
 		result, err = service.BeginFeishuSetup(ctx, managedfeishu.SetupModeNew, "", "")
 		pending = result["status"] == "pending"
-	case "connect_app":
-		_, err = service.BeginFeishuSetup(ctx, managedfeishu.SetupModeExisting, request.AppID, request.AppSecret)
-		if err == nil {
-			err = service.restartFeishuSupervisor(ctx)
-		}
 	case "start_auth":
 		var result feishuprotocol.AuthStatus
-		result, err = service.StartDesktopFeishuAuth(ctx, feishuprotocol.AuthStartRequest{Scope: "required"})
+		scope := "required"
+		if request.AuthorizationRequestID != "" {
+			scope = "request:" + request.AuthorizationRequestID
+		}
+		result, err = service.startManagedFeishuAuth(ctx, scope)
 		pending = result.Status == "pending"
 	case "finish_auth":
 		var result feishuprotocol.AuthStatus
@@ -700,8 +739,7 @@ func (service *Service) executeConfigurationAction(ctx context.Context, request 
 		if err == nil && result.Status != "unauthorized" {
 			err = errors.New("logout_not_verified")
 		}
-	case "bind_operator":
-		err = service.BindFeishuOperatorWithExpected(ctx, request.Confirm, expectedIdentity)
+		remoteRevocationUnconfirmed = result.RemoteRevocationConfirmed != nil && !*result.RemoteRevocationConfirmed
 	case "test_message":
 		err = service.sendConfigurationTest(ctx, request.TargetAlias, request.RequestID)
 	case "restart":
@@ -720,6 +758,9 @@ func (service *Service) executeConfigurationAction(ctx context.Context, request 
 			return "failed", "功能设置已被其他操作修改；本次未覆盖，请检查后重新确认。", "configuration_preflight_failed"
 		}
 		code := err.Error()
+		if strings.Contains(code, "application_start_preflight_failed") {
+			return "failed", "扫码流程尚未启动，飞书应用没有被创建或选择；请刷新后重试。", "application_start_preflight_failed"
+		}
 		for _, known := range []string{"application_permissions_missing", "application_permissions_unverified", "test_not_submitted_self_unverified", "test_not_submitted_transport_unavailable", "test_definitive_failure", "authorization_not_verified", "logout_not_verified"} {
 			if strings.Contains(code, known) {
 				return "failed", "本次操作未完成（" + known + "），请查看诊断后处理。", known
@@ -748,6 +789,9 @@ func (service *Service) executeConfigurationAction(ctx context.Context, request 
 	}
 	if request.Action == "test_message" {
 		return "completed", "测试消息已发送，已核对消息回执。", ""
+	}
+	if request.Action == "logout" && remoteRevocationUnconfirmed {
+		return "completed", "本地认证数据已清除，飞书端用户令牌撤销未确认；连接不会恢复。", "remote_revocation_unconfirmed"
 	}
 	return "completed", "本次操作已完成，正在重新核验当前状态。", ""
 }

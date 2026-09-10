@@ -21,7 +21,7 @@ func TestSignedOutRefusesMessageAndCapabilityBeforeCLI(t *testing.T) {
 }
 func TestLoginScopesIncludeOfferedExtensionsWithoutRequiringUnavailableOnes(t *testing.T) {
 	scopes, err := loginPermissionScopes([]string{"contact:user.base:readonly", "docx:document:readonly"})
-	if err != nil || len(scopes) != 2 {
+	if err != nil || len(scopes) != 1 || scopes[0] != "contact:user.base:readonly" {
 		t.Fatal(scopes, err)
 	}
 	if _, err = loginPermissionScopes([]string{"docx:document:readonly"}); err == nil {
@@ -29,7 +29,7 @@ func TestLoginScopesIncludeOfferedExtensionsWithoutRequiringUnavailableOnes(t *t
 	}
 }
 
-func TestOnlyVerifiedCompletedOAuthReopensSignedOutSession(t *testing.T) {
+func TestUserOAuthNeverChangesGlobalBotSessionMarker(t *testing.T) {
 	for _, verified := range []string{"true", "false"} {
 		t.Run(verified, func(t *testing.T) {
 			runner := fakeAuthCLI(t, `case "$4" in
@@ -48,8 +48,8 @@ esac`)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if (capabilitypolicy.CheckSession(runner.DataRoot) == nil) != (verified == "true") {
-				t.Fatal("session reopened without verified OAuth")
+			if capabilitypolicy.CheckSession(runner.DataRoot) == nil {
+				t.Fatal("user OAuth changed the independent bot session marker")
 			}
 		})
 	}

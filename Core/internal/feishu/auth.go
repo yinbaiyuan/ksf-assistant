@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"ksfassistant/core/internal/capabilitypolicy"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,11 +25,6 @@ func (runner CapabilityExecutor) RunAuthJSON(ctx context.Context, args []string,
 			return nil, err
 		}
 		defer release()
-		if args[0] == "auth" && args[1] == "logout" {
-			if err := capabilitypolicy.SignOut(runner.DataRoot); err != nil {
-				return nil, err
-			}
-		}
 	}
 	if timeout <= 0 || timeout > time.Minute {
 		timeout = time.Minute
@@ -39,7 +33,7 @@ func (runner CapabilityExecutor) RunAuthJSON(ctx context.Context, args []string,
 	defer cancel()
 	command := exec.CommandContext(commandCtx, runner.Binary, append([]string{"--profile", "default"}, args...)...)
 	command.Dir = runner.WorkingDirectory
-	command.Env = authEnvironment()
+	command.Env = authEnvironment(runner.DataRoot)
 	command.WaitDelay = 2 * time.Second
 	command.Stdin = bytes.NewReader(stdin)
 	stdout := boundedCommandBuffer{limit: maximumAuthOutputBytes}
@@ -76,11 +70,11 @@ func ConfigureExistingApp(ctx context.Context, runner CapabilityExecutor, appID,
 	if profile != "default" {
 		return nil, errors.New("官方 CLI 配置必须为 default")
 	}
-	if _, err := newAppConfigurationPath(); err != nil {
+	if _, err := newAppConfigurationPath(runner.DataRoot); err != nil {
 		return nil, err
 	}
 	CancelUserAuthFlow(runner.DataRoot)
-	_, err := runner.RunAuthJSON(ctx, []string{"config", "init", "--name", profile, "--app-id", appID, "--app-secret-stdin", "--brand", brand, "--lang", "zh_cn", "--json"}, []byte(appSecret+"\n"), time.Minute)
+	_, err := runner.RunAuthJSON(ctx, []string{"config", "init", "--name", profile, "--app-id", appID, "--app-secret-stdin", "--brand", brand, "--lang", "zh_cn"}, []byte(appSecret+"\n"), time.Minute)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +108,42 @@ func FinishUserAuthFlow(ctx context.Context, runner CapabilityExecutor, dataRoot
 	if deviceCode != "" {
 		return nil, errors.New("旧版授权续传已停用，请重新发起授权")
 	}
+	session := currentUserAuthSession(dataRoot)
 	status, err := finishUserAuthSession(ctx, runner, dataRoot)
+	if err == nil && status.Status == "authorized" && status.IdentityValid && session != nil {
+		session.mu.Lock()
+		temporaryOperatorBind := session.temporaryOperatorBind
+		authorizationRequestID := session.authorizationRequestID
+		authorizedOpenID := session.authorizedOpenID
+		session.mu.Unlock()
+		if !temporaryOperatorBind {
+			request, requestErr := readProgressiveAuthorizationRequest(dataRoot)
+			if requestErr != nil || request == nil || request.ID != authorizationRequestID {
+				err = errors.New("渐进授权回执与本地请求不匹配")
+			} else if removeErr := removeProgressiveAuthorizationRequest(dataRoot); removeErr != nil {
+				err = removeErr
+			}
+			return authStatusMap(status), err
+		}
+		raw, readErr := runner.RunAuthJSON(ctx, []string{"auth", "status", "--verify", "--json"}, nil, 15*time.Second)
+		identities, _ := raw["identities"].(map[string]any)
+		user, _ := identities["user"].(map[string]any)
+		openID, _ := user["openId"].(string)
+		if openID == "" {
+			openID, _ = user["open_id"].(string)
+		}
+		if openID == "" {
+			openID = authorizedOpenID
+		}
+		appID, _ := raw["appId"].(string)
+		if readErr != nil || raw["brand"] != "feishu" {
+			err = errors.New("补充本人授权结果无法核验")
+		} else if bindErr := bindRegistrationOperator(dataRoot, appID, openID); bindErr != nil {
+			err = bindErr
+		} else if _, logoutErr := runner.RunAuthJSON(ctx, []string{"auth", "logout", "--json"}, nil, 30*time.Second); logoutErr != nil {
+			err = errors.New("本人已绑定，但临时用户令牌尚未清除")
+		}
+	}
 	return authStatusMap(status), err
 }
 
@@ -155,7 +184,7 @@ func EnsureCurrentUserWithExpected(ctx context.Context, runner CapabilityExecuto
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		presence, stamp, err := configurationFileEvidence()
+		presence, stamp, err := configurationFileEvidenceFor(runner.DataRoot)
 		if err != nil || presence != "present" {
 			return ErrOperatorContextConflict
 		}
@@ -177,7 +206,7 @@ func EnsureCurrentUserWithExpected(ctx context.Context, runner CapabilityExecuto
 		if configurationDigest(string(identityBytes)) != expected.IdentityRevision || configurationDigest(string(contextBytes)) != expected.ContextRevision {
 			return ErrOperatorContextConflict
 		}
-		currentPresence, currentStamp, err := configurationFileEvidence()
+		currentPresence, currentStamp, err := configurationFileEvidenceFor(runner.DataRoot)
 		if err != nil || currentPresence != presence || currentStamp != stamp {
 			return ErrOperatorContextConflict
 		}
@@ -185,6 +214,7 @@ func EnsureCurrentUserWithExpected(ctx context.Context, runner CapabilityExecuto
 			return err
 		}
 		next.MessageTargets["我"] = MessageTarget{Type: "open_id", ID: openID}
+		next.Operator = &OperatorBinding{AppID: expected.ApplicationID, OpenID: openID}
 		if !contains(next.DirectAllowedAliases, "我") {
 			next.DirectAllowedAliases = append(next.DirectAllowedAliases, "我")
 		}
@@ -196,10 +226,6 @@ func EnsureCurrentUserWithExpected(ctx context.Context, runner CapabilityExecuto
 }
 
 func AuthPermissions(ctx context.Context, runner CapabilityExecutor) (map[string]any, error) {
-	contract, err := RequiredPermissionScopes()
-	if err != nil {
-		return nil, err
-	}
 	status, err := runner.RunAuthJSON(ctx, []string{"auth", "status", "--verify", "--json"}, nil, 30*time.Second)
 	if err != nil {
 		return nil, err
@@ -212,10 +238,32 @@ func AuthPermissions(ctx context.Context, runner CapabilityExecutor) (map[string
 	identities, _ := status["identities"].(map[string]any)
 	bot, _ := identities["bot"].(map[string]any)
 	user, _ := identities["user"].(map[string]any)
+	baseBotScopes := BaseConnectionPermissionScopes()
+	botGranted := stringList(scopes["botScopes"])
+	botScopeReportAvailable := scopeErr == nil && validPermissionScopeValue(scopes["botScopes"])
+	var botApplication any
+	if botScopeReportAvailable {
+		botApplication = comparePermissionScopes(baseBotScopes, botGranted)
+	}
+	botReady := authIdentityReady(bot)
+	if ready, known := botReady.(bool); known && botScopeReportAvailable {
+		verified = ready && comparePermissionScopes(baseBotScopes, botGranted).Complete
+	} else {
+		verified = nil
+	}
 	oauthGranted := stringList(user["scope"])
 	appGranted := stringList(scopes["userScopes"])
 	oauthReportAvailable := validPermissionScopeValue(user["scope"])
 	appReportAvailable := scopeErr == nil && validPermissionScopeValue(scopes["userScopes"])
+	userRequired := []string{}
+	request, requestErr := readProgressiveAuthorizationRequest(runner.DataRoot)
+	if requestErr != nil {
+		return nil, requestErr
+	}
+	appID, _ := status["appId"].(string)
+	if request != nil && request.ApplicationID == appID {
+		userRequired = append(userRequired, request.Scopes...)
+	}
 	effectiveGranted := append([]string{}, oauthGranted...)
 	if appReportAvailable {
 		allowed := map[string]bool{}
@@ -229,13 +277,13 @@ func AuthPermissions(ctx context.Context, runner CapabilityExecutor) (map[string
 			}
 		}
 	}
-	userComparison := comparePermissionScopes(contract.User, effectiveGranted)
+	userComparison := comparePermissionScopes(userRequired, effectiveGranted)
 	var application, oauth, complete, missing any
 	if appReportAvailable {
-		application = comparePermissionScopes(contract.User, appGranted)
+		application = comparePermissionScopes(userRequired, appGranted)
 	}
 	if oauthReportAvailable {
-		oauth = comparePermissionScopes(contract.User, oauthGranted)
+		oauth = comparePermissionScopes(userRequired, oauthGranted)
 	}
 	if appReportAvailable && oauthReportAvailable {
 		complete, missing = userComparison.Complete, userComparison.Missing
@@ -243,10 +291,10 @@ func AuthPermissions(ctx context.Context, runner CapabilityExecutor) (map[string
 	return map[string]any{"status": "ok", "permissions": map[string]any{
 		"verified": verified,
 		"identities": map[string]any{
-			"bot":  map[string]any{"ready": authIdentityReady(bot), "requiredCount": len(contract.Bot), "scopeVerification": "not_exposed_by_lark_cli_auth_scopes", "required": contract.Bot},
+			"bot":  map[string]any{"ready": botReady, "requiredCount": len(baseBotScopes), "scopeVerification": "verified_by_lark_cli_auth_scopes", "required": baseBotScopes, "application": botApplication},
 			"user": map[string]any{"ready": authIdentityReady(user), "requiredCount": userComparison.RequiredCount, "grantedCount": userComparison.GrantedCount, "missing": missing, "excess": userComparison.Excess, "complete": complete, "application": application, "oauth": oauth},
 		},
-		"note": "User completeness requires both application permissions and user OAuth grants; extra scopes are not bridge capabilities.",
+		"note": "Base readiness uses only the managed bot messaging/card scope set. User scopes are optional and authorized per operation.",
 	}}, nil
 }
 
@@ -286,7 +334,7 @@ func runQRCode(ctx context.Context, runner CapabilityExecutor, url, path string)
 	}
 	command := exec.CommandContext(ctx, runner.Binary, "auth", "qrcode", url, "--output", filepath.Base(path), "--size", "360")
 	command.Dir = filepath.Dir(path)
-	command.Env = authEnvironment()
+	command.Env = authEnvironment(runner.DataRoot)
 	command.WaitDelay = 2 * time.Second
 	output := boundedCommandBuffer{limit: maximumAuthOutputBytes}
 	command.Stdout = &output

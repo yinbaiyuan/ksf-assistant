@@ -221,7 +221,7 @@ func (runner CapabilityExecutor) runCLIJSON(ctx context.Context, args []string, 
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	command := exec.CommandContext(callCtx, runner.Binary, full...)
-	command.Env = authEnvironment()
+	command.Env = authEnvironment(runner.DataRoot)
 	command.Dir = directory
 	command.Stdin = bytes.NewReader(input)
 	stdout := &boundedCommandBuffer{limit: maximumCapabilityOutputBytes}

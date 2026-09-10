@@ -20,6 +20,8 @@ import (
 
 var desktopIntegerRequestID = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)$`)
 
+const permissionBlockedDetail = "Codex 的当前权限要求在桌面确认，本轮已停止。请在 Codex Desktop 打开同一任务并继续；检测到新的本地轮次后，飞书连接会自动恢复。"
+
 type Runtime struct {
 	admissionMu   sync.RWMutex
 	disconnecting atomic.Bool
@@ -102,6 +104,10 @@ func (runtime *Runtime) resumeActiveLinks(ctx context.Context) error {
 				recoveryErrors = errors.Join(recoveryErrors, SyncTaskLinkCard(ctx, runtime.links, runtime.messages, link, ""))
 			}
 		}
+		if effectiveTaskLinkState(link, time.Now()) == "active" && permissionBlocked(link) {
+			runtime.observePermissionBlockedTask(link.TaskKey)
+			continue
+		}
 		if effectiveTaskLinkState(link, time.Now()) != "active" || link.ActiveTurnID == "" || (link.TurnState != "running" && link.TurnState != "queued" && link.TurnState != "waiting_input") {
 			if effectiveTaskLinkState(link, time.Now()) == "active" && runtime.desktopOwned(link) {
 				runtime.observeDesktopTask(link.TaskKey)
@@ -149,6 +155,10 @@ func (runtime *Runtime) HandleMessage(ctx context.Context, message InboundMessag
 			foundByOwnMessage = candidate == message.MessageID
 			break
 		}
+	}
+	if found && permissionBlocked(link) {
+		_, replyErr := runtime.messages.Reply(ctx, message.MessageID, "text", permissionBlockedDetail, replyIdempotencyKey(message.MessageID, "permission-blocked", 0))
+		return replyErr
 	}
 	cleanupDir := ""
 	if message.MessageType != "text" {
@@ -320,6 +330,9 @@ func (runtime *Runtime) HandleCard(ctx context.Context, action InboundCardAction
 	}
 	if err := validateTaskCard(action); err != nil {
 		return err
+	}
+	if permissionBlocked(link) && action.Action != "task_link_release" {
+		return errors.New("task_link_permission_locked")
 	}
 	if err := beginEventEffect(ctx); err != nil {
 		return err
@@ -584,6 +597,33 @@ func (runtime *Runtime) waitForTurn(parent context.Context, taskKey, threadID, t
 		}
 		if err == nil {
 			if request, waiting := runtime.pendingInput(link, snapshot); waiting {
+				if !runtime.desktopOwned(link) && approvalCategory(request.Method) != "" {
+					cancelErr := runtime.core.CancelApproval(ctx, link.TaskKey, "bridge", link.ThreadID, turnID, request.ID, request.Method)
+					category := approvalCategory(request.Method)
+					blockedAt := time.Now().UTC().Format(time.RFC3339Nano)
+					link, _ = runtime.links.UpdateActiveByID(link.ID, func(value *TaskLink) {
+						value.TurnState = "desktop_action_required"
+						value.TurnOwner = "none"
+						value.ActionRequired = "desktop"
+						value.ActiveTurnID = ""
+						value.Phase = "需要桌面操作"
+						value.Detail = permissionBlockedDetail
+						value.SetExtraString("permissionBlockedTurnId", turnID)
+						value.SetExtraString("permissionBlockedKind", category)
+						value.SetExtraString("permissionBlockedAt", blockedAt)
+						value.SetExtraString("pendingCleanupDir", "")
+						value.SetExtraValue("pendingQuestions", nil)
+						value.SetExtraString("pendingQuestionRequestID", "")
+						value.SetExtraRaw("pendingQuestionRequestRef", nil)
+						value.SetExtraString("pendingQuestionRevision", "")
+					})
+					_ = runtime.recordAudit("task_link_codex_approval_blocked", map[string]any{"taskKey": link.TaskKey, "category": category, "cancelled": cancelErr == nil})
+					if cardMessageID != "" {
+						_ = runtime.patchTaskLinkCard(ctx, cardMessageID, link)
+					}
+					runtime.observePermissionBlockedTask(link.TaskKey)
+					return
+				}
 				requestID := serverRequestID(request.ID)
 				requestTurnID := strings.TrimSpace(request.TurnID)
 				if requestTurnID == "" {
@@ -727,6 +767,23 @@ func errorText(err error) string {
 
 func (runtime *Runtime) desktopOwned(link TaskLink) bool {
 	return link.ExtraString("runtimeOwner") != "bridge"
+}
+
+func permissionBlocked(link TaskLink) bool {
+	return link.ExtraString("permissionBlockedTurnId") != ""
+}
+
+func approvalCategory(method string) string {
+	switch method {
+	case "item/commandExecution/requestApproval":
+		return "command"
+	case "item/fileChange/requestApproval":
+		return "file_change"
+	case "item/permissions/requestApproval":
+		return "permissions"
+	default:
+		return ""
+	}
 }
 func (runtime *Runtime) readThread(ctx context.Context, link TaskLink) (map[string]any, error) {
 	owner := link.ExtraString("runtimeOwner")
@@ -1136,6 +1193,67 @@ func (runtime *Runtime) observeDesktopTask(taskKey string) {
 	runtime.launchWatcher("desktop:"+taskKey, func(ctx context.Context) { runtime.runDesktopTaskObserver(ctx, taskKey) })
 }
 
+func (runtime *Runtime) observePermissionBlockedTask(taskKey string) {
+	runtime.launchWatcher("permission:"+taskKey, func(ctx context.Context) { runtime.runPermissionBlockedObserver(ctx, taskKey) })
+}
+
+func (runtime *Runtime) runPermissionBlockedObserver(ctx context.Context, taskKey string) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		link, found, err := runtime.links.FindByTaskKey(taskKey)
+		if err != nil || !found || effectiveTaskLinkState(link, time.Now()) != "active" || !permissionBlocked(link) {
+			return
+		}
+		readCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+		recovered, _ := runtime.tryRecoverPermissionBlockedTask(readCtx, link)
+		cancel()
+		if recovered {
+			runtime.observeDesktopTask(taskKey)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (runtime *Runtime) tryRecoverPermissionBlockedTask(ctx context.Context, link TaskLink) (bool, error) {
+	snapshot, owner, revision, owned, err := runtime.core.ObserveDesktopThread(ctx, link.ThreadID)
+	if err != nil || !owned || owner == "" {
+		return false, err
+	}
+	projection := projectDesktopTaskLink(snapshot)
+	if projection.TurnID == "" || projection.TurnID == link.ExtraString("permissionBlockedTurnId") {
+		return false, nil
+	}
+	updated, err := runtime.links.UpdateActiveByID(link.ID, func(value *TaskLink) {
+		value.SetExtraString("runtimeOwner", "desktop")
+		value.SetExtraString("permissionBlockedTurnId", "")
+		value.SetExtraString("permissionBlockedKind", "")
+		value.SetExtraString("permissionBlockedAt", "")
+		value.SetExtraString("observedSnapshotRevision", "")
+		value.SetExtraString("latestInputTurnId", "")
+		value.SetExtraString("progressTurnId", "")
+		value.SetExtraValue("progressSegments", nil)
+		value.ActiveTurnID = ""
+		value.TurnState = "idle"
+		value.TurnOwner = "none"
+		value.ActionRequired = "none"
+		value.Phase = "已连接"
+		value.Detail = "已切换为 Codex Desktop 控制。"
+	})
+	if err != nil {
+		return false, err
+	}
+	return true, runtime.applyDesktopTaskSnapshot(ctx, updated, snapshot, revision)
+}
+
 func (runtime *Runtime) observeTurn(taskKey, threadID, turnID, replyTo, cardMessageID, cleanupDir string) {
 	runtime.launchWatcher("turn:"+taskKey+":"+turnID, func(ctx context.Context) {
 		runtime.waitForTurn(ctx, taskKey, threadID, turnID, replyTo, cardMessageID, cleanupDir)
@@ -1189,6 +1307,10 @@ func (runtime *Runtime) reconcileDesktopTaskLink(ctx context.Context, link TaskL
 	if err != nil {
 		return err
 	}
+	return runtime.applyDesktopTaskSnapshot(ctx, link, snapshot, revision)
+}
+
+func (runtime *Runtime) applyDesktopTaskSnapshot(ctx context.Context, link TaskLink, snapshot map[string]any, revision string) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}

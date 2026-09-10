@@ -13,7 +13,7 @@ import (
 func TestLoadLarkProfileReusesEncryptedCredential(t *testing.T) {
 	home := t.TempDir()
 	configDir := filepath.Join(home, ".lark-cli")
-	storageDir := filepath.Join(home, "Library", "Application Support", "lark-cli")
+	storageDir := filepath.Join(home, "Library", "Application Support", ManagedLarkCLIKeyService)
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestLoadLarkProfileReusesEncryptedCredential(t *testing.T) {
 func TestDirectLarkKeychainReferenceIsAccepted(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
-	storage := filepath.Join(home, "Library", "Application Support", "lark-cli")
+	storage := filepath.Join(home, "Library", "Application Support", ManagedLarkCLIKeyService)
 	if err := os.MkdirAll(storage, 0o700); err != nil {
 		t.Fatal(err)
 	}

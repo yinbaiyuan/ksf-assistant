@@ -112,6 +112,17 @@ func TestAppConfigurationRPCRejectsUnexpectedParams(t *testing.T) {
 	}
 }
 
+func TestAppConfigurationRPCMarksPreSubmissionFailure(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("LARK_CLI_BIN", filepath.Join(root, "missing-lark-cli"))
+	server := newTestBridgeRPCServer(root, feishu.DefaultSettings())
+	result, err := server.HandlePrivateRPC(context.Background(), feishuprotocol.MethodAuthStart, json.RawMessage(`{"kind":"config","profile":"default","createNew":true}`))
+	var rpcErr *privateipc.RPCError
+	if result != nil || !errors.As(err, &rpcErr) || rpcErr.Code != -32066 || rpcErr.Message != "application_start_preflight_failed" {
+		t.Fatalf("pre-submission boundary was lost: result=%+v err=%v", result, err)
+	}
+}
+
 func TestConfigurationPrivateReadsAndScopedCancellation(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", root+"/missing-config")

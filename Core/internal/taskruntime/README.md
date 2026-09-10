@@ -11,7 +11,7 @@ validation statuses, credentials, root selection, or the old project bridge.
 
 `ksf-assistant-task --version` is a separate read-only packaging probe: no root,
 stdin, key or process startup is needed. It returns the normal success envelope
-plus `"software_version":"0.11.0-preview.4"`. Protocol `version` remains `1`.
+plus the current KSFAssistant product version in `software_version`. Protocol `version` remains `1`.
 
 One bounded UTF-8 JSON object on stdin, one JSON response on stdout, then exit.
 There is no daemon, socket, shell execution, production startup or account access.

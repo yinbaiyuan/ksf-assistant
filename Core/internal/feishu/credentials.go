@@ -45,13 +45,6 @@ type secretReference struct {
 }
 
 func LoadOfficialCredentials() (OfficialCredentials, error) {
-	appID, appSecret := strings.TrimSpace(os.Getenv("FEISHU_APP_ID")), os.Getenv("FEISHU_APP_SECRET")
-	if appID != "" || appSecret != "" {
-		if appID == "" || appSecret == "" {
-			return OfficialCredentials{}, errors.New("FEISHU_APP_ID and FEISHU_APP_SECRET must be configured together")
-		}
-		return OfficialCredentials{AppID: appID, AppSecret: appSecret, Brand: brandOrDefault(os.Getenv("FEISHU_APP_BRAND")), Source: "environment"}, nil
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return OfficialCredentials{}, err
@@ -59,14 +52,19 @@ func LoadOfficialCredentials() (OfficialCredentials, error) {
 	if runtime.GOOS == "windows" {
 		return loadWindowsOfficialCredentials(home)
 	}
-	configDir := os.Getenv("LARKSUITE_CLI_CONFIG_DIR")
-	if configDir == "" {
-		configDir = filepath.Join(home, ".lark-cli")
+	dataRoot := strings.TrimSpace(os.Getenv("FEISHU_BRIDGE_DATA_DIR"))
+	configDir, err := ManagedLarkCLIConfigDir(dataRoot)
+	if err != nil {
+		return OfficialCredentials{}, err
 	}
-	return loadLarkProfile(filepath.Join(configDir, "config.json"), home, os.Getenv("LARK_CLI_PROFILE"), readPlatformMasterKey)
+	return loadLarkProfile(filepath.Join(configDir, "config.json"), home, "default", readPlatformMasterKey)
 }
 
 func loadLarkProfile(configPath, home, requested string, masterKeyReader func() ([]byte, error)) (OfficialCredentials, error) {
+	return loadLarkProfileForService(configPath, home, requested, ManagedLarkCLIKeyService, masterKeyReader)
+}
+
+func loadLarkProfileForService(configPath, home, requested, keyService string, masterKeyReader func() ([]byte, error)) (OfficialCredentials, error) {
 	if err := validatePrivateRegularFile(configPath); err != nil {
 		return OfficialCredentials{}, fmt.Errorf("lark-cli config: %w", err)
 	}
@@ -103,7 +101,7 @@ func loadLarkProfile(configPath, home, requested string, masterKeyReader func() 
 	if source != "keychain" || identifier != "appsecret:"+profile.AppID {
 		return OfficialCredentials{}, errors.New("lark-cli app id and app secret reference do not match")
 	}
-	storageDir := filepath.Join(home, "Library", "Application Support", "lark-cli")
+	storageDir := filepath.Join(home, "Library", "Application Support", keyService)
 	encryptedPath := filepath.Join(storageDir, safeCredentialFilename(identifier))
 	if err := validatePrivateRegularFile(encryptedPath); err != nil {
 		return OfficialCredentials{}, err

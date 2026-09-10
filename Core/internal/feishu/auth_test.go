@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"ksfassistant/core/internal/capabilitypolicy"
 	"ksfassistant/core/internal/userapproval"
 )
 
@@ -27,7 +26,7 @@ func fakeAuthCLI(t *testing.T, body string) CapabilityExecutor {
 		if err != nil {
 			t.Fatal(err)
 		}
-		payload, _ := json.Marshal(map[string]any{"appId": "cli_fixture", "brand": "feishu", "tokenType": "user", "userScopes": contract.User})
+		payload, _ := json.Marshal(map[string]any{"appId": "cli_fixture", "brand": "feishu", "tokenType": "user", "userScopes": contract.User, "botScopes": contract.Bot})
 		body = "if [ \"$4\" = scopes ]; then printf '%s' '" + string(payload) + "'; exit; fi\n" + body
 	}
 	if err := os.WriteFile(binary, []byte("#!/bin/sh\n"+body), 0o700); err != nil {
@@ -35,7 +34,7 @@ func fakeAuthCLI(t *testing.T, body string) CapabilityExecutor {
 	}
 	t.Setenv("HOME", root)
 	t.Setenv("USERPROFILE", root)
-	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", filepath.Join(root, "config"))
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", filepath.Join(root, "lark-cli"))
 	t.Cleanup(func() { CancelUserAuthFlow(root) })
 	return CapabilityExecutor{Binary: binary, Profile: "default", DataRoot: root, WorkingDirectory: root}
 }
@@ -71,7 +70,7 @@ func TestAuthMutationsRespectExecutionLeaseButStatusRemainsReadable(t *testing.T
 		input []byte
 	}{
 		{[]string{"auth", "logout", "--json"}, nil},
-		{[]string{"config", "init", "--name", "default", "--app-id", "cli_fixture", "--app-secret-stdin", "--json"}, []byte("fixture-secret")},
+		{[]string{"config", "init", "--name", "default", "--app-id", "cli_fixture", "--app-secret-stdin"}, []byte("fixture-secret")},
 	} {
 		if _, err := runner.RunAuthJSON(context.Background(), request.args, request.input, time.Second); err == nil || err.Error() != "approval_authorization_busy" {
 			t.Fatalf("auth mutation crossed lease: %v", err)
@@ -133,6 +132,7 @@ func TestRunAuthJSONPreservesOfficialIdentityAndRejectsCredentialArguments(t *te
 		{"auth", "login", "--device-code", "private-secret", "--json"},
 		{"auth", "status", "--token", "private-secret", "--json"},
 		{"auth", "status", "--profile", "other", "--json"},
+		{"config", "init", "--name", "default", "--app-id", "cli_fixture", "--app-secret-stdin", "--json"},
 	} {
 		if _, err := runner.RunAuthJSON(context.Background(), args, nil, time.Second); err == nil {
 			t.Fatal("credential/override arguments admitted")
@@ -176,12 +176,10 @@ func TestAuthSessionUsesStreamingLoginAndNoSecretPersistence(t *testing.T) {
 case "$4" in
 login) printf '{"event":"device_authorization","verification_uri_complete":"https://accounts.feishu.cn/oauth?user_code=ABC-123","user_code":"ABC-123"}\n'; while [ ! -f complete ]; do sleep 0.02; done; printf '{"event":"authorization_complete","user_open_id":"ou_private","scope":"contact:user.base:readonly"}\n' ;;
 status) printf '{"appId":"cli_fixture","brand":"feishu","identities":{"user":{"available":true,"verified":true,"scope":"contact:user.base:readonly"}}}' ;;
+logout) printf '{"ok":true,"loggedOut":true,"remoteRevocationConfirmed":true}' ;;
 oldscopes) printf '{"userScopes":[]}' ;;
 *) exit 1 ;;
 esac`)
-	if err := capabilitypolicy.SignOut(runner.DataRoot); err != nil {
-		t.Fatal(err)
-	}
 	start, err := StartUserAuth(context.Background(), runner, runner.DataRoot, "required")
 	if err != nil || start["status"] != "pending" || start["userCode"] != "ABC-123" {
 		t.Fatalf("start: %#v %v", start, err)
@@ -197,9 +195,6 @@ esac`)
 	case <-currentUserAuthSession(runner.DataRoot).done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("fake authorization did not complete")
-	}
-	if capabilitypolicy.CheckSession(runner.DataRoot) != nil {
-		t.Fatal("early check left completed OAuth signed out")
 	}
 	finish, err := FinishUserAuthFlow(context.Background(), runner, runner.DataRoot, "")
 	if err != nil || finish["status"] != "authorized" {
@@ -349,7 +344,7 @@ func TestAuthProfileMustMatchManagedFeishuToolchain(t *testing.T) {
 		t.Fatal("non-Feishu authorization admitted")
 	}
 	for _, expected := range []string{"LARKSUITE_CLI_PROFILE=default", "LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1", "LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1", "LARKSUITE_CLI_REMOTE_META=off"} {
-		if !contains(authEnvironment(), expected) {
+		if !contains(authEnvironment(runner.DataRoot), expected) {
 			t.Fatalf("missing managed environment %s", expected)
 		}
 	}

@@ -128,6 +128,9 @@ func (runtime *Runtime) Interrupt(ctx context.Context, taskKey string) (PublicTa
 	if effectiveTaskLinkState(link, time.Now()) != "active" {
 		return PublicTaskLink{}, ErrInactiveTaskLink
 	}
+	if permissionBlocked(link) {
+		return PublicTaskLink{}, errors.New("task_link_permission_locked")
+	}
 	if link.ActiveTurnID != "" {
 		if err := runtime.interruptTurn(ctx, link); err != nil {
 			return PublicTaskLink{}, err

@@ -104,6 +104,31 @@ func (c *ActivityClient) ObserveConversationState(ctx context.Context, id string
 		return target, err
 	}
 }
+
+// ObserveKnownConversationState is a passive ownership probe. It only reads a
+// task already claimed by Desktop and never discovers, opens, or starts it.
+func (c *ActivityClient) ObserveKnownConversationState(ctx context.Context, id string) (UserInputTarget, bool, error) {
+	key := taskKey{"local", id}
+	c.mu.Lock()
+	owner := c.owners[key]
+	generation := c.connectionGeneration
+	connected := c.connection != nil
+	c.mu.Unlock()
+	if !connected || owner == "" {
+		return UserInputTarget{}, false, nil
+	}
+	state, source, revision, err := c.loadConversationStateFromOwnerMatchingRevision(ctx, id, owner, owner, nil)
+	if err != nil {
+		return UserInputTarget{}, true, err
+	}
+	c.mu.Lock()
+	stillOwned := c.connection != nil && c.connectionGeneration == generation && c.owners[key] == owner
+	c.mu.Unlock()
+	if !stillOwned {
+		return UserInputTarget{}, false, nil
+	}
+	return UserInputTarget{ObservationEpoch: generation, ThreadID: id, OwnerClientID: owner, SnapshotSourceClientID: source, SnapshotRevision: revision, State: state}, true, nil
+}
 func (c *ActivityClient) cachePushedObservation(key taskKey, state map[string]any, source, revision string) bool {
 	// Called under c.mu. A source with no established owner is not trusted.
 	if source == "" || c.owners[key] != source {

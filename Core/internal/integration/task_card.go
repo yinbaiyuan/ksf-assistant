@@ -189,7 +189,7 @@ func taskLinkCardElements(link TaskLink) []any {
 	}
 	if form := taskLinkQuickReplyForm(link); form != nil {
 		elements = append(elements, map[string]any{"tag": "hr"}, form)
-	} else if link.LinkState == "active" && (link.TurnState == "queued" || link.TurnState == "desktop_action_required") {
+	} else if link.LinkState == "active" && !permissionBlocked(link) && (link.TurnState == "queued" || link.TurnState == "desktop_action_required") {
 		elements = append(elements, map[string]any{"tag": "hr"}, taskCardButton("interrupt_task_link", "停止", "task_link_interrupt", "danger", false, link, nil))
 	}
 	return elements

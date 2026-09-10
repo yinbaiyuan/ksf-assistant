@@ -1,6 +1,6 @@
 # Managed Feishu Skills
 
-Target: `0.11.0-preview.4`. This describes the managed Skills supply chain and
+Target: `0.11.0-preview.16`. This describes the managed Skills supply chain and
 developer review, not a release acceptance record or permission to install.
 
 ## Source → adapt → hash → receipt

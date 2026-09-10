@@ -793,7 +793,7 @@ func (client *ActivityClient) removeSnapshotWaiter(key snapshotKey, target chan 
 }
 
 func (client *ActivityClient) StartBridgeTurn(ctx context.Context, threadID, cwd, text string, collaborationMode map[string]any) (string, error) {
-	request := map[string]any{"threadId": threadID, "input": []any{map[string]any{"type": "text", "text": text, "text_elements": []any{}}}, "cwd": cwd, "approvalPolicy": "never", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}}
+	request := map[string]any{"threadId": threadID, "input": []any{map[string]any{"type": "text", "text": text, "text_elements": []any{}}}, "cwd": cwd}
 	if collaborationMode != nil {
 		request["collaborationMode"] = collaborationMode
 	}

@@ -7,7 +7,7 @@
     "missingUserScopes": null,
     "missingApplicationScopes": null
   },
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "epoch": "fixture-epoch",
   "revision": 7,
   "contextRevision": "fixture-context",
@@ -68,8 +68,8 @@
     {
       "id": "operator",
       "title": "任务控制权限",
-      "state": "missing",
-      "value": "未允许",
+      "state": "present",
+      "value": "已绑定",
       "source": "KSFAssistant 访问规则",
       "checkedAt": "2026-09-06T10:00:00Z",
       "stale": false
@@ -94,9 +94,9 @@
     },
     {
       "id": "authorizedUser",
-      "title": "授权用户",
+      "title": "用户能力授权",
       "state": "present",
-      "value": "权限待核验",
+      "value": "已授权，权限待核验",
       "source": "官方 CLI · user",
       "checkedAt": "2026-09-06T10:00:00Z",
       "stale": false
@@ -114,17 +114,10 @@
   "actions": [
     {
       "id": "create_app",
-      "title": "扫码创建应用",
+      "title": "扫码连接飞书",
       "enabled": false,
       "reason": "已有应用配置，不会覆盖或重复创建。",
-      "confirmation": "将通过官方 CLI 创建新的飞书应用，不会自动进行用户授权。"
-    },
-    {
-      "id": "connect_app",
-      "title": "接入已有应用",
-      "enabled": false,
-      "reason": "已有应用配置，不会覆盖或重复创建。",
-      "confirmation": "将保存提供的飞书应用配置，不会自动绑定远程操作者。"
+      "confirmation": "将在飞书官方网页创建或选择应用；首次扫码返回本人身份时会自动完成绑定。"
     },
     {
       "id": "start_auth",
@@ -134,15 +127,9 @@
     },
     {
       "id": "logout",
-      "title": "注销用户授权",
+      "title": "注销并清除飞书",
       "enabled": true,
-      "confirmation": "仅注销当前应用的用户身份；保留应用、机器人配置及业务记录。"
-    },
-    {
-      "id": "bind_operator",
-      "title": "绑定当前用户为远程操作者",
-      "enabled": true,
-      "confirmation": "允许当前已验证的飞书用户（当前 CLI 用户）通过消息控制已授权的 Codex 任务，并更新“我”目标。"
+      "confirmation": "将断开飞书并清除 KSFAssistant 本地保存的应用配置、令牌、本人绑定和专属密钥；保留任务历史与无秘密审计。"
     },
     {
       "id": "test_message",

@@ -37,7 +37,9 @@ type CorePort interface {
 	StartTurn(ctx context.Context, taskKey, runtimeOwner, threadID, cwd, text string, mode map[string]any) (string, error)
 	SteerTurn(ctx context.Context, taskKey, runtimeOwner, threadID, turnID, cwd, text string) (string, error)
 	InterruptTurn(ctx context.Context, taskKey, runtimeOwner, threadID, turnID string) error
+	CancelApproval(ctx context.Context, taskKey, runtimeOwner, threadID, turnID string, expectedRequestID json.RawMessage, method string) error
 	AnswerInput(ctx context.Context, taskKey, runtimeOwner, threadID, turnID string, expectedRequestID json.RawMessage, questionID, questionRevision, answer string) (json.RawMessage, error)
+	ObserveDesktopThread(ctx context.Context, threadID string) (state map[string]any, owner, revision string, found bool, err error)
 }
 
 type FeishuPort interface {

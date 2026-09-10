@@ -17,9 +17,9 @@
     <key>CFBundleShortVersionString</key>
     <string>0.11.0</string>
     <key>CFBundleVersion</key>
-    <string>3</string>
+    <string>15</string>
     <key>KSFAssistantReleaseVersion</key>
-    <string>0.11.0-preview.4</string>
+    <string>0.11.0-preview.16</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.developer-tools</string>
     <key>LSMinimumSystemVersion</key>

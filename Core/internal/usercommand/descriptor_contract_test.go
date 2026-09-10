@@ -288,6 +288,13 @@ func contractVerifyBinaryProvenance(t *testing.T, m contractManifest) {
 func TestDescriptorSkillsAndProvenanceContract(t *testing.T) {
 	m := readContractManifest(t)
 	root := filepath.Join("..", "..", "..")
+	runtimeBytes := contractFile(t, filepath.Join(root, "runtime", "lark-cli-runtime.json"))
+	var runtimeManifest struct {
+		UpstreamVersion string `json:"upstreamVersion"`
+	}
+	if err := json.Unmarshal(runtimeBytes, &runtimeManifest); err != nil {
+		t.Fatal(err)
+	}
 	skillsBytes := contractFile(t, filepath.Join(root, "runtime", "lark-skills.json"))
 	var skills struct {
 		Version string `json:"version"`
@@ -302,7 +309,7 @@ func TestDescriptorSkillsAndProvenanceContract(t *testing.T) {
 	if err := json.Unmarshal(skillsBytes, &skills); err != nil {
 		t.Fatal(err)
 	}
-	if skills.Version != m.Version || contractSHA256(skillsBytes) != m.Provenance.SkillsSHA256 || skills.Source.SHA256 != m.Provenance.SourceArchiveSHA256 {
+	if skills.Version != runtimeManifest.UpstreamVersion || contractSHA256(skillsBytes) != m.Provenance.SkillsSHA256 || skills.Source.SHA256 != m.Provenance.SourceArchiveSHA256 {
 		t.Fatal("Skills provenance does not match the pinned runtime Skills manifest")
 	}
 	if contractSHA256(contractFile(t, "execution-overlay.json")) != m.Provenance.OverlaySHA256 {

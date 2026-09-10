@@ -3,6 +3,7 @@ package desktop
 import (
 	"bufio"
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -17,6 +18,54 @@ func TestDisconnectedObservationCacheIsInvalid(t *testing.T) {
 	c.connectionEnded(a)
 	if _, ok := c.CachedConversationState("thread"); ok {
 		t.Fatal("disconnected state remained usable")
+	}
+}
+
+func TestPassiveDesktopObservationDoesNotDiscoverOrOpenUnknownTask(t *testing.T) {
+	c := New("test")
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	c.connection = a
+	c.started = true
+	c.clientID = "client"
+	value, found, err := c.ObserveKnownConversationState(context.Background(), "thread")
+	if err != nil || found || value.State != nil {
+		t.Fatalf("unknown task was actively claimed: %#v %v %v", value, found, err)
+	}
+	b.SetReadDeadline(time.Now().Add(30 * time.Millisecond))
+	if _, err := bufio.NewReader(b).ReadByte(); err == nil {
+		t.Fatal("passive observation sent an owner discovery request")
+	}
+}
+
+func TestPassiveDesktopObservationLoadsOnlyKnownOwner(t *testing.T) {
+	c := New("test")
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	c.connection = a
+	c.started = true
+	c.clientID = "client"
+	c.owners[taskKey{"local", "thread"}] = "owner"
+	result := make(chan error, 1)
+	go func() {
+		value, found, err := c.ObserveKnownConversationState(context.Background(), "thread")
+		if err == nil && (!found || value.OwnerClientID != "owner" || value.State["marker"] != true) {
+			err = errors.New("known owner snapshot was not returned")
+		}
+		result <- err
+	}()
+	reader := bufio.NewReader(b)
+	_ = readTestFrameWithReader(t, reader)
+	request := readTestFrameWithReader(t, reader)
+	if request["method"] != "thread-follower-load-complete-history" || request["targetClientId"] != "owner" {
+		t.Fatalf("passive read targeted the wrong owner: %#v", request)
+	}
+	c.handle(mustJSON(t, map[string]any{"type": "response", "requestId": request["requestId"], "result": map[string]any{}}))
+	c.handle(mustJSON(t, map[string]any{"type": "broadcast", "sourceClientId": "owner", "method": "thread-stream-state-changed", "params": map[string]any{"conversationId": "thread", "hostId": "local", "change": map[string]any{"type": "snapshot", "revision": "2", "conversationState": map[string]any{"marker": true}}}}))
+	if err := <-result; err != nil {
+		t.Fatal(err)
 	}
 }
 

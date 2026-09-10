@@ -1,6 +1,6 @@
 {
   "name": "ksfassistant-windows",
-  "version": "0.11.0-preview.4",
+  "version": "0.11.0-preview.16",
   "private": true,
   "description": "Windows system-tray host for KSFAssistant",
   "author": "KSFAssistant contributors",
@@ -33,12 +33,16 @@
       {
         "from": "../dist/runtime/toolchain/windows-${arch}",
         "to": "runtime/toolchain/windows-${arch}",
-        "filter": ["ksf-assistant-toolchain.exe"]
+        "filter": [
+          "ksf-assistant-toolchain.exe"
+        ]
       },
       {
         "from": "../dist/runtime/task/windows-${arch}",
         "to": "runtime/task/windows-${arch}",
-        "filter": ["ksf-assistant-task.exe"]
+        "filter": [
+          "ksf-assistant-task.exe"
+        ]
       },
       {
         "from": "../dist/runtime/lark-skills",
@@ -51,17 +55,23 @@
       {
         "from": "../dist/core/windows-${arch}",
         "to": "core/windows-${arch}",
-        "filter": ["ksf-assistant-core.exe"]
+        "filter": [
+          "ksf-assistant-core.exe"
+        ]
       },
       {
         "from": "../dist/runtime/feishu-bridge/windows-${arch}",
         "to": "runtime/feishu-bridge/windows-${arch}",
-        "filter": ["ksf-assistant-feishu-bridge.exe"]
+        "filter": [
+          "ksf-assistant-feishu-bridge.exe"
+        ]
       },
       {
         "from": "../dist/runtime/lark-cli/windows-${arch}",
         "to": "runtime/lark-cli/windows-${arch}",
-        "filter": ["lark-cli.exe"]
+        "filter": [
+          "lark-cli.exe"
+        ]
       },
       {
         "from": "../LICENSE",

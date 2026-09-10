@@ -15,13 +15,15 @@ type ConfigurationFlow struct {
 }
 
 type ConfigurationEvidence struct {
-	BotName                  string   `json:"botName,omitempty"`
-	ServiceVersion           string   `json:"serviceVersion,omitempty"`
-	CLIVersion               string   `json:"cliVersion,omitempty"`
-	CLIState                 string   `json:"cliState,omitempty"`
-	PermissionRevision       string   `json:"permissionRevision,omitempty"`
-	MissingUserScopes        []string `json:"missingUserScopes,omitempty"`
-	MissingApplicationScopes []string `json:"missingApplicationScopes,omitempty"`
+	BotName                  string                `json:"botName,omitempty"`
+	ServiceVersion           string                `json:"serviceVersion,omitempty"`
+	CLIVersion               string                `json:"cliVersion,omitempty"`
+	CLIState                 string                `json:"cliState,omitempty"`
+	PermissionRevision       string                `json:"permissionRevision,omitempty"`
+	MissingUserScopes        []string              `json:"missingUserScopes,omitempty"`
+	MissingApplicationScopes []string              `json:"missingApplicationScopes,omitempty"`
+	AuthorizationRequest     *AuthorizationRequest `json:"authorizationRequest,omitempty"`
+	CleanupPending           bool                  `json:"cleanupPending"`
 
 	SchemaVersion          int                `json:"schemaVersion"`
 	ContextRevision        string             `json:"contextRevision"`
@@ -40,6 +42,12 @@ type ConfigurationEvidence struct {
 	CheckedAt              string             `json:"checkedAt"`
 	Flow                   *ConfigurationFlow `json:"flow,omitempty"`
 	Problems               []string           `json:"problems"`
+}
+
+type AuthorizationRequest struct {
+	ID      string   `json:"id"`
+	Purpose string   `json:"purpose"`
+	Scopes  []string `json:"scopes"`
 }
 
 type ConfigurationCancelRequest struct {

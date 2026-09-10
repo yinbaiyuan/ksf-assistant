@@ -11,9 +11,12 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+
+	"ksfassistant/core/internal/larkversion"
 )
 
-const Version = "1.0.93"
+const Version = larkversion.Version
+const UpstreamVersion = larkversion.UpstreamVersion
 
 var safeName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,79}$`)
 var digestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
@@ -75,8 +78,8 @@ type Adaptation struct {
 	UpstreamManifestSHA256 string `json:"upstreamManifestSha256"`
 }
 
-func (adaptation *Adaptation) valid(version string) bool {
-	return adaptation == nil || (adaptation.SchemaVersion == 1 && safeName.MatchString(adaptation.Revision) && digestPattern.MatchString(adaptation.Digest) && adaptation.UpstreamVersion == version && digestPattern.MatchString(adaptation.UpstreamManifestSHA256))
+func (adaptation *Adaptation) valid(upstreamVersion string) bool {
+	return adaptation == nil || (adaptation.SchemaVersion == 1 && safeName.MatchString(adaptation.Revision) && digestPattern.MatchString(adaptation.Digest) && adaptation.UpstreamVersion == upstreamVersion && digestPattern.MatchString(adaptation.UpstreamManifestSHA256))
 }
 
 type Manager struct {
@@ -109,7 +112,7 @@ func New(config Config) (*Manager, error) {
 		}
 	}
 	if config.ConfigDir == "" {
-		config.ConfigDir = filepath.Join(config.HomeDir, ".lark-cli")
+		config.ConfigDir = filepath.Join(config.HomeDir, ".config", "feishu-bridge", "lark-cli")
 	}
 	if config.DataRoot == "" {
 		config.DataRoot = filepath.Join(config.HomeDir, ".config", "feishu-bridge")
@@ -229,7 +232,7 @@ func (manager *Manager) manifest() (Manifest, error) {
 	if manifest.SchemaVersion != 1 || manifest.Version != Version || manifest.License != "MIT" || len(manifest.Skills) == 0 {
 		return manifest, errors.New("version_mismatch")
 	}
-	if !manifest.Adaptation.valid(manifest.Version) {
+	if !manifest.Adaptation.valid(UpstreamVersion) {
 		return manifest, errors.New("invalid_adaptation_manifest")
 	}
 	if manifest.Adaptation != nil {

@@ -119624,10 +119624,10 @@
   "provenance": {
     "astExtractorSha256": "4f0afcda90c30bc96cbb9e94df33de1db44296ea09093b0941be14da01e55989",
     "binaryArtifacts": {
-      "darwin-arm64": "9092c3f255b749afdc2a842be5d582511d978424c11326d59af90c0fd5f5c044",
-      "darwin-x64": "8264bb7982df6c4f89ddea5635f7986352d371fb09a33fad5bf3352caa24f9ba",
-      "windows-arm64": "42d3c009171fdefc82554f63b46d53aa983f2d08c4fb4400f7ac52b742231f05",
-      "windows-x64": "39ba320129d7c700f907d0ea0d4a79467262a72ca0f971879f5f45cf5f782645"
+      "darwin-arm64": "347ca0d34ac4b45f7fa9466cfb2d810ab09d64ef81539f42f1da6a057803101d",
+      "darwin-x64": "3512f72a6106ba75bfe57ffc0e84c80ffdcbf3c2751155c9027752d22cdcaec9",
+      "windows-arm64": "d6d4d9954cc957c992872ae5a22dadd18c4d92dde46cecaa21868a364a8d5e08",
+      "windows-x64": "c6a9245f5853c01e85a29230bf3ccf2d38d8461e93561f5021ebe7c78339f530"
     },
     "engineFiles": {
       "Core/internal/capabilitypolicy/policy.go": "087d7b0dc03cfad8a7dd149a105e167712cfebf16e3eec85978a0477a262e798",
@@ -119647,9 +119647,9 @@
       "Core/internal/usercommand/policy.go": "791a801f5aa4a5cfe399e4b3b9c245ebe3389dd7cbb4c4dffb899272513e316e",
       "Core/internal/usercommand/resolved_text.go": "2df7659ccc9df5158ac45729a88ba42abf86fcc61f79785a8a6ca4fd91a74492",
       "Core/internal/usercommand/sheets_batch.go": "8ffa593f34cd4ddab1ce0d98b76024b5d15befc113d182f9b79ebd5e33e4551c",
-      "Core/internal/usercommand/types.go": "7f43816961d8b51e76a6011162ec5b290b5e43e468f52ea7b6567a97e2624cb6"
+      "Core/internal/usercommand/types.go": "007ed291d0a9a651073a5f4cd62ffd21e655b2f7e918caae0075466ed5af1cb6"
     },
-    "engineSha256": "1f43347d84d2eda0945590d75f9a42ea9b43f2fdac6fa46b037b1e9d66e21ad9",
+    "engineSha256": "885263425173552be7f63a6a875c090d8a22ca247d7687be4b9cc5f8ef81b876",
     "generatorSha256": "430623e3eee8613da49c1b1a19f45c3cd93b8e9f59076160c85ace5b754caf29",
     "overlaySha256": "a99d850c8264adf767e85101d41202d92325eb96977211397bd8dd88ad066065",
     "productCatalogSha256": "cbc8428def4ad2fbfb7e2b2f5944c9141cb5ff756465e280ba15d4a747d28636",
@@ -150689,5 +150689,5 @@
       "path": "mail user_mailbox.messages modify_message"
     }
   ],
-  "version": "1.0.93"
+  "version": "1.0.93-ksfassistant.1"
 }

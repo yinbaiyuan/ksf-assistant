@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"ksfassistant/core/internal/capabilitypolicy"
 	"net/url"
 	"os"
 	"os/exec"
@@ -29,6 +28,10 @@ type userAuthSession struct {
 	ready                  chan struct{}
 	done                   chan struct{}
 	err                    error
+	expectedScopes         []string
+	authorizationRequestID string
+	temporaryOperatorBind  bool
+	authorizedOpenID       string
 }
 
 const maximumAuthSessionDuration = 10 * time.Minute
@@ -62,12 +65,14 @@ func CancelUserAuthFlow(dataRoot string) {
 }
 
 func startUserAuthSession(ctx context.Context, runner CapabilityExecutor, dataRoot, scope string) (feishuprotocol.AuthStatus, error) {
-	if scope != "" && scope != "required" || runner.Binary == "" || runner.Profile != "" && runner.Profile != "default" || dataRoot == "" {
-		return emptyAuthStatus("failed"), errors.New("授权配置无效；只支持当前功能所需权限")
+	progressiveRequestID := ""
+	temporaryOperatorBind := scope == "" || scope == "required"
+	if strings.HasPrefix(scope, "request:") {
+		progressiveRequestID = strings.TrimPrefix(scope, "request:")
+		temporaryOperatorBind = false
 	}
-	contract, err := RequiredPermissionScopes()
-	if err != nil {
-		return emptyAuthStatus("failed"), errors.New("权限注册表不可用")
+	if !temporaryOperatorBind && !regexp.MustCompile(`^[a-f0-9]{32}$`).MatchString(progressiveRequestID) || runner.Binary == "" || runner.Profile != "" && runner.Profile != "default" || dataRoot == "" {
+		return emptyAuthStatus("failed"), errors.New("授权配置无效；只支持当前功能所需权限")
 	}
 	application, scopeErr := runner.RunAuthJSON(ctx, []string{"auth", "scopes", "--json"}, nil, 15*time.Second)
 	if scopeErr != nil {
@@ -84,11 +89,38 @@ func startUserAuthSession(ctx context.Context, runner CapabilityExecutor, dataRo
 	if !validPermissionScopeValue(application["userScopes"]) {
 		return emptyAuthStatus("failed"), errors.New("application_permissions_unverified")
 	}
-	requested, requestErr := loginPermissionScopes(stringList(application["userScopes"]))
-	if requestErr != nil {
-		return emptyAuthStatus("failed"), requestErr
+	requested := []string{}
+	if temporaryOperatorBind {
+		requested, err = loginPermissionScopes(stringList(application["userScopes"]))
+		if err != nil {
+			return emptyAuthStatus("failed"), err
+		}
+	} else {
+		request, requestErr := readProgressiveAuthorizationRequest(dataRoot)
+		if requestErr != nil || request == nil || request.ID != progressiveRequestID || request.ApplicationID != appID {
+			return emptyAuthStatus("failed"), errors.New("渐进授权请求已失效，请重新执行原功能")
+		}
+		offered := make(map[string]bool)
+		for _, value := range stringList(application["userScopes"]) {
+			offered[value] = true
+		}
+		for _, value := range request.Scopes {
+			if !offered[value] {
+				return emptyAuthStatus("failed"), errors.New("application_permissions_missing")
+			}
+		}
+		identities, _ := profile["identities"].(map[string]any)
+		user, _ := identities["user"].(map[string]any)
+		requested = append(requested, stringList(user["scope"])...)
+		requested = append(requested, request.Scopes...)
+		requested = sortedScopeSet(func() map[string]bool {
+			set := map[string]bool{}
+			for _, value := range requested {
+				set[value] = true
+			}
+			return set
+		}())
 	}
-	_ = contract
 	userAuthSessions.Lock()
 	if existing := userAuthSessions.items[dataRoot]; existing != nil {
 		select {
@@ -109,11 +141,11 @@ func startUserAuthSession(ctx context.Context, runner CapabilityExecutor, dataRo
 		return emptyAuthStatus("failed"), err
 	}
 	processCtx, cancel := context.WithTimeout(context.Background(), maximumAuthSessionDuration)
-	session := &userAuthSession{status: emptyAuthStatus("pending"), cancel: cancel, ready: make(chan struct{}), done: make(chan struct{}), configurationStartedAt: time.Now()}
+	session := &userAuthSession{status: emptyAuthStatus("pending"), cancel: cancel, ready: make(chan struct{}), done: make(chan struct{}), configurationStartedAt: time.Now(), expectedScopes: append([]string{}, requested...), authorizationRequestID: progressiveRequestID, temporaryOperatorBind: temporaryOperatorBind}
 	session.status.Flow = "user-oauth"
 	session.status.ProfileValid = true
 	command := exec.Command(runner.Binary, "--profile", "default", "auth", "login", "--scope", strings.Join(requested, " "), "--json")
-	command.Env = authEnvironment()
+	command.Env = authEnvironment(runner.DataRoot)
 	command.Dir = runner.WorkingDirectory
 	command.Stderr = io.Discard
 	command.WaitDelay = 2 * time.Second
@@ -166,11 +198,9 @@ func startUserAuthSession(ctx context.Context, runner CapabilityExecutor, dataRo
 		// The OAuth completion event owns finalization. An early status query
 		// must not be the only opportunity to activate the product session.
 		if streamErr == nil && waitErr == nil && completed && processCtx.Err() == nil {
-			verified, verifyErr := readCLIAuthStatus(processCtx, runner)
+			verified, verifyErr := readCLIAuthStatusForScopes(processCtx, runner, requested)
 			if verifyErr != nil || processCtx.Err() != nil || !verified.IdentityValid || !verified.ProfileValid || len(verified.MissingCapabilities) > 0 {
 				streamErr = errors.New("authorization_not_verified")
-			} else {
-				streamErr = capabilitypolicy.SignIn(dataRoot)
 			}
 		}
 		session.mu.Lock()
@@ -249,6 +279,11 @@ func (session *userAuthSession) readEvents(reader io.Reader) (bool, error) {
 		case "authorization_complete":
 			if !ready || completed {
 				return false, errors.New("授权事件顺序无效")
+			}
+			if openID, _ := event["user_open_id"].(string); regexp.MustCompile(`^ou_[A-Za-z0-9_-]{1,252}$`).MatchString(openID) {
+				session.mu.Lock()
+				session.authorizedOpenID = openID
+				session.mu.Unlock()
 			}
 			completed = true
 		case "authorization_failed":
@@ -329,11 +364,7 @@ func finishUserAuthSession(ctx context.Context, runner CapabilityExecutor, dataR
 			return emptyAuthStatus("unknown"), err
 		}
 		defer release()
-		status, err := readCLIAuthStatus(ctx, runner)
-		if err == nil && status.IdentityValid && status.ProfileValid && len(status.MissingCapabilities) == 0 {
-			err = capabilitypolicy.SignIn(dataRoot)
-		}
-		return status, err
+		return readCLIAuthStatusForScopes(ctx, runner, session.expectedScopes)
 	default:
 		return session.snapshot(), nil
 	}

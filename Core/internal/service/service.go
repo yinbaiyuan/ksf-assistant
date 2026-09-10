@@ -22,10 +22,11 @@ import (
 	"ksfassistant/core/internal/integration"
 	"ksfassistant/core/internal/localipc"
 	"ksfassistant/core/internal/pricing"
+	"ksfassistant/core/internal/productversion"
 	"ksfassistant/core/internal/tokens"
 )
 
-const Version = "0.11.0-preview.4"
+const Version = productversion.Version
 
 const (
 	rateRefreshInterval      = 5 * time.Minute
@@ -235,6 +236,10 @@ func ksfAssistantSupportRoot(home string) string {
 }
 
 func (service *Service) Initialize(ctx context.Context, request InitializeRequest) map[string]any {
+	// Reconcile durable configuration flow receipts before any supervised
+	// Feishu process can accept new work. This also upgrades records produced by
+	// older builds even when the user has not opened the Feishu settings page.
+	service.persistLegacyConfigurationFlowOutcomes()
 	executable, err := configureCodexProcessEnvironment(service.home)
 	if err == nil {
 		service.codex = &codex.Client{Executable: executable, Timeout: 15 * time.Second}
@@ -719,11 +724,11 @@ func (service *Service) ContinueFeishuSetup(ctx context.Context) (map[string]any
 		if err != nil {
 			break
 		}
-		if confirmedFeishuUserAuth(evidence.Auth) && evidence.ApplicationState == "present" {
+		if evidence.ApplicationState == "present" && evidence.OperatorState == "present" {
 			state.Stage = managedfeishu.SetupPlatformPending
-			result = map[string]any{"status": "authorized"}
-		} else if evidence.ApplicationState != "present" || evidence.Auth == nil || evidence.Auth.Status != "unauthorized" {
-			err = errors.New("当前应用或授权状态尚未确认，请先检查；未自动发起授权")
+			result = map[string]any{"status": "connected"}
+		} else if evidence.ApplicationState != "present" || evidence.OperatorState != "missing" {
+			err = errors.New("当前应用或本人绑定状态尚未确认，请先检查；未自动发起授权")
 		} else if result, err = service.StartFeishuAuth(ctx); err == nil {
 			state.Stage = managedfeishu.SetupAuthorizationPending
 		}
@@ -780,15 +785,19 @@ func (service *Service) VerifyFeishuSetup(ctx context.Context) (map[string]any, 
 	if loadErr != nil {
 		return nil, loadErr
 	}
-	if state.Stage == managedfeishu.SetupAppPending || state.Mode == managedfeishu.SetupModeNew && state.Stage == managedfeishu.SetupAppConfigured {
-		return nil, errors.New("请先完成应用创建，并单独开始用户授权；现有授权状态不能替代创建会话")
+	if state.Stage == managedfeishu.SetupAppPending {
+		return nil, errors.New("请先完成飞书网页中的应用创建或选择")
+	}
+	evidence, err := service.readConfigurationEvidence(ctx)
+	if err != nil {
+		return nil, err
 	}
 	permissions, err := service.FeishuPermissions(ctx)
 	if err != nil {
 		return nil, err
 	}
 	status := "incomplete"
-	if permissionsReady(permissions) {
+	if evidence.ApplicationState == "present" && evidence.BotState == "present" && evidence.ApplicationPermissions == "present" && evidence.OperatorState == "present" && permissionsReady(permissions) {
 		status = "verified"
 	}
 	return map[string]any{"status": status, "setup": state, "permissions": permissions["permissions"]}, nil
@@ -892,10 +901,8 @@ func permissionsReady(result map[string]any) bool {
 	if err != nil || report.Permissions.Verified == nil || !*report.Permissions.Verified || report.Permissions.Identities.Bot.Ready == nil || !*report.Permissions.Identities.Bot.Ready {
 		return false
 	}
-	overview := feishuPermissionOverview(result, nil)
-	user := report.Permissions.Identities.User
-	combined, _ := feishuScopeEvidenceState(&user.feishuScopeEvidence)
-	return overview.Application == "verified" && overview.User == "verified" && combined == "verified"
+	application, _ := feishuScopeEvidenceState(report.Permissions.Identities.Bot.Application)
+	return application == "verified"
 }
 
 func (service *Service) StartFeishuAuth(ctx context.Context) (map[string]any, error) {
@@ -967,15 +974,16 @@ func feishuPermissionOverview(value map[string]any, callErr error) domain.Feishu
 	if err != nil {
 		return domain.FeishuPermissionOverview{Application: "unavailable", User: "unavailable", Missing: []string{}}
 	}
-	user := report.Permissions.Identities.User
-	appState, appMissing := feishuScopeEvidenceState(user.Application)
-	userState, userMissing := feishuScopeEvidenceState(user.OAuth)
-	if user.Ready == nil {
-		userState = "unknown"
-	} else if !*user.Ready {
-		userState = "missing"
+	appState, appMissing := feishuScopeEvidenceState(report.Permissions.Identities.Bot.Application)
+	userState := "unknown"
+	if user := report.Permissions.Identities.User; user.Ready != nil {
+		if *user.Ready {
+			userState = "verified"
+		} else {
+			userState = "missing"
+		}
 	}
-	return domain.FeishuPermissionOverview{Application: appState, User: userState, Missing: feishuMissingCapabilities(append(appMissing, userMissing...))}
+	return domain.FeishuPermissionOverview{Application: appState, User: userState, Missing: feishuMissingCapabilities(appMissing)}
 }
 
 type feishuScopeEvidence struct {
@@ -988,7 +996,8 @@ type feishuPermissionReport struct {
 		Verified   *bool `json:"verified"`
 		Identities struct {
 			Bot struct {
-				Ready *bool `json:"ready"`
+				Ready       *bool                `json:"ready"`
+				Application *feishuScopeEvidence `json:"application"`
 			} `json:"bot"`
 			User struct {
 				feishuScopeEvidence

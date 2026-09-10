@@ -18,8 +18,8 @@ function toolchainHarness(confirm = true) {
     render: () => {},
     escapeHTML: (value) => String(value).replaceAll('<', '&lt;'),
     api: {
-      toolchainStatus: async () => { calls.push('status'); return { schemaVersion: 1, healthy: true, version: '1.0.93', skills: [] }; },
-      installToolchain: async (confirmed) => { calls.push(['install', confirmed]); return { schemaVersion: 1, healthy: true, version: '1.0.93', skills: [] }; },
+      toolchainStatus: async () => { calls.push('status'); return { schemaVersion: 1, healthy: true, version: '1.0.93-ksfassistant.1', skills: [] }; },
+      installToolchain: async (confirmed) => { calls.push(['install', confirmed]); return { schemaVersion: 1, healthy: true, version: '1.0.93-ksfassistant.1', skills: [] }; },
     },
   });
   vm.runInContext(renderer.slice(renderer.indexOf('function renderToolchainSettings()'), renderer.indexOf('async function readFeishuConfiguration(')), context);

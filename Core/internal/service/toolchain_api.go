@@ -39,7 +39,7 @@ func (service *Service) desktopToolchain() (desktopToolchain, error) {
 		ResourcesDir: filepath.Dir(filepath.Dir(filepath.Dir(executable))),
 		HomeDir:      service.home,
 		Profile:      "default",
-		ConfigDir:    os.Getenv("LARKSUITE_CLI_CONFIG_DIR"),
+		ConfigDir:    filepath.Join(service.feishuDataRoot, "lark-cli"),
 		DataRoot:     service.feishuDataRoot,
 	})
 	if err != nil {

@@ -607,6 +607,7 @@ func projectTaskLink(link TaskLink, now time.Time) PublicTaskLink {
 	if state == "active" {
 		remaining = max(0, int(link.ExpiresAt.Sub(now).Seconds()))
 	}
-	controls := map[string]bool{"canSend": state == "active" && link.TurnState != "running", "canSteer": false, "canInterrupt": state == "active" && link.TurnState == "running", "canAnswer": state == "active" && link.TurnState == "waiting_input", "canRelease": state == "active", "acceptsAttachments": state == "active"}
+	locked := permissionBlocked(link)
+	controls := map[string]bool{"canSend": state == "active" && !locked && link.TurnState != "running", "canSteer": false, "canInterrupt": state == "active" && !locked && link.TurnState == "running", "canAnswer": state == "active" && !locked && link.TurnState == "waiting_input", "canRelease": state == "active", "acceptsAttachments": state == "active" && !locked}
 	return PublicTaskLink{TaskKey: link.TaskKey, Title: link.Title, ProjectName: link.ProjectName, TargetAlias: link.TargetAlias, LinkState: state, TurnState: link.TurnState, TurnOwner: link.TurnOwner, ActionRequired: link.ActionRequired, Controls: controls, CreatedAt: link.CreatedAt.Format(time.RFC3339), UpdatedAt: link.UpdatedAt.Format(time.RFC3339), ExpiresAt: link.ExpiresAt.Format(time.RFC3339), RemainingSeconds: remaining, DetailAvailable: link.Detail != "", Phase: link.Phase, DetailSummary: link.Detail}
 }

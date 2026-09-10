@@ -28,8 +28,10 @@ final class FeishuSettingsLayoutContractTests: XCTestCase {
         let view = try source("UsagePopoverView")
         XCTAssertTrue(view.contains("value: fact.value"))
         XCTAssertTrue(view.contains("Button(action.title)"))
-        XCTAssertTrue(view.contains("configuration.snapshot?.action(\"create_app\")?.enabled == true"))
-        XCTAssertTrue(view.contains("configuration.snapshot?.action(\"connect_app\")?.enabled == true"))
+        XCTAssertTrue(view.contains("feishuNeedsApplicationSetup"))
+        XCTAssertTrue(view.contains("let create = configuration.snapshot?.action(\"create_app\")"))
+        XCTAssertTrue(view.contains("if !create.enabled, let reason = create.reason"))
+        XCTAssertFalse(view.contains("configuration.snapshot?.action(\"connect_app\")"))
         XCTAssertTrue(view.contains("Text(viewModel.feishuConfiguration.summaryTitle)"))
         for retired in ["FeishuConfigurationPresentation(", "switch viewModel.feishuSetup.stage",
                         "feishuAuthStatus?.profileValid == true", "samePendingStep", "23 类事件",
@@ -79,7 +81,7 @@ final class FeishuSettingsLayoutContractTests: XCTestCase {
         XCTAssertTrue(view.contains("feishuExpandedSection = $0 ? section : nil"))
         XCTAssertTrue(view.contains("ViewThatFits(in: .vertical)"))
         XCTAssertTrue(view.contains("ScrollView { feishuPageContent }"))
-        XCTAssertTrue(view.contains("showExistingFeishuApp = false"))
+        XCTAssertFalse(view.contains("showExistingFeishuApp"))
         XCTAssertFalse(view.contains("feishuAdvancedPage"))
     }
 

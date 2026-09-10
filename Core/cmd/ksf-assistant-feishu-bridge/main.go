@@ -15,14 +15,14 @@ import (
 
 	"crypto/sha256"
 	"encoding/hex"
-	"ksfassistant/core/internal/capabilitypolicy"
 	"ksfassistant/core/internal/feishu"
 	"ksfassistant/core/internal/feishucli"
 	"ksfassistant/core/internal/feishuprotocol"
 	"ksfassistant/core/internal/privateipc"
+	"ksfassistant/core/internal/productversion"
 )
 
-const version = "0.11.0-preview.4"
+const version = productversion.Version
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -77,7 +77,11 @@ func run(arguments []string) error {
 	defer feishu.CancelUserAuthFlow(dataRoot)
 	defer feishu.CancelAppConfiguration(dataRoot)
 	var messageClient *feishu.OfficialMessageClient
-	messageClient, err = managedMessageClient(ctx, executor)
+	if feishu.LocalFeishuCleanupPending(dataRoot) {
+		err = errors.New("feishu_local_cleanup_pending")
+	} else {
+		messageClient, err = managedMessageClient(ctx, executor)
+	}
 	serviceExecutor := feishu.UnifiedCapabilityExecutor{LongTail: executor, DataRoot: dataRoot}
 	capabilityService := feishu.NewCapabilityService(dataRoot, serviceExecutor, nil)
 	rpcServer := newBridgeRPCServer(dataRoot, settings, capabilityService)
@@ -209,12 +213,6 @@ func managedMessageClient(ctx context.Context, executor feishu.CapabilityExecuto
 	}
 	identities, _ := identity["identities"].(map[string]any)
 	bot, _ := identities["bot"].(map[string]any)
-	user, _ := identities["user"].(map[string]any)
-	if user["available"] == false && user["status"] == "missing" && user["verified"] != true {
-		if err := capabilitypolicy.SignOut(executor.DataRoot); err != nil {
-			return nil, err
-		}
-	}
 	appID, _ := identity["appId"].(string)
 	if bot["available"] != true || identity["brand"] != "feishu" {
 		return nil, errors.New("official_cli_bot_identity_unavailable")

@@ -49,6 +49,16 @@ func init() {
 			response["error"] = map[string]any{"code": -32600, "message": "injection rejected"}
 		}
 		json.NewEncoder(os.Stdout).Encode(response)
+		if method == "turn/start" && os.Getenv("KSFA_DRAFT_APPROVAL_METHOD") != "" {
+			json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"id": "approval-1", "method": os.Getenv("KSFA_DRAFT_APPROVAL_METHOD"),
+				"params": map[string]any{"threadId": "draft-test", "turnId": "turn-test", "command": "must-not-leak"},
+			})
+			if os.Getenv("KSFA_DRAFT_RESOLVE_APPROVAL") == "1" {
+				time.Sleep(20 * time.Millisecond)
+				json.NewEncoder(os.Stdout).Encode(map[string]any{"method": "serverRequest/resolved", "params": map[string]any{"threadId": "draft-test", "requestId": "approval-1"}})
+			}
+		}
 	}
 	os.Exit(0)
 }
@@ -170,5 +180,101 @@ func TestBridgeProjectlessThreadOmitsWorkingDirectoryOverrides(t *testing.T) {
 		if _, found := request.Params["projectId"]; found {
 			t.Fatalf("%s assigned a project to a projectless task: %#v", request.Method, request.Params)
 		}
+		for _, field := range []string{"approvalPolicy", "sandbox", "sandboxPolicy"} {
+			if _, found := request.Params[field]; found {
+				t.Fatalf("%s overrode Codex permission field %s: %#v", request.Method, field, request.Params)
+			}
+		}
 	}
+}
+
+func TestBridgeApprovalIsCancelledAndInterruptedWithoutPayloadProjection(t *testing.T) {
+	for _, method := range []string{"item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval"} {
+		t.Run(method, func(t *testing.T) {
+			t.Setenv("KSFA_DRAFT_RPC_FIXTURE", "1")
+			t.Setenv("KSFA_DRAFT_APPROVAL_METHOD", method)
+			path := t.TempDir() + "/rpc.jsonl"
+			t.Setenv("KSFA_DRAFT_RPC_LOG", path)
+			binary, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := &Client{Executable: binary, Timeout: time.Second}
+			defer client.Close()
+			if _, err := client.StartBridgeTurn(context.Background(), "draft-test", "", "测试"); err != nil {
+				t.Fatal(err)
+			}
+			var pending ServerRequest
+			for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+				if value, found := client.PendingBridgeUserInput("draft-test"); found {
+					pending = value
+					break
+				}
+			}
+			if pending.Method != method || len(pending.Questions) != 0 {
+				t.Fatalf("approval classification lost: %#v", pending)
+			}
+			if err := client.CancelBridgeApproval(context.Background(), "draft-test", "turn-test", pending.ID, pending.Method); err != nil {
+				t.Fatal(err)
+			}
+			if _, found := client.PendingBridgeUserInput("draft-test"); found {
+				t.Fatal("cancelled approval remained pending")
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var cancellation, interruption map[string]any
+			for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+				var request map[string]any
+				if json.Unmarshal([]byte(line), &request) != nil {
+					continue
+				}
+				if request["id"] == "approval-1" {
+					cancellation = request
+				}
+				if request["method"] == "turn/interrupt" {
+					interruption = request
+				}
+			}
+			result, _ := cancellation["result"].(map[string]any)
+			if method == "item/permissions/requestApproval" {
+				permissions, ok := result["permissions"].(map[string]any)
+				if !ok || len(permissions) != 0 {
+					t.Fatalf("permissions were granted: %#v", cancellation)
+				}
+			} else if result["decision"] != "cancel" {
+				t.Fatalf("approval was not cancelled: %#v", cancellation)
+			}
+			encoded, _ := json.Marshal(cancellation)
+			if interruption == nil || strings.Contains(string(encoded), "must-not-leak") {
+				t.Fatalf("turn was not interrupted or payload leaked: %#v %#v", cancellation, interruption)
+			}
+		})
+	}
+}
+
+func TestServerRequestResolvedClearsCancelledRequestCache(t *testing.T) {
+	t.Setenv("KSFA_DRAFT_RPC_FIXTURE", "1")
+	t.Setenv("KSFA_DRAFT_APPROVAL_METHOD", "item/commandExecution/requestApproval")
+	t.Setenv("KSFA_DRAFT_RESOLVE_APPROVAL", "1")
+	t.Setenv("KSFA_DRAFT_RPC_LOG", t.TempDir()+"/rpc.jsonl")
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &Client{Executable: binary, Timeout: time.Second}
+	defer client.Close()
+	if _, err := client.StartBridgeTurn(context.Background(), "draft-test", "", "测试"); err != nil {
+		t.Fatal(err)
+	}
+	seen := false
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		_, found := client.PendingBridgeUserInput("draft-test")
+		seen = seen || found
+		if seen && !found {
+			return
+		}
+	}
+	t.Fatalf("resolved server request lifecycle invalid; observed pending=%v", seen)
 }

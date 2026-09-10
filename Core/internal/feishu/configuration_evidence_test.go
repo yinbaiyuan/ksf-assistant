@@ -73,6 +73,42 @@ esac`)
 	}
 }
 
+func TestConfigurationEvidenceSeparatesRequestedApplicationScopeFromUserGrant(t *testing.T) {
+	contract, err := RequiredPermissionScopes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	offered := make([]string, 0, len(contract.User))
+	for _, scope := range contract.User {
+		if scope != "docx:document:readonly" {
+			offered = append(offered, scope)
+		}
+	}
+	scopesJSON, _ := json.Marshal(map[string]any{
+		"appId": "cli_fixture", "brand": "feishu", "tokenType": "user",
+		"userScopes": offered, "botScopes": BaseConnectionPermissionScopes(),
+	})
+	runner := fakeAuthCLI(t, `case "$4" in
+status) printf '{"appId":"cli_fixture","brand":"feishu","identities":{"user":{"available":false,"status":"missing","scope":[]},"bot":{"available":true,"verified":true}}}' ;;
+scopes) printf '%s' '`+string(scopesJSON)+`' ;;
+esac`)
+	configurationFixtureFile(t)
+	if err := bindRegistrationOperator(runner.DataRoot, "cli_fixture", "ou_fixture"); err != nil {
+		t.Fatal(err)
+	}
+	request, err := writeProgressiveAuthorizationRequest(runner.DataRoot, "cli_fixture", "docs.fixture.read", []string{"docx:document:readonly"})
+	if err != nil || request == nil {
+		t.Fatal(err)
+	}
+	evidence, err := ReadConfigurationEvidence(context.Background(), runner, runner.DataRoot)
+	if err != nil || evidence.AuthorizationRequest == nil || !contains(evidence.MissingApplicationScopes, "docx:document:readonly") {
+		t.Fatalf("requested application scope was not separated: %+v %v", evidence, err)
+	}
+	if evidence.ApplicationPermissions != "present" {
+		t.Fatalf("base bot readiness was conflated with the requested user scope: %+v", evidence)
+	}
+}
+
 func TestConfigurationReadIgnoresPendingOAuthWhenExistingUserWorks(t *testing.T) {
 	runner := fakeAuthCLI(t, `case "$4" in
 status) printf '{"appId":"cli_fixture","brand":"feishu","identities":{"user":{"available":true,"verified":true},"bot":{"available":false}}}' ;;

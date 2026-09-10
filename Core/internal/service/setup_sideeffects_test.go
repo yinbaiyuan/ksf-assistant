@@ -17,7 +17,7 @@ func completeSetupPermissions() map[string]any {
 	return map[string]any{"permissions": map[string]any{
 		"verified": true,
 		"identities": map[string]any{
-			"bot": map[string]any{"ready": true, "scopeVerification": "not_exposed_by_lark_cli_auth_scopes"},
+			"bot": map[string]any{"ready": true, "scopeVerification": "verified_by_lark_cli_auth_scopes", "application": map[string]any{"complete": true, "missing": []string{}}},
 			"user": map[string]any{
 				"ready": true, "complete": true, "missing": []string{},
 				"application": map[string]any{"complete": true, "missing": []string{}},
@@ -156,6 +156,7 @@ func TestVerifySetupPreservesLiveSettingsAndEveryLegacyStage(t *testing.T) {
 			if err := managedfeishu.NewSetupStore(service.feishuDataRoot).Save(state); err != nil {
 				t.Fatal(err)
 			}
+			writeSetupFixture(t, service, "fixture-evidence.json", map[string]any{"operatorState": "present", "operatorAlias": "我"})
 			before := appSetupTrace(t, service)
 			result, err := service.VerifyFeishuSetup(context.Background())
 			if err != nil || result["status"] != "verified" || result["setup"] != state {
@@ -185,16 +186,16 @@ func TestVerifySetupUnknownEvidenceDoesNotManufactureReadiness(t *testing.T) {
 	assertNoSetupMutations(t, appSetupTrace(t, service)[len(before):])
 }
 
-func TestExistingAuthorizedSetupContinuesWithoutOAuthOrOperatorBinding(t *testing.T) {
+func TestAppBoundOperatorContinuesWithoutOAuth(t *testing.T) {
 	service, _ := newAppSetupFixture(t)
 	state := managedfeishu.SetupState{Version: 1, Mode: "existing", Stage: "app_configured"}
 	if err := managedfeishu.NewSetupStore(service.feishuDataRoot).Save(state); err != nil {
 		t.Fatal(err)
 	}
-	writeSetupFixture(t, service, "fixture-evidence.json", map[string]any{"auth": authorizedSetupFixture()})
+	writeSetupFixture(t, service, "fixture-evidence.json", map[string]any{"auth": unauthorizedSetupFixture(), "operatorState": "present", "operatorAlias": "我"})
 	before := appSetupTrace(t, service)
 	result, err := service.ContinueFeishuSetup(context.Background())
-	if err != nil || result["status"] != "authorized" || result["setup"].(managedfeishu.SetupState).Stage != "platform_pending" {
+	if err != nil || result["status"] != "connected" || result["setup"].(managedfeishu.SetupState).Stage != "platform_pending" {
 		t.Fatalf("existing auth continuation: %+v %v", result, err)
 	}
 	trace := appSetupTrace(t, service)[len(before):]
@@ -359,7 +360,7 @@ func TestCancelWithoutPendingFlowPreservesTerminalAndCheckState(t *testing.T) {
 }
 
 func TestPermissionsRequireExplicitEvidenceAndKeepIdentitiesSeparate(t *testing.T) {
-	paths := []string{"verified", "identities.bot", "identities.bot.ready", "identities.user", "identities.user.ready", "identities.user.complete", "identities.user.missing", "identities.user.application", "identities.user.application.complete", "identities.user.application.missing", "identities.user.oauth", "identities.user.oauth.complete", "identities.user.oauth.missing"}
+	paths := []string{"verified", "identities.bot", "identities.bot.ready", "identities.bot.application", "identities.bot.application.complete", "identities.bot.application.missing"}
 	for _, path := range paths {
 		for _, malformed := range []any{nil, "", true, map[string]any{}} {
 			value := completeSetupPermissions()
@@ -377,14 +378,11 @@ func TestPermissionsRequireExplicitEvidenceAndKeepIdentitiesSeparate(t *testing.
 			}
 		}
 	}
-	for _, field := range []string{"application", "oauth"} {
-		value := completeSetupPermissions()
-		user := value["permissions"].(map[string]any)["identities"].(map[string]any)["user"].(map[string]any)
-		delete(user, field)
-		overview := feishuPermissionOverview(value, nil)
-		if field == "application" && (overview.Application != "unknown" || overview.User != "verified") || field == "oauth" && (overview.User != "unknown" || overview.Application != "verified") {
-			t.Fatalf("permission sources conflated: %s %+v", field, overview)
-		}
+	value := completeSetupPermissions()
+	bot := value["permissions"].(map[string]any)["identities"].(map[string]any)["bot"].(map[string]any)
+	delete(bot, "application")
+	if overview := feishuPermissionOverview(value, nil); overview.Application != "unknown" || overview.User != "verified" {
+		t.Fatalf("permission sources conflated: %+v", overview)
 	}
 	if overview := feishuPermissionOverview(nil, nil); overview.Application == "verified" || overview.User == "verified" {
 		t.Fatalf("empty report verified: %+v", overview)

@@ -28,22 +28,22 @@ struct FeishuLayoutSnapshots {
         let qr = filter.outputImage!.transformed(by: CGAffineTransform(scaleX: 6, y: 6))
         let qrBitmap = NSBitmapImageRep(cgImage: CIContext().createCGImage(qr, from: qr.extent)!)
         let qrDataURL = "data:image/png;base64," + qrBitmap.representation(using: .png, properties: [:])!.base64EncodedString()
-        for fixture in ["loading", "unknown", "signed_out", "create", "app_pending", "auth_pending", "refreshing", "connected", "failed", "completed", "expired", "connected-authorization", "connected-features", "connected-test", "connected-diagnostics"] {
+        for fixture in ["loading", "unknown", "signed_out", "create", "blocked", "app_pending", "auth_pending", "refreshing", "connected", "failed", "completed", "expired", "connected-authorization", "connected-features", "connected-test", "connected-diagnostics"] {
             let parts = fixture.split(separator: "-", maxSplits: 1).map(String.init)
             let state = parts[0]
             let expandedSection = parts.count == 2 ? parts[1] : nil
             for dark in [false, true] {
                 var object = original
-                if ["create", "app_pending"].contains(state) {
+                if ["create", "blocked", "app_pending"].contains(state) {
                     let data = try Data(contentsOf: fixtureRoot.appendingPathComponent("Fixtures/FeishuConfiguration/not-configured.json"))
                     object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
                     precondition((object["summary"] as? [String: Any])?["state"] as? String == "not_configured")
                 }
                 // Explicit offline visual states; never derive readiness in the host.
-                if !["create", "app_pending"].contains(state) {
+                if !["create", "blocked", "app_pending"].contains(state) {
                     let signedOut = ["signed_out", "auth_pending", "expired"].contains(state)
                     var facts = object["facts"] as! [[String: Any]]
-                    let labels = ["robot": signedOut ? "登录后显示" : "示例机器人", "authorizedUser": signedOut ? "未授权" : "示例用户 · 已登录", "taskConnection": signedOut ? "等待飞书登录" : "正常", "application": "cli_visual_fixture"]
+                    let labels = ["robot": signedOut ? "登录后显示" : "示例机器人", "authorizedUser": signedOut ? "按需授权（不影响消息和卡片）" : "示例用户 · 已授权", "taskConnection": signedOut ? "等待飞书登录" : "正常", "application": "cli_visual_fixture"]
                     for i in facts.indices {
                         if let value = labels[facts[i]["id"] as! String] {
                             facts[i]["value"] = value
@@ -56,12 +56,25 @@ struct FeishuLayoutSnapshots {
                     auth["identityValid"] = !signedOut; auth["profileValid"] = true
                     auth["status"] = signedOut ? "unauthorized" : "authorized"
                     object["auth"] = auth
-                    object["diagnostics"] = ["serviceVersion": "0.11.0-preview.4", "cliVersion": "1.0.93", "cliState": "ready", "permissionRevision": "visual", "selfTarget": signedOut ? "" : "fixture"]
+                    object["diagnostics"] = ["serviceVersion": "0.11.0-preview.16", "cliVersion": "1.0.93-ksfassistant.1", "cliState": "ready", "permissionRevision": "visual", "selfTarget": signedOut ? "" : "fixture"]
                 }
                 var actions = object["actions"] as! [[String: Any]]
+                if state == "blocked" {
+                    for index in actions.indices {
+                        if actions[index]["id"] as? String == "create_app" {
+                            actions[index]["enabled"] = false
+                            actions[index]["reason"] = "仍有活动飞书连接，请先完成注销清理。"
+                        }
+                        if actions[index]["id"] as? String == "logout" {
+                            actions[index]["enabled"] = true
+                            actions[index]["title"] = "清理旧连接数据"
+                        }
+                    }
+                }
                 for i in actions.indices {
                     if actions[i]["id"] as? String == "start_auth" { actions[i]["title"] = "登录飞书" }
-                    if ["start_auth", "logout", "bind_operator", "test_message"].contains(actions[i]["id"] as! String) {
+                    if !["create", "blocked", "app_pending"].contains(state),
+                       ["start_auth", "logout", "bind_operator", "test_message"].contains(actions[i]["id"] as! String) {
                         let signedOut = ["signed_out", "auth_pending", "expired"].contains(state)
                         actions[i]["enabled"] = signedOut ? actions[i]["id"] as! String == "start_auth" : ["logout", "test_message"].contains(actions[i]["id"] as! String)
                     }

@@ -3,6 +3,7 @@
 package feishu
 
 import (
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 type windowsOfficialCredentialFile struct {
@@ -25,53 +27,69 @@ type windowsOfficialCredentialFile struct {
 func readPlatformMasterKey() ([]byte, error) {
 	return nil, errors.New("macOS Keychain is unavailable on Windows")
 }
-func loadWindowsOfficialCredentials(home string) (OfficialCredentials, error) {
+func loadWindowsOfficialCredentials(_ string) (OfficialCredentials, error) {
 	dataRoot := strings.TrimSpace(os.Getenv("FEISHU_BRIDGE_DATA_DIR"))
-	if dataRoot == "" {
-		dataRoot = filepath.Join(home, ".config", "feishu-bridge")
-	}
-	credentialPath := strings.TrimSpace(os.Getenv("FEISHU_BRIDGE_CREDENTIAL_FILE"))
-	if credentialPath == "" {
-		credentialPath = filepath.Join(dataRoot, "credentials", "official-sdk.json")
-	}
-	absRoot, err := filepath.Abs(dataRoot)
+	configDir, err := ManagedLarkCLIConfigDir(dataRoot)
 	if err != nil {
 		return OfficialCredentials{}, err
 	}
-	absCredential, err := filepath.Abs(credentialPath)
+	configPath := filepath.Join(configDir, "config.json")
+	if err := validatePrivateRegularFile(configPath); err != nil {
+		return OfficialCredentials{}, err
+	}
+	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return OfficialCredentials{}, err
 	}
-	relative, err := filepath.Rel(absRoot, absCredential)
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return OfficialCredentials{}, errors.New("Windows bridge credential must stay inside FEISHU_BRIDGE_DATA_DIR")
+	var config larkConfig
+	if json.Unmarshal(data, &config) != nil {
+		return OfficialCredentials{}, errors.New("lark-cli config is invalid")
 	}
-	if err := validatePrivateRegularFile(absCredential); err != nil {
-		return OfficialCredentials{}, err
-	}
-	data, err := os.ReadFile(absCredential)
+	profile, err := selectLarkProfile(config, "default")
 	if err != nil {
 		return OfficialCredentials{}, err
 	}
-	var value windowsOfficialCredentialFile
-	if err := json.Unmarshal(data, &value); err != nil || value.SchemaVersion != 1 || strings.TrimSpace(value.AppID) == "" || strings.TrimSpace(value.ProtectedSecret) == "" {
-		return OfficialCredentials{}, errors.New("Windows DPAPI credential file is invalid")
+	var reference secretReference
+	if json.Unmarshal(profile.AppSecret, &reference) != nil {
+		return OfficialCredentials{}, errors.New("lark-cli profile has an unsupported app secret reference")
 	}
-	protected, err := hex.DecodeString(strings.TrimSpace(value.ProtectedSecret))
-	if err != nil || len(protected) == 0 {
-		return OfficialCredentials{}, errors.New("Windows DPAPI credential payload is invalid")
+	source, account := reference.Ref.Source, reference.Ref.ID
+	if source == "" && account == "" {
+		source, account = reference.Source, reference.ID
 	}
-	decrypted, err := unprotectWindowsCredential(protected)
+	if source != "keychain" || account != "appsecret:"+profile.AppID {
+		return OfficialCredentials{}, errors.New("lark-cli app id and app secret reference do not match")
+	}
+	secret, err := readWindowsKeychainAccount(ManagedLarkCLIKeyService, account)
+	if err != nil {
+		return OfficialCredentials{}, err
+	}
+	return OfficialCredentials{AppID: strings.TrimSpace(profile.AppID), AppSecret: secret, Brand: brandOrDefault(profile.Brand), Source: "lark-cli-keychain"}, nil
+}
+
+func readWindowsKeychainAccount(service, account string) (string, error) {
+	key, err := registry.OpenKey(registry.CURRENT_USER, `Software\LarkCli\keychain\`+service, registry.QUERY_VALUE)
+	if err != nil {
+		return "", errors.New("lark-cli Windows credential is unavailable")
+	}
+	defer key.Close()
+	encoded, _, err := key.GetStringValue(base64.RawURLEncoding.EncodeToString([]byte(account)))
+	if err != nil {
+		return "", errors.New("lark-cli Windows credential is unavailable")
+	}
+	protected, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", errors.New("lark-cli Windows credential is invalid")
+	}
+	decrypted, err := unprotectWindowsCredentialWithEntropy(protected, []byte(service+"\x00"+account))
 	clear(protected)
-	if err != nil {
-		return OfficialCredentials{}, errors.New("Windows DPAPI credential could not be decrypted for the current user")
+	if err != nil || len(decrypted) == 0 {
+		clear(decrypted)
+		return "", errors.New("lark-cli Windows credential could not be decrypted for the current user")
 	}
-	defer clear(decrypted)
-	secret, err := decodeWindowsCredentialSecret(decrypted)
-	if err != nil {
-		return OfficialCredentials{}, err
-	}
-	return OfficialCredentials{AppID: strings.TrimSpace(value.AppID), AppSecret: secret, Brand: brandOrDefault(value.Brand), Source: "windows-dpapi"}, nil
+	secret := string(decrypted)
+	clear(decrypted)
+	return secret, nil
 }
 
 func storePlatformOfficialCredentials(dataRoot, appID, appSecret, brand string) error {
@@ -114,12 +132,20 @@ func protectWindowsCredential(plain []byte) ([]byte, error) {
 }
 
 func unprotectWindowsCredential(protected []byte) ([]byte, error) {
+	return unprotectWindowsCredentialWithEntropy(protected, nil)
+}
+
+func unprotectWindowsCredentialWithEntropy(protected, entropy []byte) ([]byte, error) {
 	if len(protected) == 0 {
 		return nil, errors.New("empty Windows credential")
 	}
 	in := windows.DataBlob{Size: uint32(len(protected)), Data: &protected[0]}
+	var entropyBlob *windows.DataBlob
+	if len(entropy) > 0 {
+		entropyBlob = &windows.DataBlob{Size: uint32(len(entropy)), Data: &entropy[0]}
+	}
 	var out windows.DataBlob
-	if err := windows.CryptUnprotectData(&in, nil, nil, 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &out); err != nil {
+	if err := windows.CryptUnprotectData(&in, nil, entropyBlob, 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &out); err != nil {
 		return nil, err
 	}
 	defer freeWindowsDataBlob(out)

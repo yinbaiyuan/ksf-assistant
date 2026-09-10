@@ -3,10 +3,12 @@ package taskruntime
 import (
 	"encoding/json"
 	"time"
+
+	"ksfassistant/core/internal/productversion"
 )
 
 const Protocol = "ksfassistant-task-runtime-v1"
-const SoftwareVersion = "0.11.0-preview.4"
+const SoftwareVersion = productversion.Version
 const MaxRequestBytes = 256 << 10
 const maxRecordBytes = 4 << 20
 const maxHistory = 256

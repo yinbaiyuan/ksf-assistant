@@ -2,6 +2,7 @@ package codex
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"ksfassistant/core/internal/domain"
+	"ksfassistant/core/internal/productversion"
 )
 
 type RPCError struct {
@@ -163,7 +165,7 @@ func (client *Client) Start(ctx context.Context) error {
 	go client.readLoop(stdout, command, client.exitDone)
 	client.stateMu.Unlock()
 	_, initErr := client.callStarted(ctx, "initialize", map[string]any{
-		"clientInfo":   map[string]any{"name": "ksf_assistant_core", "title": "KSFAssistant Core", "version": "0.11.0-preview.4"},
+		"clientInfo":   map[string]any{"name": "ksf_assistant_core", "title": "KSFAssistant Core", "version": productversion.Version},
 		"capabilities": map[string]any{"experimentalApi": true},
 	})
 	if initErr == nil {
@@ -330,7 +332,6 @@ func (client *Client) StartBridgeThread(ctx context.Context, cwd, name string) (
 		} `json:"thread"`
 	}
 	params := map[string]any{
-		"approvalPolicy": "never", "sandbox": "danger-full-access",
 		"personality": "pragmatic", "serviceName": "codex_feishu_bridge_go", "threadSource": "user", "ephemeral": false,
 		"developerInstructions": "The user is interacting through an authorized Feishu bridge. Never expose credentials or hidden identifiers. Ask for desktop interaction when secret input or approval is required.",
 	}
@@ -365,7 +366,7 @@ func (client *Client) StartBridgeTurnWithMode(ctx context.Context, threadID, cwd
 	}
 	params := map[string]any{
 		"threadId": threadID, "input": []map[string]any{{"type": "text", "text": text}},
-		"approvalPolicy": "never", "sandboxPolicy": map[string]any{"type": "dangerFullAccess"}, "summary": "auto",
+		"summary": "auto",
 	}
 	if strings.TrimSpace(cwd) != "" {
 		params["cwd"] = cwd
@@ -424,14 +425,53 @@ func (client *Client) PendingBridgeUserInput(threadID string) (ServerRequest, bo
 func (client *Client) AnswerBridgeUserInput(threadID string, answers map[string]any) error {
 	client.stateMu.Lock()
 	request, ok := client.serverRequests[threadID]
-	if ok {
+	if ok && request.Method == "item/tool/requestUserInput" {
 		delete(client.serverRequests, threadID)
 	}
 	client.stateMu.Unlock()
 	if !ok {
 		return errors.New("Codex user input request is no longer pending")
 	}
+	if request.Method != "item/tool/requestUserInput" {
+		return errors.New("Codex execution approval cannot be answered as user input")
+	}
 	return client.write(map[string]any{"id": request.ID, "result": map[string]any{"answers": answers}})
+}
+
+func IsApprovalRequest(method string) bool {
+	switch method {
+	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval":
+		return true
+	default:
+		return false
+	}
+}
+
+// CancelBridgeApproval rejects an App Server execution approval without
+// exposing its payload outside this client, then stops the affected turn.
+func (client *Client) CancelBridgeApproval(ctx context.Context, threadID, turnID string, expectedID json.RawMessage, method string) error {
+	if !IsApprovalRequest(method) {
+		return errors.New("unsupported Codex approval request")
+	}
+	client.stateMu.Lock()
+	request, ok := client.serverRequests[threadID]
+	client.stateMu.Unlock()
+	if !ok || request.Method != method || (request.TurnID != "" && request.TurnID != turnID) || string(request.ID) != string(expectedID) {
+		return errors.New("Codex approval request is no longer pending")
+	}
+	result := map[string]any{"decision": "cancel"}
+	if method == "item/permissions/requestApproval" {
+		result = map[string]any{"permissions": map[string]any{}}
+	}
+	if err := client.write(map[string]any{"id": request.ID, "result": result}); err != nil {
+		return err
+	}
+	client.stateMu.Lock()
+	if current, found := client.serverRequests[threadID]; found && string(current.ID) == string(request.ID) {
+		delete(client.serverRequests, threadID)
+	}
+	client.stateMu.Unlock()
+	return client.InterruptBridgeTurn(ctx, threadID, turnID)
 }
 
 func Observations(threads []domain.CodexThread) []domain.TaskObservation {
@@ -552,7 +592,10 @@ func (client *Client) readLoop(stdout io.Reader, command *exec.Cmd, done chan st
 			Method string          `json:"method"`
 			Params map[string]any  `json:"params"`
 		}
-		if json.Unmarshal(line, &requestEnvelope) == nil && requestEnvelope.Method != "" && len(requestEnvelope.ID) > 0 && string(requestEnvelope.ID) != "null" {
+		decoder := json.NewDecoder(bytes.NewReader(line))
+		decoder.UseNumber()
+		requestDecoded := decoder.Decode(&requestEnvelope) == nil
+		if requestDecoded && requestEnvelope.Method != "" && len(requestEnvelope.ID) > 0 && string(requestEnvelope.ID) != "null" {
 			threadID := recursiveString(requestEnvelope.Params, "threadId", "thread_id")
 			turnID := recursiveString(requestEnvelope.Params, "turnId", "turn_id")
 			questions := recursiveQuestions(requestEnvelope.Params)
@@ -561,6 +604,25 @@ func (client *Client) readLoop(stdout io.Reader, command *exec.Cmd, done chan st
 				client.serverRequests[threadID] = ServerRequest{ID: append(json.RawMessage(nil), requestEnvelope.ID...), Method: requestEnvelope.Method, ThreadID: threadID, TurnID: turnID, Questions: questions}
 				client.stateMu.Unlock()
 			}
+			continue
+		}
+		if requestDecoded && requestEnvelope.Method == "serverRequest/resolved" {
+			threadID := recursiveString(requestEnvelope.Params, "threadId", "thread_id")
+			requestID := recursiveValue(requestEnvelope.Params, "requestId", "request_id", "id")
+			resolved, _ := json.Marshal(requestID)
+			client.stateMu.Lock()
+			if threadID != "" {
+				if pending, found := client.serverRequests[threadID]; found && (requestID == nil || string(pending.ID) == string(resolved)) {
+					delete(client.serverRequests, threadID)
+				}
+			} else if requestID != nil {
+				for key, pending := range client.serverRequests {
+					if string(pending.ID) == string(resolved) {
+						delete(client.serverRequests, key)
+					}
+				}
+			}
+			client.stateMu.Unlock()
 			continue
 		}
 		var envelope struct {
@@ -587,6 +649,29 @@ func (client *Client) readLoop(stdout io.Reader, command *exec.Cmd, done chan st
 		client.stopLocked(errors.New("Codex App Server stopped"))
 	}
 	client.stateMu.Unlock()
+}
+
+func recursiveValue(value any, names ...string) any {
+	switch item := value.(type) {
+	case map[string]any:
+		for _, name := range names {
+			if candidate, ok := item[name]; ok {
+				return candidate
+			}
+		}
+		for _, child := range item {
+			if candidate := recursiveValue(child, names...); candidate != nil {
+				return candidate
+			}
+		}
+	case []any:
+		for _, child := range item {
+			if candidate := recursiveValue(child, names...); candidate != nil {
+				return candidate
+			}
+		}
+	}
+	return nil
 }
 
 func recursiveString(value any, names ...string) string {

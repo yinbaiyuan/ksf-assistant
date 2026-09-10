@@ -2,7 +2,7 @@
 
 ## 支持
 
-- 最新 `0.11.0-preview.1` 源码与未来公开预览包
+- 最新 `0.11.0-preview.16` 源码与未来公开预览包
 - macOS 13+（arm64/x64）
 - Windows 10/11（x64/arm64）
 - 当前受支持的 Codex Desktop/App Server 协议

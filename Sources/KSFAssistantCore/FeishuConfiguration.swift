@@ -91,6 +91,9 @@ public struct FeishuConfigurationSnapshot: Decodable {
         public let enabled: Bool
         public let reason: String?
         public let confirmation: String?
+        public let authorizationRequestId: String?
+        public let purpose: String?
+        public let scopes: [String]?
 
         public var requiresConfirmation: Bool {
             !["finish_app", "finish_auth"].contains(id)
@@ -103,9 +106,6 @@ public struct FeishuConfigurationSnapshot: Decodable {
             case "test_message":
                 guard let targetAlias, !targetAlias.isEmpty else { return nil }
                 return "\(confirmation)\n身份：机器人（bot）\n目标：\(targetAlias)\n正文：【KSFAssistant 接入验收】这是一条由本人确认发送的连接测试消息，无需回复。\n仅验证本次发送，不代表整体配置已就绪。"
-            case "connect_app":
-                guard let appID, !appID.isEmpty else { return nil }
-                return "\(confirmation)\n待接入 App ID：\(appID)"
             default: return confirmation
             }
         }
@@ -155,7 +155,7 @@ public struct FeishuConfigurationSnapshot: Decodable {
         public let selfTarget: String?
         public let recentOperations: [Operation]?
         public var versionSummary: String {
-            "飞书服务 \(serviceVersion.isEmpty ? "未知" : "v" + serviceVersion) · lark-cli \(cliVersion.isEmpty ? "未知" : "v" + cliVersion)"
+            "KSFAssistant \(serviceVersion.isEmpty ? "未知" : "v" + serviceVersion) · lark-cli \(cliVersion.isEmpty ? "未知" : "v" + cliVersion)"
         }
     }
     public let diagnostics: Diagnostics?
@@ -201,6 +201,7 @@ public struct FeishuConfigurationActionRequest: Encodable {
     public let feature: String?
     public let mode: String?
     public let flowId: String?
+    public let authorizationRequestId: String?
 }
 
 public struct FeishuConfigurationActionResult: Decodable {
@@ -222,7 +223,7 @@ public struct FeishuConfigurationState {
     public init() {}
 
     public func showsConnectionIndicator(transportReady: Bool, taskLinkReady: Bool) -> Bool {
-        transportReady && taskLinkReady && snapshot?.auth?.isAuthorized != false
+        transportReady && taskLinkReady
     }
 
     public var summaryTitle: String {
@@ -256,13 +257,12 @@ public struct FeishuConfigurationState {
     }
 
     public var priorityAction: String? {
-        guard phase == .current,
-              (snapshot?.action("start_auth")?.enabled == true || (snapshot?.fact("authorizedUser")?.state == "missing" && snapshot?.fact("application")?.state == "present" && snapshot?.flow == nil)) else { return nil }
+        guard phase == .current, snapshot?.action("start_auth")?.enabled == true else { return nil }
         return "start_auth"
     }
 
     public var pendingSetupActions: [FeishuConfigurationSnapshot.Action] {
-        snapshot?.actions.filter { ["bind_operator"].contains($0.id) && $0.enabled } ?? []
+        []
     }
 }
 
@@ -401,7 +401,8 @@ public final class FeishuConfigurationSession {
         let request = FeishuConfigurationActionRequest(
             action: action, requestId: UUID().uuidString, epoch: snapshot.epoch, revision: snapshot.revision,
             contextRevision: snapshot.contextRevision, confirm: confirm, appId: appID, appSecret: appSecret,
-            targetAlias: targetAlias, feature: feature, mode: mode, flowId: flowID
+            targetAlias: targetAlias, feature: feature, mode: mode, flowId: flowID,
+            authorizationRequestId: action == "start_auth" ? affordance.authorizationRequestId : nil
         )
         state.lastAction = action
         state.acting = true
@@ -438,7 +439,7 @@ public final class FeishuConfigurationSession {
     }
 
     private func validate(_ snapshot: FeishuConfigurationSnapshot) throws {
-        guard snapshot.schemaVersion == 1, !snapshot.epoch.isEmpty,
+        guard snapshot.schemaVersion == 2, !snapshot.epoch.isEmpty,
               !snapshot.summary.title.isEmpty else { throw ConfigurationError.incompatible }
         if let current = state.snapshot, current.epoch == snapshot.epoch, snapshot.revision < current.revision {
             throw ConfigurationError.stale

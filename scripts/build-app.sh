@@ -8,13 +8,14 @@ binary_path="$app_path/Contents/MacOS/KSFAssistant"
 icon_path="$repo_root/Resources/CodexStatusIcon.svg"
 architectures="${ARCHS:-arm64 x86_64}"
 signing_mode="${SIGNING_MODE:-adhoc}"
-release_version="$(node -p "require(process.argv[1]).version" "$repo_root/Windows/package.json")"
+release_version="$(node -p "require(process.argv[1]).productVersion" "$repo_root/version.json")"
 bundle_release_version="$(/usr/libexec/PlistBuddy -c 'Print :KSFAssistantReleaseVersion' "$repo_root/Resources/Info.plist")"
 bundle_short_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$repo_root/Resources/Info.plist")"
 if [[ "$bundle_release_version" != "$release_version" || "$bundle_short_version" != "${release_version%%-*}" ]]; then
     echo "Application release versions disagree; refusing package build." >&2
     exit 1
 fi
+node "$repo_root/scripts/check-product-identity.mjs"
 
 CORE_TARGETS="darwin-arm64 darwin-x64" "$repo_root/scripts/build-core.sh"
 node "$repo_root/scripts/prepare-feishu-runtime.mjs" --platform darwin --arch arm64 --arch x64
@@ -127,7 +128,7 @@ const file = path.join(root, 'runtime/lark-cli-runtime.json');
 const manifest = JSON.parse(readFileSync(file));
 for (const target of ['darwin-arm64', 'darwin-x64']) {
     const item = manifest.artifacts[target];
-    item.upstreamExecutableSha256 = item.executableSha256;
+    item.controlledExecutableSha256 = item.executableSha256;
     item.executableSha256 = createHash('sha256').update(readFileSync(path.join(root, 'runtime/lark-cli', target, item.executable))).digest('hex');
     item.taskExecutableSha256 = createHash('sha256').update(readFileSync(path.join(root, 'runtime/task', target, 'ksf-assistant-task'))).digest('hex');
 }

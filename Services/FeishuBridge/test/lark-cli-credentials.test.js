@@ -50,8 +50,9 @@ test('credential decryption matches lark-cli AES-256-GCM storage format', () => 
 
 test('official credentials reuse one selected lark-cli keychain profile without writing plaintext', (t) => {
   const homeDir = temporaryDirectory(t);
-  const configDir = path.join(homeDir, '.lark-cli');
-  const storageDir = path.join(homeDir, 'Library', 'Application Support', 'lark-cli');
+  const dataRoot = path.join(homeDir, '.config', 'feishu-bridge');
+  const configDir = path.join(dataRoot, 'lark-cli');
+  const storageDir = path.join(homeDir, 'Library', 'Application Support', 'ksfassistant-lark-cli');
   fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
   fs.mkdirSync(storageDir, { recursive: true, mode: 0o700 });
   const appId = 'cli_test_app';
@@ -72,7 +73,7 @@ test('official credentials reuse one selected lark-cli keychain profile without 
   );
 
   const credential = loadOfficialCredentials({
-    env: { LARK_CLI_PROFILE: 'default' },
+    env: { FEISHU_BRIDGE_DATA_DIR: dataRoot, LARK_CLI_PROFILE: 'ignored-foreign-profile' },
     homeDir,
     masterKeyReader: () => Buffer.from(key),
   });
@@ -85,12 +86,26 @@ test('official credentials reuse one selected lark-cli keychain profile without 
   assert.equal(fs.existsSync(path.join(storageDir, 'master.key.file')), false);
 });
 
-test('credential selection is fail-closed for ambiguous profiles and partial env overrides', () => {
+test('credential selection is fail-closed for ambiguous profiles and ignores external app overrides', (t) => {
   assert.throws(() => selectProfile({ apps: [{ name: 'a' }, { name: 'b' }] }), /ambiguous/);
   assert.equal(selectProfile({ apps: [{ name: 'a' }] }).name, 'a');
+  const homeDir = temporaryDirectory(t);
+  const dataRoot = path.join(homeDir, 'bridge');
+  const configDir = path.join(dataRoot, 'lark-cli');
+  fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify({
+    apps: [{ name: 'default', appId: 'managed-app', appSecret: 'managed-secret', brand: 'feishu' }],
+  }), { mode: 0o600 });
+  const credential = loadOfficialCredentials({
+    env: { FEISHU_BRIDGE_DATA_DIR: dataRoot, FEISHU_APP_ID: 'foreign-id', FEISHU_APP_SECRET: 'foreign-secret' },
+    homeDir,
+  });
+  assert.equal(credential.appId, 'managed-app');
+  assert.equal(credential.appSecret, 'managed-secret');
+  assert.equal(credential.source, 'lark-cli-config');
   assert.throws(
-    () => loadOfficialCredentials({ env: { FEISHU_APP_ID: 'only-id' } }),
-    /configured together/,
+    () => loadOfficialCredentials({ env: { FEISHU_BRIDGE_DATA_DIR: path.join(homeDir, 'missing') }, homeDir }),
+    /ENOENT/,
   );
 });
 

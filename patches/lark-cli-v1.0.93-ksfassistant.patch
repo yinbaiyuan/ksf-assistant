@@ -1,0 +1,342 @@
+diff --git a/cmd/auth/logout.go b/cmd/auth/logout.go
+--- a/cmd/auth/logout.go
++++ b/cmd/auth/logout.go
+@@ -7,0 +8 @@ import (
++	"os"
+@@ -14,0 +16,2 @@ import (
++	"github.com/larksuite/cli/internal/credential"
++	"github.com/larksuite/cli/internal/keychain"
+@@ -20,2 +23,3 @@ type LogoutOptions struct {
+-	Factory *cmdutil.Factory
+-	JSON    bool
++	Factory           *cmdutil.Factory
++	JSON              bool
++	PurgeLocalProfile bool
+@@ -38,0 +43 @@ func NewCmdAuthLogout(f *cmdutil.Factory, runF func(*LogoutOptions) error) *cobr
++	cmd.Flags().BoolVar(&opts.PurgeLocalProfile, "purge-local-profile", false, "remove the selected profile and all locally stored credentials")
+@@ -45,71 +50,79 @@ func authLogoutRun(opts *LogoutOptions) error {
+-	f := opts.Factory
+-
+-	multi, _ := core.LoadMultiAppConfig()
+-	if multi == nil || len(multi.Apps) == 0 {
+-		if opts.JSON {
+-			output.PrintJson(f.IOStreams.Out, map[string]interface{}{
+-				"ok":        true,
+-				"loggedOut": false,
+-				"reason":    "not_configured",
+-			})
+-			return nil
+-		}
+-		fmt.Fprintln(f.IOStreams.ErrOut, "No configuration found.")
+-		return nil
+-	}
+-
+-	// A selector that matches no profile is an input error, not a logged-out
+-	// state: "not_logged_in" (exit 0) would hide a stale --profile or
+-	// LARKSUITE_CLI_PROFILE value from the caller.
+-	app, err := multi.RequireAppConfig(f.Invocation.Profile, f.Invocation.ProfileSource)
+-	if err != nil {
+-		return err
+-	}
+-	if len(app.Users) == 0 {
+-		if opts.JSON {
+-			output.PrintJson(f.IOStreams.Out, map[string]interface{}{
+-				"ok":        true,
+-				"loggedOut": false,
+-				"reason":    "not_logged_in",
+-			})
+-			return nil
+-		}
+-		fmt.Fprintln(f.IOStreams.ErrOut, "Not logged in.")
+-		return nil
+-	}
+-
+-	httpClient, httpErr := f.HttpClient()
+-	appSecret, secretErr := core.ResolveSecretInput(app.AppSecret, f.Keychain)
+-
+-	for _, user := range app.Users {
+-		if httpErr == nil && secretErr == nil {
+-			if token := larkauth.GetStoredToken(app.AppId, user.UserOpenId); token != nil {
+-				revokeToken := token.RefreshToken
+-				tokenTypeHint := "refresh_token"
+-				if revokeToken == "" {
+-					revokeToken = token.AccessToken
+-					tokenTypeHint = "access_token"
+-				}
+-				if revokeToken != "" {
+-					_ = larkauth.RevokeToken(httpClient, app.AppId, appSecret, app.Brand, revokeToken, tokenTypeHint)
+-				}
+-			}
+-		}
+-		if err := larkauth.RemoveStoredToken(app.AppId, user.UserOpenId); err != nil {
+-			fmt.Fprintf(f.IOStreams.ErrOut, "Warning: failed to remove token for %s: %v\n", user.UserOpenId, err)
+-		}
+-	}
+-
+-	app.Users = []core.AppUser{}
+-	if err := core.SaveMultiAppConfig(multi); err != nil {
+-		return errs.NewInternalError(errs.SubtypeStorage, "failed to save config: %v", err).WithCause(err)
+-	}
+-	if opts.JSON {
+-		output.PrintJson(f.IOStreams.Out, map[string]interface{}{
+-			"ok":        true,
+-			"loggedOut": true,
+-		})
+-		return nil
+-	}
+-	output.PrintSuccess(f.IOStreams.ErrOut, "Logged out")
+-	return nil
++	f := opts.Factory
++	remoteRevocationConfirmed := true
++	multi, _ := core.LoadMultiAppConfig()
++	if multi == nil || len(multi.Apps) == 0 {
++		if opts.JSON {
++			result := map[string]interface{}{"ok": true, "loggedOut": false, "reason": "not_configured", "remoteRevocationConfirmed": true}
++			if opts.PurgeLocalProfile { result["purged"] = true }
++			output.PrintJson(f.IOStreams.Out, result)
++			return nil
++		}
++		fmt.Fprintln(f.IOStreams.ErrOut, "No configuration found.")
++		return nil
++	}
++	app, err := multi.RequireAppConfig(f.Invocation.Profile, f.Invocation.ProfileSource)
++	if err != nil { return err }
++	if opts.PurgeLocalProfile && len(multi.Apps) != 1 {
++		return errs.NewConfigError(errs.SubtypeInvalidConfig, "purge-local-profile requires an isolated single-profile config")
++	}
++	purgeLocal := func() error {
++		if err := credential.NewTenantTokenStore(func() keychain.KeychainAccess { return f.Keychain }).Remove(app.AppId); err != nil { return err }
++		if app.AppSecret.IsSecretRef() && app.AppSecret.Ref.Source == "keychain" {
++			if err := f.Keychain.Remove(keychain.LarkCliService, app.AppSecret.Ref.ID); err != nil { return err }
++		}
++		if err := os.Remove(core.GetConfigPath()); err != nil && !os.IsNotExist(err) { return err }
++		return nil
++	}
++	if len(app.Users) == 0 {
++		if opts.PurgeLocalProfile {
++			if err := purgeLocal(); err != nil { return err }
++			if opts.JSON { output.PrintJson(f.IOStreams.Out, map[string]interface{}{"ok": true, "loggedOut": false, "purged": true, "remoteRevocationConfirmed": true}) }
++			return nil
++		}
++		if opts.JSON {
++			output.PrintJson(f.IOStreams.Out, map[string]interface{}{"ok": true, "loggedOut": false, "reason": "not_logged_in", "remoteRevocationConfirmed": true})
++			return nil
++		}
++		fmt.Fprintln(f.IOStreams.ErrOut, "Not logged in.")
++		return nil
++	}
++
++	httpClient, httpErr := f.HttpClient()
++	appSecret, secretErr := core.ResolveSecretInput(app.AppSecret, f.Keychain)
++	for _, user := range app.Users {
++		token := larkauth.GetStoredToken(app.AppId, user.UserOpenId)
++		if token != nil {
++			if httpErr != nil || secretErr != nil {
++				remoteRevocationConfirmed = false
++			} else {
++				revokeToken, tokenTypeHint := token.RefreshToken, "refresh_token"
++				if revokeToken == "" { revokeToken, tokenTypeHint = token.AccessToken, "access_token" }
++				if revokeToken != "" {
++					if err := larkauth.RevokeToken(httpClient, app.AppId, appSecret, app.Brand, revokeToken, tokenTypeHint); err != nil { remoteRevocationConfirmed = false }
++				}
++			}
++		} else {
++			remoteRevocationConfirmed = false
++		}
++		if err := larkauth.RemoveStoredToken(app.AppId, user.UserOpenId); err != nil {
++			if opts.PurgeLocalProfile { return err }
++			fmt.Fprintf(f.IOStreams.ErrOut, "Warning: failed to remove token for %s: %v\n", user.UserOpenId, err)
++		}
++	}
++	app.Users = []core.AppUser{}
++	if err := core.SaveMultiAppConfig(multi); err != nil {
++		return errs.NewInternalError(errs.SubtypeStorage, "failed to save config: %v", err).WithCause(err)
++	}
++	purged := false
++	if opts.PurgeLocalProfile {
++		if err := purgeLocal(); err != nil { return err }
++		purged = true
++	}
++	if opts.JSON {
++		result := map[string]interface{}{"ok": true, "loggedOut": true, "remoteRevocationConfirmed": remoteRevocationConfirmed}
++		if opts.PurgeLocalProfile { result["purged"] = purged }
++		output.PrintJson(f.IOStreams.Out, result)
++		return nil
++	}
++	output.PrintSuccess(f.IOStreams.ErrOut, "Logged out")
++	return nil
+diff --git a/cmd/config/init.go b/cmd/config/init.go
+--- a/cmd/config/init.go
++++ b/cmd/config/init.go
+@@ -435 +435 @@ func configInitRun(opts *ConfigInitOptions) error {
+-		output.PrintJson(f.IOStreams.Out, map[string]interface{}{"appId": result.AppID, "appSecret": "****", "brand": result.Brand})
++		output.PrintJson(f.IOStreams.Out, configInitJSON(result))
+@@ -577,0 +578,7 @@ func configInitRun(opts *ConfigInitOptions) error {
++func configInitJSON(result *configInitResult) map[string]interface{} {
++	response := map[string]interface{}{"appId": result.AppID, "appSecret": "****", "brand": result.Brand}
++	if result.RegistrationUser != nil {
++		response["registrationUser"] = result.RegistrationUser
++	}
++	return response
++}
+diff --git a/cmd/config/init_interactive.go b/cmd/config/init_interactive.go
+--- a/cmd/config/init_interactive.go
++++ b/cmd/config/init_interactive.go
+@@ -8,0 +9 @@ import (
++	"strings"
+@@ -26,4 +27,10 @@ type configInitResult struct {
+-	Mode      string // "create" or "existing"
+-	Brand     core.LarkBrand
+-	AppID     string
+-	AppSecret string
++	Mode             string // "create" or "existing"
++	Brand            core.LarkBrand
++	AppID            string
++	AppSecret        string
++	RegistrationUser *registrationUser
++}
++
++type registrationUser struct {
++	OpenID      string `json:"openId"`
++	TenantBrand string `json:"tenantBrand"`
+@@ -191 +198 @@ func runCreateAppFlow(ctx context.Context, f *cmdutil.Factory, brandOverride cor
+-	verificationURL := larkauth.BuildVerificationURL(authResp.VerificationUriComplete, build.Version)
++	verificationURL := larkauth.BuildVerificationURL(authResp.VerificationUriComplete, strings.SplitN(build.Version, "-", 2)[0])
+@@ -225,0 +233,4 @@ func runCreateAppFlow(ctx context.Context, f *cmdutil.Factory, brandOverride cor
++	var user *registrationUser
++	if result.UserInfo != nil && result.UserInfo.OpenID != "" {
++		user = &registrationUser{OpenID: result.UserInfo.OpenID, TenantBrand: result.UserInfo.TenantBrand}
++	}
+@@ -228,4 +239,5 @@ func runCreateAppFlow(ctx context.Context, f *cmdutil.Factory, brandOverride cor
+-		Mode:      "create",
+-		Brand:     finalBrand,
+-		AppID:     result.ClientID,
+-		AppSecret: result.ClientSecret,
++		Mode:             "create",
++		Brand:            finalBrand,
++		AppID:            result.ClientID,
++		AppSecret:        result.ClientSecret,
++		RegistrationUser: user,
+diff --git a/internal/keychain/keychain.go b/internal/keychain/keychain.go
+--- a/internal/keychain/keychain.go
++++ b/internal/keychain/keychain.go
+@@ -29 +29 @@ const (
+-	LarkCliService = "lark-cli"
++	LarkCliService = "ksfassistant-lark-cli"
+diff --git a/cmd/config/bind_test.go b/cmd/config/bind_test.go
+--- a/cmd/config/bind_test.go
++++ b/cmd/config/bind_test.go
+@@ -1785 +1785 @@ func TestCleanupKeychainFromData_KeepsSecretSharedWithNewApp(t *testing.T) {
+-	if err := kc.Set("lark-cli", sharedID, "top-secret"); err != nil {
++	if err := kc.Set("ksfassistant-lark-cli", sharedID, "top-secret"); err != nil {
+@@ -1799 +1799 @@ func TestCleanupKeychainFromData_KeepsSecretSharedWithNewApp(t *testing.T) {
+-	got, err := kc.Get("lark-cli", sharedID)
++	got, err := kc.Get("ksfassistant-lark-cli", sharedID)
+@@ -1815 +1815 @@ func TestCleanupKeychainFromData_RemovesStaleSecretWhenAppIDChanges(t *testing.T) {
+-	if err := kc.Set("lark-cli", oldID, "old-secret"); err != nil {
++	if err := kc.Set("ksfassistant-lark-cli", oldID, "old-secret"); err != nil {
+@@ -1829 +1829 @@ func TestCleanupKeychainFromData_RemovesStaleSecretWhenAppIDChanges(t *testing.T) {
+-	got, _ := kc.Get("lark-cli", oldID)
++	got, _ := kc.Get("ksfassistant-lark-cli", oldID)
+diff --git a/cmd/auth/auth.go b/cmd/auth/auth.go
+--- a/cmd/auth/auth.go
++++ b/cmd/auth/auth.go
+@@ -114,0 +115 @@ type appInfo struct {
++	BotScopes   []string
+@@ -171 +172 @@ func getAppInfo(ctx context.Context, f *cmdutil.Factory, appId string) (*appInfo,
+-	var userScopes []string
++	var userScopes, botScopes []string
+@@ -173,3 +174,7 @@ func getAppInfo(ctx context.Context, f *cmdutil.Factory, appId string) (*appInfo,
+-		if s.Scope == "" || !slices.Contains(s.TokenTypes, "user") {
++		if s.Scope == "" {
+ 			continue
+ 		}
++		if slices.Contains(s.TokenTypes, "tenant") {
++			botScopes = append(botScopes, s.Scope)
++		}
++		if !slices.Contains(s.TokenTypes, "user") { continue }
+@@ -181 +186 @@ func getAppInfo(ctx context.Context, f *cmdutil.Factory, appId string) (*appInfo,
+-	return &appInfo{OwnerOpenId: ownerOpenId, UserScopes: userScopes}, nil
++	return &appInfo{OwnerOpenId: ownerOpenId, UserScopes: userScopes, BotScopes: botScopes}, nil
+diff --git a/cmd/auth/scopes.go b/cmd/auth/scopes.go
+--- a/cmd/auth/scopes.go
++++ b/cmd/auth/scopes.go
+@@ -88,0 +89 @@ func authScopesRun(opts *ScopesOptions) error {
++			"botScopes":  appInfo.BotScopes,
+diff --git a/cmd/config/init_ksfassistant_test.go b/cmd/config/init_ksfassistant_test.go
+new file mode 100644
+--- /dev/null
++++ b/cmd/config/init_ksfassistant_test.go
+@@ -0,0 +1,22 @@
++package config
++
++import (
++	"testing"
++
++	"github.com/larksuite/cli/internal/core"
++)
++
++func TestConfigInitJSONRegistrationUserIsOptional(t *testing.T) {
++	without := configInitJSON(&configInitResult{AppID: "cli_fixture", AppSecret: "private", Brand: core.BrandFeishu})
++	if without["appSecret"] != "****" || without["registrationUser"] != nil {
++		t.Fatalf("unexpected result without registration user: %#v", without)
++	}
++	with := configInitJSON(&configInitResult{
++		AppID: "cli_fixture", AppSecret: "private", Brand: core.BrandFeishu,
++		RegistrationUser: &registrationUser{OpenID: "ou_fixture", TenantBrand: "feishu"},
++	})
++	user, ok := with["registrationUser"].(*registrationUser)
++	if !ok || user.OpenID != "ou_fixture" || user.TenantBrand != "feishu" || with["appSecret"] != "****" {
++		t.Fatalf("registration user was not returned safely: %#v", with)
++	}
++}
+diff --git a/cmd/auth/logout_ksfassistant_test.go b/cmd/auth/logout_ksfassistant_test.go
+new file mode 100644
+--- /dev/null
++++ b/cmd/auth/logout_ksfassistant_test.go
+@@ -0,0 +1,45 @@
++package auth
++
++import (
++	"encoding/json"
++	"errors"
++	"os"
++	"testing"
++
++	"github.com/larksuite/cli/internal/cmdutil"
++	"github.com/larksuite/cli/internal/core"
++)
++
++func TestAuthLogoutRunPurgeLocalProfileRemovesIsolatedConfig(t *testing.T) {
++	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
++	writeLogoutConfig(t, nil)
++	f, stdout, _, _ := cmdutil.TestFactory(t, nil)
++	if err := authLogoutRun(&LogoutOptions{Factory: f, JSON: true, PurgeLocalProfile: true}); err != nil {
++		t.Fatal(err)
++	}
++	var result map[string]interface{}
++	if json.Unmarshal(stdout.Bytes(), &result) != nil || result["purged"] != true {
++		t.Fatalf("purge result invalid: %s", stdout.String())
++	}
++	if _, err := os.Stat(core.GetConfigPath()); !errors.Is(err, os.ErrNotExist) {
++		t.Fatalf("isolated config survived purge: %v", err)
++	}
++}
++
++func TestAuthLogoutRunPurgeLocalProfileRejectsSharedConfig(t *testing.T) {
++	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
++	config := &core.MultiAppConfig{CurrentApp: "default", Apps: []core.AppConfig{
++		{Name: "default", AppId: "cli_first", AppSecret: core.PlainSecret("first"), Brand: core.BrandFeishu},
++		{Name: "other", AppId: "cli_other", AppSecret: core.PlainSecret("other"), Brand: core.BrandFeishu},
++	}}
++	if err := core.SaveMultiAppConfig(config); err != nil {
++		t.Fatal(err)
++	}
++	f, _, _, _ := cmdutil.TestFactory(t, nil)
++	if err := authLogoutRun(&LogoutOptions{Factory: f, JSON: true, PurgeLocalProfile: true}); err == nil {
++		t.Fatal("shared config was purged")
++	}
++	if _, err := os.Stat(core.GetConfigPath()); err != nil {
++		t.Fatalf("shared config was changed: %v", err)
++	}
++}

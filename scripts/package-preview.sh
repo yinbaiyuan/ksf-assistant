@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { lstatSync, readdirSync, readFileSync, mkdirSync, copyFileSync, chmodSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 const [root, output] = process.argv.slice(2);
-const allowlist = ['Core', 'Sources', 'Resources', 'Tests', 'Services/FeishuBridge', 'runtime', 'scripts', 'docs', 'Windows/src', 'Windows/assets', 'Windows/scripts', 'Windows/test', 'Windows/package.json', 'Windows/package-lock.json', 'Windows/README.md', 'Package.swift', 'AGENTS.md', 'README.md', 'DESIGN.md', 'PRODUCT.md', 'SUPPORT.md', 'SECURITY.md', 'PRIVACY.md', 'CONTRIBUTING.md', 'CODE_OF_CONDUCT.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md'];
+const allowlist = ['Core', 'Sources', 'Resources', 'Tests', 'Services/FeishuBridge', 'runtime', 'patches', 'scripts', 'docs', 'Windows/src', 'Windows/assets', 'Windows/scripts', 'Windows/test', 'Windows/package.json', 'Windows/package-lock.json', 'Windows/README.md', 'version.json', 'Package.swift', 'AGENTS.md', 'README.md', 'DESIGN.md', 'PRODUCT.md', 'SUPPORT.md', 'SECURITY.md', 'PRIVACY.md', 'CONTRIBUTING.md', 'CODE_OF_CONDUCT.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md'];
 const excluded = new Set(['.git', '.auth', '.build', 'dist', 'node_modules', '.DS_Store', '.cache', 'cache', 'output', 'coverage', 'logs', '.env']);
 function inventory() {
   const files = {};

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,11 +19,15 @@ func validateAuthCommand(runner CapabilityExecutor, args []string, stdin []byte)
 		return errors.New("官方 CLI 授权配置无效")
 	}
 	allowed := map[string]bool{"auth/status": true, "auth/scopes": true, "auth/logout": true, "contact/+search-user": true, "config/init": true}
-	if !allowed[args[0]+"/"+args[1]] || !contains(args, "--json") {
+	command := args[0] + "/" + args[1]
+	if !allowed[command] || command != "config/init" && !contains(args, "--json") {
 		return errors.New("不支持的官方 CLI 授权命令")
 	}
-	flags := map[string]bool{"--json": false}
-	switch args[0] + "/" + args[1] {
+	flags := map[string]bool{}
+	if command != "config/init" {
+		flags["--json"] = false
+	}
+	switch command {
 	case "auth/status":
 		flags["--verify"] = false
 	case "contact/+search-user":
@@ -30,6 +35,8 @@ func validateAuthCommand(runner CapabilityExecutor, args []string, stdin []byte)
 	case "config/init":
 		flags["--name"], flags["--app-id"], flags["--brand"], flags["--lang"] = true, true, true, true
 		flags["--app-secret-stdin"] = false
+	case "auth/logout":
+		flags["--purge-local-profile"] = false
 	}
 	seen := map[string]bool{}
 	for index := 2; index < len(args); index++ {
@@ -58,16 +65,17 @@ func validateAuthCommand(runner CapabilityExecutor, args []string, stdin []byte)
 	return nil
 }
 
-func authEnvironment() []string {
+func authEnvironment(dataRoot string) []string {
 	result := []string{}
 	for _, entry := range os.Environ() {
 		name, _, _ := strings.Cut(entry, "=")
 		upper := strings.ToUpper(name)
-		if upper == "LARKSUITE_CLI_CONFIG_DIR" || !strings.HasPrefix(upper, "LARK") && !strings.HasPrefix(upper, "FEISHU_") {
+		if !strings.HasPrefix(upper, "LARK") && !strings.HasPrefix(upper, "FEISHU_") {
 			result = append(result, entry)
 		}
 	}
-	return append(result, "LARKSUITE_CLI_PROFILE=default", "LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1", "LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1", "LARKSUITE_CLI_REMOTE_META=off")
+	configDir, _ := ManagedLarkCLIConfigDir(dataRoot)
+	return append(result, "LARKSUITE_CLI_CONFIG_DIR="+configDir, "LARKSUITE_CLI_PROFILE=default", "LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1", "LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1", "LARKSUITE_CLI_REMOTE_META=off")
 }
 
 func authResultHasSecret(value any) bool {
@@ -119,7 +127,9 @@ func validAuthResult(args []string, result map[string]any) bool {
 		return ok
 	case "auth/logout":
 		_, ok := result["loggedOut"].(bool)
-		return result["ok"] == true && ok
+		purged, purgeKnown := result["purged"].(bool)
+		_, revocationKnown := result["remoteRevocationConfirmed"].(bool)
+		return result["ok"] == true && ok && revocationKnown && (!contains(args, "--purge-local-profile") || purgeKnown && purged)
 	case "config/init":
 		_, ok := result["appId"].(string)
 		delete(result, "appSecret")
@@ -153,6 +163,10 @@ func ReadAuthStatus(ctx context.Context, runner CapabilityExecutor, dataRoot str
 }
 
 func readCLIAuthStatus(ctx context.Context, runner CapabilityExecutor) (feishuprotocol.AuthStatus, error) {
+	return readCLIAuthStatusForScopes(ctx, runner, []string{"contact:user.base:readonly"})
+}
+
+func readCLIAuthStatusForScopes(ctx context.Context, runner CapabilityExecutor, required []string) (feishuprotocol.AuthStatus, error) {
 	status := emptyAuthStatus("unknown")
 	raw, err := runner.RunAuthJSON(ctx, []string{"auth", "status", "--verify", "--json"}, nil, 15*time.Second)
 	if err != nil {
@@ -172,7 +186,6 @@ func readCLIAuthStatus(ctx context.Context, runner CapabilityExecutor) (feishupr
 	}
 	granted := stringList(user["scope"])
 	status.GrantedScopeCount = len(comparePermissionScopes(nil, granted).Excess)
-	required := []string{"contact:user.base:readonly"}
 	if len(comparePermissionScopes(required, granted).Missing) > 0 {
 		status.MissingCapabilities = append(status.MissingCapabilities, "用户授权范围")
 	}
@@ -210,25 +223,28 @@ func LogoutUserAuth(ctx context.Context, runner CapabilityExecutor, dataRoot str
 	if err := ctx.Err(); err != nil {
 		return emptyAuthStatus("unknown"), err
 	}
+	if err := BeginLocalFeishuCleanup(dataRoot); err != nil {
+		return emptyAuthStatus("unknown"), err
+	}
 	CancelUserAuthFlow(dataRoot)
-	_, err := runner.RunAuthJSON(ctx, []string{"auth", "logout", "--json"}, nil, 30*time.Second)
+	result, err := runner.RunAuthJSON(ctx, []string{"auth", "logout", "--purge-local-profile", "--json"}, nil, 30*time.Second)
 	if err != nil {
 		return emptyAuthStatus("unknown"), err
 	}
-	unknown := emptyAuthStatus("unknown")
-	unknown.MissingCapabilities = []string{"退出结果尚未确认，请重新检查用户授权"}
-	raw, err := runner.RunAuthJSON(ctx, []string{"auth", "status", "--verify", "--json"}, nil, 15*time.Second)
-	if err != nil {
-		return unknown, nil
+	configDir, pathErr := ManagedLarkCLIConfigDir(dataRoot)
+	if pathErr != nil {
+		return emptyAuthStatus("unknown"), pathErr
 	}
-	identities, _ := raw["identities"].(map[string]any)
-	user, _ := identities["user"].(map[string]any)
-	appID, _ := raw["appId"].(string)
-	profileValid := raw["brand"] == "feishu" && strings.TrimSpace(appID) != ""
-	if !profileValid || cliUserAuthState(user) != "unauthorized" {
-		return unknown, nil
+	if _, statErr := os.Lstat(filepath.Join(configDir, "config.json")); !errors.Is(statErr, os.ErrNotExist) {
+		return emptyAuthStatus("unknown"), errors.New("本地飞书应用配置仍然存在")
+	}
+	if err := PurgeLocalFeishuState(dataRoot); err != nil {
+		return emptyAuthStatus("unknown"), err
 	}
 	status := emptyAuthStatus("unauthorized")
-	status.ProfileValid = profileValid
+	status.ProfileValid = false
+	if confirmed, ok := result["remoteRevocationConfirmed"].(bool); ok {
+		status.RemoteRevocationConfirmed = &confirmed
+	}
 	return status, nil
 }

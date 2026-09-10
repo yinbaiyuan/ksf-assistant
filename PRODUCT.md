@@ -8,7 +8,7 @@ KSFAssistant is an open-source macOS menu-bar and Windows system-tray instrument
 
 ## Current release
 
-The `0.11.0-preview.1` local preview keeps the platform UI, shared Go core, and supervised Feishu service in one product, with pinned official CLI/Skills and an independent advisory task-reporting CLI. Real hardware acceptance is separate from build success. Ordinary users configure integrations inside the software and do not install runtimes or operate background services.
+The `0.11.0-preview.16` local preview keeps the platform UI, shared Go core, and supervised Feishu service in one product, with pinned official CLI/Skills and an independent advisory task-reporting CLI. Real hardware acceptance is separate from build success. Ordinary users configure integrations inside the software and do not install runtimes or operate background services.
 
 ## Confirmed hierarchy
 

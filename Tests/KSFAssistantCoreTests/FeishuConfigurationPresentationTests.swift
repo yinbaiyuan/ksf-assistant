@@ -82,14 +82,14 @@ final class FeishuConfigurationPresentationTests: XCTestCase {
         XCTAssertTrue(session.state.allows("start_auth"))
     }
 
-    func testConnectionIndicatorHidesWhenUserIsLoggedOutDespiteReadyTransport() throws {
+    func testConnectionIndicatorDoesNotDependOnOptionalUserAuthorization() throws {
         var state = FeishuConfigurationState()
         state.snapshot = try decode(fixture { object in
             var auth = object["auth"] as! [String: Any]
             auth["status"] = "unauthorized"; auth["identityValid"] = false
             object["auth"] = auth
         })
-        XCTAssertFalse(state.showsConnectionIndicator(transportReady: true, taskLinkReady: true))
+        XCTAssertTrue(state.showsConnectionIndicator(transportReady: true, taskLinkReady: true))
         state.snapshot = try decode(fixture())
         XCTAssertTrue(state.showsConnectionIndicator(transportReady: true, taskLinkReady: true))
         XCTAssertFalse(state.showsConnectionIndicator(transportReady: true, taskLinkReady: false))
@@ -199,7 +199,7 @@ final class FeishuConfigurationPresentationTests: XCTestCase {
 
     @MainActor
     func testInitialReadFailureAndIncompatibleSchemaStayUnknown() async throws {
-        for invalid in [Data("{}".utf8), try fixture { $0["schemaVersion"] = 2 }] {
+        for invalid in [Data("{}".utf8), try fixture { $0["schemaVersion"] = 1 }] {
             let session = FeishuConfigurationSession { _, _ in invalid }
             await session.read()
             XCTAssertEqual(session.state.phase, .unknown)
@@ -226,17 +226,17 @@ final class FeishuConfigurationPresentationTests: XCTestCase {
             return response
         }
         try session.restore(decode(data))
-        for action in ["bind_operator", "logout", "enable_outbound", "test_message"] {
+        for action in ["logout", "enable_outbound", "test_message"] {
             await session.perform(action)
         }
         XCTAssertTrue(requests.isEmpty)
         await session.perform("enable_outbound", confirm: true)
         XCTAssertTrue(requests.isEmpty)
-        await session.perform("bind_operator", confirm: true)
+        await session.perform("logout", confirm: true)
         XCTAssertEqual(requests.count, 1)
         XCTAssertEqual(requests[0].0, "feishu/configuration/action")
         let parameters = requests[0].1
-        XCTAssertEqual(parameters["action"] as? String, "bind_operator")
+        XCTAssertEqual(parameters["action"] as? String, "logout")
         XCTAssertEqual(parameters["epoch"] as? String, "fixture-epoch")
         XCTAssertEqual(parameters["revision"] as? Int, 7)
         XCTAssertEqual(parameters["contextRevision"] as? String, "fixture-context")
@@ -267,12 +267,10 @@ final class FeishuConfigurationPresentationTests: XCTestCase {
         let snapshot = try decode(fixture())
         XCTAssertNil(snapshot.action("set_feature"))
         XCTAssertNil(snapshot.action("enable_outbound"))
-        let connect = try XCTUnwrap(snapshot.action("connect_app"))
-        let text = try XCTUnwrap(connect.confirmationText(appID: "fixture-app-id"))
-        XCTAssertTrue(text.hasPrefix(try XCTUnwrap(connect.confirmation)))
-        XCTAssertTrue(text.contains("待接入 App ID：fixture-app-id"))
-        XCTAssertFalse(text.contains("Secret"))
-        XCTAssertNil(connect.confirmationText())
+        XCTAssertNil(snapshot.action("connect_app"))
+        XCTAssertNil(snapshot.action("bind_operator"))
+        let logout = try XCTUnwrap(snapshot.action("logout"))
+        XCTAssertEqual(logout.confirmationText(), logout.confirmation)
     }
 
     @MainActor
@@ -293,7 +291,7 @@ final class FeishuConfigurationPresentationTests: XCTestCase {
             return response
         }
         try session.restore(decode(initial))
-        for action in ["create_app", "connect_app", "start_auth", "logout", "bind_operator", "set_feature", "enable_outbound", "test_message", "restart", "cancel_flow"] {
+        for action in ["create_app", "start_auth", "logout", "set_feature", "enable_outbound", "test_message", "restart", "cancel_flow"] {
             XCTAssertNil(session.state.snapshot?.action(action)?.confirmationText(targetAlias: "fixture", mode: "live", featureTitle: "文档与知识库", appID: "fixture-app"))
             await session.perform(action, confirm: true, flowID: "flow-1")
         }
@@ -317,11 +315,11 @@ final class FeishuConfigurationPresentationTests: XCTestCase {
         await session.read()
         for reason in ["locked", "hidden", "quit", "business-approval"] {
             blockedReason = reason
-            await session.perform("bind_operator", confirm: true)
+            await session.perform("logout", confirm: true)
             XCTAssertEqual(methods, ["feishu/configuration/read"], reason)
         }
         blockedReason = nil
-        await session.perform("bind_operator", confirm: true)
+        await session.perform("logout", confirm: true)
         XCTAssertEqual(methods, ["feishu/configuration/read", "feishu/configuration/action"])
     }
 
@@ -334,7 +332,23 @@ final class FeishuConfigurationPresentationTests: XCTestCase {
  object["actions"]=actions
 })
         XCTAssertNil(state.priorityAction)
-        XCTAssertEqual(state.pendingSetupActions.map(\.id), ["bind_operator"])
+        XCTAssertTrue(state.pendingSetupActions.isEmpty)
+
+        state.snapshot = try decode(fixture { object in
+            var facts = object["facts"] as! [[String: Any]]
+            for index in facts.indices where facts[index]["id"] as? String == "authorizedUser" {
+                facts[index]["state"] = "missing"
+                facts[index]["value"] = "按需授权（不影响消息和卡片）"
+            }
+            object["facts"] = facts
+            var actions = object["actions"] as! [[String: Any]]
+            for index in actions.indices where actions[index]["id"] as? String == "start_auth" {
+                actions[index]["enabled"] = false
+            }
+            object["actions"] = actions
+        })
+        XCTAssertNil(state.priorityAction, "Optional user OAuth must not create a desktop action unless Core enables it")
+
         for userState in ["missing", "unknown", "present"] {
             state.snapshot = try decode(fixture { object in
                 var facts = object["facts"] as! [[String: Any]]
@@ -342,7 +356,7 @@ final class FeishuConfigurationPresentationTests: XCTestCase {
                 facts[index]["state"] = userState
                 object["facts"] = facts
                 var actions = object["actions"] as! [[String: Any]]
-                for actionIndex in actions.indices where ["bind_operator", "enable_outbound", "start_auth"].contains(actions[actionIndex]["id"] as! String) {
+                for actionIndex in actions.indices where ["enable_outbound", "start_auth"].contains(actions[actionIndex]["id"] as! String) {
                     actions[actionIndex]["enabled"] = actions[actionIndex]["id"] as? String == "start_auth" && userState == "missing"
                 }
                 object["actions"] = actions
@@ -480,7 +494,7 @@ final class FeishuConfigurationPresentationTests: XCTestCase {
         let session = FeishuConfigurationSession(transport: probe.request)
         let snapshot = try decode(fixture())
         try session.restore(snapshot)
-        let first = Task { await session.perform("bind_operator", confirm: true, expectedContext: snapshot.context) }
+        let first = Task { await session.perform("logout", confirm: true, expectedContext: snapshot.context) }
         await waitForCalls(1, probe)
         await session.perform("logout", confirm: true)
         XCTAssertEqual(probe.requests.count, 1)
@@ -510,7 +524,7 @@ final class FeishuConfigurationPresentationTests: XCTestCase {
         try session.restore(original)
         await session.read()
         XCTAssertEqual(session.state.snapshot?.revision, 8)
-        await session.perform("bind_operator", confirm: true, expectedContext: original.context)
+        await session.perform("logout", confirm: true, expectedContext: original.context)
         XCTAssertEqual(payloads.count, 1)
         let payload = try XCTUnwrap(payloads.first)
         XCTAssertEqual(payload["revision"] as? Int, 8)
@@ -531,7 +545,7 @@ final class FeishuConfigurationPresentationTests: XCTestCase {
             }
             try session.restore(original)
             await session.read()
-            await session.perform("bind_operator", confirm: true, expectedContext: original.context)
+            await session.perform("logout", confirm: true, expectedContext: original.context)
             XCTAssertEqual(actionCount, 0, changedField)
             XCTAssertEqual(session.state.message, "配置已更新，请重新确认本次操作。", changedField)
         }
@@ -543,7 +557,7 @@ final class FeishuConfigurationPresentationTests: XCTestCase {
         let disabled = try fixture { object in
             object["revision"] = 8
             var actions = object["actions"] as! [[String: Any]]
-            for index in actions.indices where actions[index]["id"] as? String == "bind_operator" {
+            for index in actions.indices where actions[index]["id"] as? String == "logout" {
                 actions[index]["enabled"] = false
             }
             object["actions"] = actions
@@ -559,7 +573,7 @@ final class FeishuConfigurationPresentationTests: XCTestCase {
         }
         try session.restore(original)
         await session.read()
-        await session.perform("bind_operator", confirm: true, expectedContext: original.context)
+        await session.perform("logout", confirm: true, expectedContext: original.context)
         XCTAssertTrue(payloads.isEmpty)
 
         var flowObject = try XCTUnwrap(JSONSerialization.jsonObject(with: replacementFlow) as? [String: Any])
@@ -577,12 +591,8 @@ final class FeishuConfigurationPresentationTests: XCTestCase {
     }
 
     @MainActor
-    func testExplicitConnectAndFeatureParametersAreNotPersistedOrExpanded() async throws {
-        let data = try fixture { object in
-            var actions = object["actions"] as! [[String: Any]]
-            for index in actions.indices where actions[index]["id"] as? String == "connect_app" { actions[index]["enabled"] = true }
-            object["actions"] = actions
-        }
+    func testRetiredConnectAndFeatureActionsNeverReachTransport() async throws {
+        let data = try fixture()
         var payloads: [[String: Any]] = []
         let response = try result(data)
         let session = FeishuConfigurationSession { _, payload in
@@ -591,12 +601,11 @@ final class FeishuConfigurationPresentationTests: XCTestCase {
         }
         try session.restore(decode(data))
         await session.perform("connect_app", confirm: true, appID: "fixture-app", appSecret: "fixture-secret")
-        XCTAssertEqual(payloads[0]["appId"] as? String, "fixture-app")
-        XCTAssertEqual(payloads[0]["appSecret"] as? String, "fixture-secret")
+        XCTAssertTrue(payloads.isEmpty)
         await session.perform("set_feature", feature: "actionbox", mode: "live")
-        XCTAssertEqual(payloads.count, 1)
+        XCTAssertTrue(payloads.isEmpty)
         await session.perform("set_feature", confirm: true, feature: "actionbox", mode: "live")
-        XCTAssertEqual(payloads.count, 1) // Retired feature action never reaches transport.
+        XCTAssertTrue(payloads.isEmpty) // Retired actions never reach transport.
         XCTAssertFalse(String(describing: session.state).contains("fixture-secret"))
     }
 

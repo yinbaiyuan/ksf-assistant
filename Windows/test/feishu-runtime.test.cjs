@@ -14,14 +14,20 @@ test('bundled Feishu runtime manifest is complete and pinned', () => {
     encoding: 'utf8',
   });
   assert.equal(result.status, 0, result.stderr);
-	assert.match(result.stdout, /lark-cli 1\.0\.93/);
+	assert.match(result.stdout, /lark-cli 1\.0\.93-ksfassistant\.1/);
 	assert.doesNotMatch(result.stdout, /Node/);
 });
 
-test('runtime preparation can unpack Windows artifacts on non-Windows build hosts', () => {
+test('runtime preparation cross-compiles Windows artifacts from the pinned source on any build host', () => {
 	const source = fs.readFileSync(path.join(repoRoot, 'scripts', 'prepare-feishu-runtime.mjs'), 'utf8');
-	assert.match(source, /process\.platform === 'win32'/);
-	assert.match(source, /run\('unzip', \['-q', '-o', archive, '-d', unpack\]\)/);
+	assert.match(source, /target\.split\('-'\)/);
+	assert.match(source, /CGO_ENABLED: '0', GOOS: goos, GOARCH: goarch/);
+	assert.match(source, /GIT_CEILING_DIRECTORIES: repoRoot/);
+	assert.match(source, /run\('git'.*cwd: sourceRoot, env: patchEnvironment/);
+	assert.doesNotMatch(source, /--directory=\$\{sourceRelative\}/);
+	assert.match(source, /'build', '-buildvcs=false', '-trimpath', '-ldflags'/);
+	assert.match(source, /normalizeReleaseAPIMetadata/);
+	assert.doesNotMatch(source, /process\.platform === 'win32'/);
 });
 
 test('Windows package copies only Go Feishu production dependencies', () => {
@@ -58,12 +64,17 @@ test('macOS uses Node only for build tooling and bundles no Node runtime or serv
 test('official CLI and Skills share a pinned tag, SHA256 hashes and license', () => {
   const cli = JSON.parse(fs.readFileSync(path.join(repoRoot, 'runtime/lark-cli-runtime.json')));
   const skills = JSON.parse(fs.readFileSync(path.join(repoRoot, 'runtime/lark-skills.json')));
-  assert.equal(cli.version, '1.0.93');
-  assert.equal(skills.version, cli.version);
-  assert.equal(skills.source.tag, `v${cli.version}`);
+  assert.equal(cli.version, '1.0.93-ksfassistant.1');
+  assert.equal(cli.upstreamVersion, '1.0.93');
+  assert.equal(skills.version, cli.upstreamVersion);
+  assert.equal(skills.source.tag, `v${cli.upstreamVersion}`);
   assert.equal(cli.automaticUpdate, false);
   assert.equal(cli.license, 'MIT');
   assert.equal(skills.license, 'MIT');
+  assert.equal(cli.apiMetadata.normalization, 'release-schema-v1.0.93');
+  assert.match(cli.apiMetadata.url, /^https:\/\/open\.feishu\.cn\//);
+  assert.match(cli.apiMetadata.sha256, /^[a-f0-9]{64}$/);
+  assert.equal(cli.apiMetadata.serviceCount, 15);
   assert.match(skills.licenseSha256, /^[a-f0-9]{64}$/);
   assert.match(skills.source.sha256, /^[a-f0-9]{64}$/);
   assert.equal(skills.skills.length, 28);
@@ -71,6 +82,7 @@ test('official CLI and Skills share a pinned tag, SHA256 hashes and license', ()
     const artifact = cli.artifacts[target];
     assert.match(artifact.sha256, /^[a-f0-9]{64}$/);
     assert.match(artifact.executableSha256, /^[a-f0-9]{64}$/);
+    assert.equal(artifact.managedVersion, cli.version);
     assert.ok(artifact.embeddedGoModules.some(module => module.name === 'github.com/larksuite/oapi-sdk-go/v3' && module.version === 'v3.7.2'));
   }
   for (const skill of skills.skills) {
@@ -103,7 +115,7 @@ test('both platform packages include task and toolchain executables plus full Sk
   assert.equal((windowsBuild.match(/'build', '-buildvcs=false'/g) || []).length, 3);
 });
 
-test('Windows signing reseals packaged hashes without losing official provenance', async () => {
+test('Windows signing reseals packaged hashes without losing the controlled pre-sign hash', async () => {
   const os = require('node:os');
   const crypto = require('node:crypto');
   const sealRuntime = require('../scripts/seal-runtime.cjs');
@@ -122,7 +134,7 @@ test('Windows signing reseals packaged hashes without losing official provenance
     const artifact = JSON.parse(fs.readFileSync(filename)).artifacts['windows-x64'];
     const hash = content => crypto.createHash('sha256').update(content).digest('hex');
     assert.equal(artifact.sha256, 'official-archive');
-    assert.equal(artifact.upstreamExecutableSha256, 'upstream-executable');
+    assert.equal(artifact.controlledExecutableSha256, 'upstream-executable');
     assert.equal(artifact.executableSha256, hash('signed-cli-fixture'));
     assert.equal(artifact.taskExecutableSha256, hash('signed-task-fixture'));
   } finally {

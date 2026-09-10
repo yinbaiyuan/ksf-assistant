@@ -23,8 +23,41 @@ import (
 
 type appConfigurationSession struct {
 	*userAuthSession
-	configPath string
-	configHash [32]byte
+	configPath                    string
+	configHash                    [32]byte
+	operatorBound                 bool
+	operatorAuthorizationRequired bool
+}
+
+type registrationUser struct {
+	OpenID      string `json:"openId"`
+	TenantBrand string `json:"tenantBrand"`
+}
+
+type registrationDetails struct {
+	AppID            string
+	RegistrationUser *registrationUser
+}
+
+type appConfigurationNotStartedError struct{ message string }
+
+func (err *appConfigurationNotStartedError) Error() string { return err.message }
+
+func appConfigurationNotStarted(message string) error {
+	return &appConfigurationNotStartedError{message: message}
+}
+
+// IsAppConfigurationNotStarted distinguishes a locally rejected request from
+// a registration process whose remote result may be uncertain.
+func IsAppConfigurationNotStarted(err error) bool {
+	var target *appConfigurationNotStartedError
+	return errors.As(err, &target)
+}
+
+type registrationOperatorRecovery struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	AppID         string `json:"appId"`
+	OpenID        string `json:"openId"`
 }
 
 var appConfigurationSessions = struct {
@@ -62,18 +95,21 @@ func FinishAppConfiguration(ctx context.Context, runner CapabilityExecutor, data
 			return nil, errors.New("创建后的应用配置已变化，请重新检查当前应用，不会重新创建")
 		}
 	}
-	return authStatusMap(session.status), session.err
+	result := authStatusMap(session.status)
+	result["operatorBound"] = session.operatorBound
+	result["operatorAuthorizationRequired"] = session.operatorAuthorizationRequired
+	return result, session.err
 }
 
 func startAppConfiguration(ctx context.Context, runner CapabilityExecutor, dataRoot, profile string) (map[string]any, error) {
 	if ctx.Err() != nil {
-		return nil, errors.New("创建请求已取消")
+		return nil, appConfigurationNotStarted("创建请求已取消")
 	}
 	if runner.Binary == "" || runner.Profile != "" && runner.Profile != "default" || profile != "" && profile != "default" || !filepath.IsAbs(dataRoot) || dataRoot != runner.DataRoot {
-		return nil, errors.New("创建应用配置无效，只支持受管 default 配置")
+		return nil, appConfigurationNotStarted("创建应用配置无效，只支持受管 default 配置")
 	}
 	if err := appCreationBusinessGuard(dataRoot); err != nil {
-		return nil, err
+		return nil, appConfigurationNotStarted(err.Error())
 	}
 	appConfigurationSessions.Lock()
 	if existing := appConfigurationSessions.items[dataRoot]; existing != nil {
@@ -86,21 +122,21 @@ func startAppConfiguration(ctx context.Context, runner CapabilityExecutor, dataR
 	}
 	if len(appConfigurationSessions.items) >= 4 {
 		appConfigurationSessions.Unlock()
-		return nil, errors.New("创建会话已达上限，请取消后重试")
+		return nil, appConfigurationNotStarted("创建会话已达上限，请取消后重试")
 	}
-	configPath, err := newAppConfigurationPath()
+	configPath, err := newAppConfigurationPath(dataRoot)
 	if err != nil {
 		appConfigurationSessions.Unlock()
-		return nil, err
+		return nil, appConfigurationNotStarted(err.Error())
 	}
 	if probe := ProbeLarkCLI(ctx, runner.Binary); probe.State != "ready" {
 		appConfigurationSessions.Unlock()
-		return nil, errors.New("固定版本官方 CLI 未通过检查，不能创建应用")
+		return nil, appConfigurationNotStarted("固定版本官方 CLI 未通过检查，不能创建应用")
 	}
 	release, err := userapproval.TryExecutionLease(dataRoot)
 	if err != nil {
 		appConfigurationSessions.Unlock()
-		return nil, err
+		return nil, appConfigurationNotStarted(err.Error())
 	}
 	stage, err := os.MkdirTemp(filepath.Dir(configPath), ".ksfas-registration-")
 	if err == nil {
@@ -109,14 +145,16 @@ func startAppConfiguration(ctx context.Context, runner CapabilityExecutor, dataR
 	if err != nil {
 		release()
 		appConfigurationSessions.Unlock()
-		return nil, errors.New("无法安全准备创建应用会话")
+		return nil, appConfigurationNotStarted("无法安全准备创建应用会话")
 	}
 	processCtx, cancel := context.WithTimeout(context.Background(), maximumAuthSessionDuration)
 	session := &appConfigurationSession{userAuthSession: &userAuthSession{status: emptyAuthStatus("pending"), cancel: cancel, ready: make(chan struct{}), done: make(chan struct{}), configurationStartedAt: time.Now()}, configPath: configPath}
 	session.status.Flow = "app-create"
 	session.status.Identity = "bot"
-	command := exec.Command(runner.Binary, "--profile", "default", "config", "init", "--new", "--name", "default", "--brand", "feishu", "--lang", "zh_cn", "--json")
-	command.Env = appConfigurationEnvironment(stage)
+	// config init always prints its machine-readable result to stdout. Unlike
+	// auth commands, the upstream command has no --json flag.
+	command := exec.Command(runner.Binary, "--profile", "default", "config", "init", "--new", "--name", "default", "--brand", "feishu", "--lang", "zh_cn")
+	command.Env = appConfigurationEnvironment(dataRoot, stage)
 	command.Dir = stage
 	command.WaitDelay = 2 * time.Second
 	stdout := &boundedCommandBuffer{limit: maximumAuthOutputBytes}
@@ -128,14 +166,14 @@ func startAppConfiguration(ctx context.Context, runner CapabilityExecutor, dataR
 		release()
 		_ = os.RemoveAll(stage)
 		appConfigurationSessions.Unlock()
-		return nil, errors.New("创建请求已取消")
+		return nil, appConfigurationNotStarted("创建请求已取消")
 	}
 	if err := command.Start(); err != nil {
 		cancel()
 		release()
 		_ = os.RemoveAll(stage)
 		appConfigurationSessions.Unlock()
-		return nil, errors.New("无法启动官方应用创建流程")
+		return nil, appConfigurationNotStarted("无法启动官方应用创建流程")
 	}
 	tree, err := attachProcessTree(command)
 	if err != nil {
@@ -164,13 +202,33 @@ func startAppConfiguration(ctx context.Context, runner CapabilityExecutor, dataR
 		<-watcherStopped
 		closeProcessTree(tree)
 		session.mu.Lock()
-		appID, valid := registrationResult(stdout.Bytes())
-		if waitErr != nil || stdout.overflow || !valid || !stderr.ready || processCtx.Err() != nil {
+		registration, valid := registrationResultDetails(stdout.Bytes())
+		if !stderr.ready {
+			// The upstream protocol cannot create or select an application until
+			// the verification page has been delivered to the user. A begin
+			// failure before that point is therefore definitively retryable even
+			// though the local CLI process itself was started.
+			session.err = appConfigurationNotStarted("飞书扫码入口未建立，应用创建或选择尚未开始")
+		} else if waitErr != nil || stdout.overflow || !valid || processCtx.Err() != nil {
 			session.err = errors.New("创建结果未确认或已取消、过期；请先在飞书后台确认，不会自动重试")
 		} else if err := appCreationBusinessGuard(dataRoot); err != nil {
 			session.err = errors.New("创建期间业务配置已变化；新应用未接入，请先确认结果，不要重复创建")
 		} else {
-			session.err = publishAppConfiguration(stage, configPath, appID)
+			if registration.RegistrationUser != nil {
+				session.err = writeRegistrationOperatorRecovery(dataRoot, registration.AppID, registration.RegistrationUser.OpenID)
+			}
+			if session.err == nil {
+				session.err = publishAppConfiguration(stage, configPath, registration.AppID)
+			}
+			if session.err == nil && registration.RegistrationUser != nil {
+				session.err = bindRegistrationOperator(dataRoot, registration.AppID, registration.RegistrationUser.OpenID)
+				if session.err == nil {
+					session.operatorBound = true
+					_ = os.Remove(registrationOperatorRecoveryPath(dataRoot))
+				}
+			} else if session.err == nil {
+				session.operatorAuthorizationRequired = true
+			}
 		}
 		if session.err == nil {
 			data, _ := appConfigurationBytes(filepath.Join(stage, "config.json"))
@@ -193,6 +251,9 @@ func startAppConfiguration(ctx context.Context, runner CapabilityExecutor, dataR
 	status, err := awaitUserAuthStart(ctx, session.userAuthSession)
 	if err != nil {
 		CancelAppConfiguration(dataRoot)
+		if !stderr.ready {
+			return nil, appConfigurationNotStarted(err.Error())
+		}
 		return nil, err
 	}
 	if status.VerificationURL != "" {
@@ -212,31 +273,38 @@ func appCreationBusinessGuard(dataRoot string) error {
 	if err != nil || settings.Group.Enabled || settings.MailEvents.Enabled {
 		return errors.New("已有业务通道启用或配置不可读，扫码新建不能用于切换应用；请恢复并沿用当前应用")
 	}
-	failure := errors.New("已有飞书授权目标、任务关联或历史工作记录，扫码新建不能用于切换应用；不会清理或重放原数据")
-	for _, name := range []string{"client.json", "task-links-v1.json", "integration-events-v1.json", "logs/outbox.jsonl", "logs/docbox.jsonl", "logs/actionbox.jsonl"} {
-		if _, err := os.Lstat(filepath.Join(dataRoot, filepath.FromSlash(name))); !errors.Is(err, os.ErrNotExist) {
+	failure := errors.New("仍有活动飞书连接，扫码连接不能覆盖；请先注销并完成本地清理")
+	if _, err := os.Lstat(logoutCleanupPath(dataRoot)); !errors.Is(err, os.ErrNotExist) {
+		return failure
+	}
+	if config, loadErr := NewClientConfigStore(dataRoot).Load(); loadErr != nil {
+		return failure
+	} else if config.Operator != nil || len(config.MessageTargets) > 0 || len(config.DirectAllowedAliases) > 0 {
+		return failure
+	}
+	var links struct {
+		Links []struct {
+			LinkState string `json:"linkState"`
+		} `json:"links"`
+	}
+	if data, readErr := os.ReadFile(filepath.Join(dataRoot, "task-links-v1.json")); readErr == nil {
+		if len(data) > maximumPrivateJSONBytes || json.Unmarshal(data, &links) != nil {
 			return failure
 		}
+	} else if !errors.Is(readErr, os.ErrNotExist) {
+		return failure
 	}
-	directories := []string{"private-cache/inbound-work", "integration-event-receipts-v1"}
-	// Retired document records still establish ownership; never replay them.
-	for _, kind := range []string{"outbox", "actionbox", "docbox"} {
-		for _, state := range []string{"pending", "running", "terminal"} {
-			directories = append(directories, "private-cache/workbox-v3/"+kind+"/"+state)
-		}
-	}
-	for _, name := range directories {
-		entries, err := os.ReadDir(filepath.Join(dataRoot, filepath.FromSlash(name)))
-		if err != nil && !errors.Is(err, os.ErrNotExist) || len(entries) != 0 {
+	for _, link := range links.Links {
+		if link.LinkState == "active" {
 			return failure
 		}
 	}
 	return nil
 }
 
-func appConfigurationEnvironment(stage string) []string {
+func appConfigurationEnvironment(dataRoot, stage string) []string {
 	result := []string{}
-	for _, entry := range authEnvironment() {
+	for _, entry := range authEnvironment(dataRoot) {
 		name, _, _ := strings.Cut(entry, "=")
 		if !strings.EqualFold(name, "LARKSUITE_CLI_CONFIG_DIR") {
 			result = append(result, entry)
@@ -245,14 +313,10 @@ func appConfigurationEnvironment(stage string) []string {
 	return append(result, "LARKSUITE_CLI_CONFIG_DIR="+stage)
 }
 
-func newAppConfigurationPath() (string, error) {
-	root := os.Getenv("LARKSUITE_CLI_CONFIG_DIR")
-	if root == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", errors.New("官方 CLI 配置目录不可用")
-		}
-		root = filepath.Join(home, ".lark-cli")
+func newAppConfigurationPath(dataRoot string) (string, error) {
+	root, err := ManagedLarkCLIConfigDir(dataRoot)
+	if err != nil {
+		return "", errors.New("官方 CLI 配置目录不可用")
 	}
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root {
 		return "", errors.New("官方 CLI 配置目录无效")
@@ -316,7 +380,9 @@ func validAppRegistrationURL(value string) bool {
 		return false
 	}
 	query := parsed.Query()
-	if len(query) != 4 || !regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`).MatchString(query.Get("user_code")) || query.Get("lpv") != PinnedLarkCLIVersion || query.Get("ocv") != PinnedLarkCLIVersion || query.Get("from") != "cli" {
+	// The controlled patch intentionally reports the upstream protocol version
+	// to Feishu while the binary itself retains its managed distribution version.
+	if len(query) != 4 || !regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`).MatchString(query.Get("user_code")) || query.Get("lpv") != PinnedLarkCLIUpstreamVersion || query.Get("ocv") != PinnedLarkCLIUpstreamVersion || query.Get("from") != "cli" {
 		return false
 	}
 	for _, values := range query {
@@ -328,17 +394,75 @@ func validAppRegistrationURL(value string) bool {
 }
 
 func registrationResult(data []byte) (string, bool) {
+	result, valid := registrationResultDetails(data)
+	return result.AppID, valid
+}
+
+func registrationResultDetails(data []byte) (registrationDetails, bool) {
 	var result struct {
-		AppID     string `json:"appId"`
-		AppSecret string `json:"appSecret"`
-		Brand     string `json:"brand"`
+		AppID            string            `json:"appId"`
+		AppSecret        string            `json:"appSecret"`
+		Brand            string            `json:"brand"`
+		RegistrationUser *registrationUser `json:"registrationUser,omitempty"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&result) != nil || decoder.Decode(&struct{}{}) != io.EOF {
-		return "", false
+		return registrationDetails{}, false
 	}
-	return result.AppID, result.Brand == "feishu" && result.AppSecret == "****" && regexp.MustCompile(`^cli_[A-Za-z0-9_-]{1,124}$`).MatchString(result.AppID)
+	valid := result.Brand == "feishu" && result.AppSecret == "****" && regexp.MustCompile(`^cli_[A-Za-z0-9_-]{1,124}$`).MatchString(result.AppID)
+	if result.RegistrationUser != nil && (result.RegistrationUser.TenantBrand != "feishu" || !regexp.MustCompile(`^ou_[A-Za-z0-9_-]{1,252}$`).MatchString(result.RegistrationUser.OpenID)) {
+		valid = false
+	}
+	return registrationDetails{AppID: result.AppID, RegistrationUser: result.RegistrationUser}, valid
+}
+
+func registrationOperatorRecoveryPath(dataRoot string) string {
+	return filepath.Join(dataRoot, "private-cache", "app-operator-recovery-v1.json")
+}
+
+func writeRegistrationOperatorRecovery(dataRoot, appID, openID string) error {
+	return privatestore.WriteJSON(registrationOperatorRecoveryPath(dataRoot), registrationOperatorRecovery{SchemaVersion: 1, AppID: appID, OpenID: openID})
+}
+
+func bindRegistrationOperator(dataRoot, appID, openID string) error {
+	if !regexp.MustCompile(`^cli_[A-Za-z0-9_-]{1,124}$`).MatchString(appID) || !regexp.MustCompile(`^ou_[A-Za-z0-9_-]{1,252}$`).MatchString(openID) {
+		return errors.New("注册用户身份无效")
+	}
+	store := NewClientConfigStore(dataRoot)
+	config, err := store.Load()
+	if err != nil {
+		return err
+	}
+	config.Operator = &OperatorBinding{AppID: appID, OpenID: openID}
+	config.MessageTargets["我"] = MessageTarget{Type: "open_id", ID: openID}
+	if !contains(config.DirectAllowedAliases, "我") {
+		config.DirectAllowedAliases = append(config.DirectAllowedAliases, "我")
+	}
+	return store.Save(config)
+}
+
+func RecoverRegistrationOperator(dataRoot string) error {
+	var recovery registrationOperatorRecovery
+	missing, err := privatestore.ReadJSON(registrationOperatorRecoveryPath(dataRoot), &recovery)
+	if missing {
+		return nil
+	}
+	if err != nil || recovery.SchemaVersion != 1 {
+		return errors.New("本人绑定恢复记录不可读")
+	}
+	configDir, err := ManagedLarkCLIConfigDir(dataRoot)
+	if err != nil {
+		return err
+	}
+	data, err := appConfigurationBytes(filepath.Join(configDir, "config.json"))
+	if err != nil || !bytes.Contains(data, []byte(`"appId":"`+recovery.AppID+`"`)) && !bytes.Contains(data, []byte(`"appId": "`+recovery.AppID+`"`)) {
+		return errors.New("应用配置与本人绑定恢复记录不匹配")
+	}
+	if err := bindRegistrationOperator(dataRoot, recovery.AppID, recovery.OpenID); err != nil {
+		return err
+	}
+	return os.Remove(registrationOperatorRecoveryPath(dataRoot))
 }
 
 func appConfigurationBytes(path string) ([]byte, error) {

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "epoch": "fixture-epoch",
   "revision": 7,
   "contextRevision": "fixture-context",
@@ -7,8 +7,8 @@
   "refreshing": false,
   "summary": {
     "state": "not_configured",
-    "title": "尚未配置飞书应用",
-    "detail": "扫码创建应用，或接入已有应用。",
+    "title": "尚未连接飞书",
+    "detail": "扫码后可在飞书官方页面创建或选择应用。",
     "tone": "neutral"
   },
   "facts": [
@@ -97,9 +97,9 @@
   "actions": [
     {
       "id": "create_app",
-      "title": "扫码创建应用",
+      "title": "扫码连接飞书",
       "enabled": true,
-      "confirmation": "将通过官方 CLI 创建新的飞书应用，不会自动进行用户授权。"
+      "confirmation": "将在飞书官方网页创建或选择应用；首次扫码返回本人身份时会自动完成绑定。"
     },
     {
       "id": "connect_app",

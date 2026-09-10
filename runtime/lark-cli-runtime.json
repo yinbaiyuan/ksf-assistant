@@ -1,7 +1,25 @@
 {
-  "version": "1.0.93",
+  "version": "1.0.93-ksfassistant.1",
   "license": "MIT",
   "sourceTag": "v1.0.93",
+  "source": {
+    "archive": "lark-cli-v1.0.93-source.tar.gz",
+    "url": "https://github.com/larksuite/cli/archive/refs/tags/v1.0.93.tar.gz",
+    "sha256": "99495e4914b34e2d8c9eaa03a4546e077760778819ccfdab706b5fadf54f1a6d",
+    "root": "cli-1.0.93"
+  },
+  "patch": {
+    "path": "patches/lark-cli-v1.0.93-ksfassistant.patch",
+    "sha256": "3d23d91f95f4015ac3475fa1b2005275b87b28b5eb2c2d480228c5f63709cf66"
+  },
+  "apiMetadata": {
+    "archive": "lark-cli-v1.0.93-feishu-api-meta.json",
+    "url": "https://open.feishu.cn/api/tools/open/api_definition?protocol=meta&client_version=1.0.93",
+    "sha256": "501532ce3ed9fe4d32e5233e51e370aa794634ee77a9928816673f9744499717",
+    "path": "internal/registry/meta_data.json",
+    "serviceCount": 15,
+    "normalization": "release-schema-v1.0.93"
+  },
   "automaticUpdate": false,
   "baseUrl": "https://github.com/larksuite/cli/releases/download/v1.0.93",
   "artifacts": {
@@ -9,7 +27,7 @@
       "archive": "lark-cli-1.0.93-darwin-amd64.tar.gz",
       "sha256": "bf37861ce5b5fb10c093ffd8b7305f2a80349280cf32563267c29f81cb864e53",
       "executable": "lark-cli",
-      "executableSha256": "8264bb7982df6c4f89ddea5635f7986352d371fb09a33fad5bf3352caa24f9ba",
+      "executableSha256": "3512f72a6106ba75bfe57ffc0e84c80ffdcbf3c2751155c9027752d22cdcaec9",
       "goVersion": "go1.26.5",
       "embeddedGoModules": [
         {
@@ -222,13 +240,15 @@
           "version": "v3.0.1",
           "sum": "h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA="
         }
-      ]
+      ],
+      "managedVersion": "1.0.93-ksfassistant.1",
+      "taskExecutableSha256": "0db5e4e441c476e800b730cc59596b2ace4e70bd04a169044e086f10d59a80bb"
     },
     "darwin-arm64": {
       "archive": "lark-cli-1.0.93-darwin-arm64.tar.gz",
       "sha256": "eaa09754925c00a6858e91518a49ab8e0a24bd4178e4698a7b185046b8ea24e2",
       "executable": "lark-cli",
-      "executableSha256": "9092c3f255b749afdc2a842be5d582511d978424c11326d59af90c0fd5f5c044",
+      "executableSha256": "347ca0d34ac4b45f7fa9466cfb2d810ab09d64ef81539f42f1da6a057803101d",
       "goVersion": "go1.26.5",
       "embeddedGoModules": [
         {
@@ -441,13 +461,15 @@
           "version": "v3.0.1",
           "sum": "h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA="
         }
-      ]
+      ],
+      "managedVersion": "1.0.93-ksfassistant.1",
+      "taskExecutableSha256": "57db9edf8571212ba9627349a3cb7fbddcbc7a78d01a9f7291ae1db7e67a7833"
     },
     "windows-x64": {
       "archive": "lark-cli-1.0.93-windows-amd64.zip",
       "sha256": "18e9320e378a0eefdb3b7004e0c6d42f48da85ae196d2bf5e89e4299ae7674d7",
       "executable": "lark-cli.exe",
-      "executableSha256": "39ba320129d7c700f907d0ea0d4a79467262a72ca0f971879f5f45cf5f782645",
+      "executableSha256": "c6a9245f5853c01e85a29230bf3ccf2d38d8461e93561f5021ebe7c78339f530",
       "goVersion": "go1.26.5",
       "embeddedGoModules": [
         {
@@ -675,13 +697,15 @@
           "version": "v3.0.1",
           "sum": "h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA="
         }
-      ]
+      ],
+      "managedVersion": "1.0.93-ksfassistant.1",
+      "taskExecutableSha256": "f41362fe5a1af845f768aa9eab2123bcb66b48a5f505e6ac216ba90b49261ad0"
     },
     "windows-arm64": {
       "archive": "lark-cli-1.0.93-windows-arm64.zip",
       "sha256": "3739889cab8d938bbe2015032cd3e8de82ba0608b01e6b3ce3740f999199b4fb",
       "executable": "lark-cli.exe",
-      "executableSha256": "42d3c009171fdefc82554f63b46d53aa983f2d08c4fb4400f7ac52b742231f05",
+      "executableSha256": "d6d4d9954cc957c992872ae5a22dadd18c4d92dde46cecaa21868a364a8d5e08",
       "goVersion": "go1.26.5",
       "embeddedGoModules": [
         {
@@ -909,7 +933,10 @@
           "version": "v3.0.1",
           "sum": "h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA="
         }
-      ]
+      ],
+      "managedVersion": "1.0.93-ksfassistant.1",
+      "taskExecutableSha256": "2ca69c1497c701742575e93bf0b7d49f8f5ac077d7f6ee6ba498323396311004"
     }
-  }
+  },
+  "upstreamVersion": "1.0.93"
 }

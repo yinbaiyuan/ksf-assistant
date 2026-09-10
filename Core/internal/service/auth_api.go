@@ -7,7 +7,6 @@ import (
 
 	managedfeishu "ksfassistant/core/internal/feishu"
 	"ksfassistant/core/internal/feishuprotocol"
-	"ksfassistant/core/internal/integration"
 	"ksfassistant/core/internal/privateipc"
 )
 
@@ -76,7 +75,11 @@ func (service *Service) StartDesktopFeishuAuth(ctx context.Context, request feis
 	if request.Scope != "" && request.Scope != "required" {
 		return feishuprotocol.AuthStatus{}, errors.New("只支持申请当前功能所需的精确权限")
 	}
-	return service.desktopFeishuAuth(ctx, feishuprotocol.MethodAuthStart, map[string]any{"kind": "user", "scope": "required"})
+	return service.startManagedFeishuAuth(ctx, "required")
+}
+
+func (service *Service) startManagedFeishuAuth(ctx context.Context, scope string) (feishuprotocol.AuthStatus, error) {
+	return service.desktopFeishuAuth(ctx, feishuprotocol.MethodAuthStart, map[string]any{"kind": "user", "scope": scope})
 }
 
 func (service *Service) FinishDesktopFeishuAuth(ctx context.Context) (feishuprotocol.AuthStatus, error) {
@@ -86,13 +89,33 @@ func (service *Service) FinishDesktopFeishuAuth(ctx context.Context) (feishuprot
 func (service *Service) LogoutFeishuAuth(ctx context.Context) (feishuprotocol.AuthStatus, error) {
 	var result feishuprotocol.AuthStatus
 	if service.integrationRuntime == nil {
-		return result, integration.ErrLogoutCardsPending
+		result, err := service.desktopFeishuAuth(ctx, feishuprotocol.MethodAuthLogout, map[string]any{})
+		restartErr := service.restartFeishuSupervisor(ctx)
+		if restartErr != nil {
+			// Local credentials may already be gone, but the new bridge generation
+			// has not proved that the connection is absent. Restore the durable
+			// fail-closed marker so the desktop offers "continue cleanup".
+			restartErr = errors.Join(restartErr, managedfeishu.BeginLocalFeishuCleanup(service.feishuDataRoot))
+		}
+		if err != nil || restartErr != nil {
+			return result, errors.Join(err, restartErr)
+		}
+		return result, nil
 	}
 	err := service.integrationRuntime.DisconnectForLogout(ctx, func() error {
 		var err error
 		result, err = service.desktopFeishuAuth(ctx, feishuprotocol.MethodAuthLogout, map[string]any{})
 		return err
 	})
+	restartErr := service.restartFeishuSupervisor(ctx)
+	if restartErr != nil {
+		restartErr = errors.Join(restartErr, managedfeishu.BeginLocalFeishuCleanup(service.feishuDataRoot))
+	}
+	if err == nil {
+		err = restartErr
+	} else if restartErr != nil {
+		err = errors.Join(err, restartErr)
+	}
 	service.clearFeishuCache()
 	return result, err
 }

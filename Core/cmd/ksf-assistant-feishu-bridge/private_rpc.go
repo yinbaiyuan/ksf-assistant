@@ -403,6 +403,9 @@ func (server *bridgeRPCServer) HandlePrivateRPC(ctx context.Context, method stri
 			result, err = feishu.StartUserAuth(ctx, server.authRunner(), server.dataRoot, request.Scope)
 		}
 		if err != nil {
+			if feishu.IsAppConfigurationNotStarted(err) {
+				return nil, privateipc.NewError(-32066, "application_start_preflight_failed")
+			}
 			return nil, err
 		}
 		return server.attachQR(result)

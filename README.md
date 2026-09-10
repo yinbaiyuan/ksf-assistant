@@ -1,63 +1,232 @@
 # KSFAssistant
 
-KSFAssistant 的名称含义是“知识－技能－飞轮－助手”（Knowledge–Skills–Flywheel Assistant）。
+> 把飞书变成 Codex 的远程控制器。
+>
+> 人可以离开电脑，任务不必停在电脑前。
 
-KSFAssistant 是一个 macOS 菜单栏与 Windows 系统托盘应用，用来查看 Codex 额度、Token 活动和任务状态。它也可以在软件内接入飞书；KSF 项目工作台是可选增强能力。
+KSFAssistant 是一款本地桌面应用，运行在 macOS 菜单栏和 Windows 系统托盘中。它把你电脑上的 Codex 任务连接到飞书：查看进度、继续对话、运行中纠正方向、回答问题，必要时直接停止当前任务。
 
-当前测试版本：`0.11.0-preview.4`。本版作为首个测试里程碑，包含飞书接入、任务收发、Token 统计、受管 Skills 和桌面批准界面的改进，详见[版本说明](docs/releases/0.11.0-preview.4.md)。保留[用户身份写操作桌面批准门禁](docs/architecture/user-write-approval.md)及[受管飞书能力](docs/architecture/managed-feishu-capabilities.md)，通过[随包 Skills 入口适配](docs/architecture/managed-feishu-skills.md)统一调用路径。
+它的目标不是在飞书里再启动一个互不相干的 AI 会话，而是接上你正在做的那件事。
 
-当前源码增加[飞书扫码创建应用与沿用现有配置](docs/architecture/feishu-app-registration.md)。扫码创建仅用于首次配置，不覆盖已有应用、授权或业务记录；创建应用不等于用户授权或飞书服务验收通过。
+<p align="center">
+  <img src="docs/images/ksfassistant-codex-workbench.png" alt="KSFAssistant 完整工作台，显示 Codex 用量、Token 活动、工作区、项目和任务列表" width="620">
+</p>
 
-[飞书配置生命周期](docs/architecture/feishu-configuration-lifecycle.md)由 Core 统一汇总实际应用、身份、权限、功能模式与连接状态；旧向导进度不决定是否接入。检查不自动授权、绑定操作者、启用功能或发送测试，配置变更须通过桌面的独立操作完成。
+<p align="center"><sub>真实运行中的 macOS 工作台：额度、Token、项目、任务和飞书连接状态集中在一个菜单栏面板里。</sub></p>
 
-KSFAssistant 是社区开源项目，不是 OpenAI 官方产品，也不代表 OpenAI
-背书。“Codex”和“OpenAI”及其相关商标归各自权利人所有。
+**当前版本：`0.11.0-preview.16` · 开源预览阶段 · [MIT License](LICENSE)**
 
-## 普通用户快速开始
+KSFAssistant 是社区开源项目，不是 OpenAI 官方产品，也不代表 OpenAI 背书。“Codex”“OpenAI”及相关商标归各自权利人所有。
 
-1. 从未来公开 Release 页面下载与你的电脑匹配的安装包。
-2. 安装并打开 KSFAssistant。
-3. 保持 Codex 已登录。额度、Token 和任务状态会自动出现。
-4. 如需飞书，在“设置 → 飞书”中检查已有配置；首次配置可扫码创建或接入已有应用。用户授权、远程操作者绑定和功能启用分别确认，机器人身份不依赖用户 OAuth。
-5. 如需 KSF 项目工作台，在“设置 → KSF 知识库”中选择目录；软件会自动验证。
+## 为什么做这个项目
 
-普通用户不需要安装 Node.js、Go、Git 或 Ruby，不需要运行 Terminal/PowerShell，不需要启动后台服务，也不需要编辑 `.env`、JSON 或其他配置文件。飞书租户管理员必须完成的官方授权和应用发布确认会由软件打开对应飞书页面，并在返回后自动检查。
+你让 Codex 重构一个模块，然后离开了电脑。
 
-预览包可能尚未签名或公证。安装前请核对发布页提供的 SHA-256；macOS 或 Windows 可能显示系统安全提醒。项目不会要求用户通过关闭系统安全能力来安装。
+十分钟后，它停在一个选择题上；执行方向有点偏，你想补一句约束；任务已经完成，你又想让它接着修测试。电脑不在手边，整个工作流只能暂停。
 
-## 功能与边界
+KSFAssistant 解决的就是这段断点：
 
-- 显示 Codex 通用额度及重置时间。
-- 汇总本机普通输入、缓存输入、输出和 30 天 Token 历史，并提供可选 API 价格估算。
-- 显示 Codex Desktop 顶层任务的运行、等待与完成状态。
-- 可选连接 KSF 项目目录；KSF 不可用时不影响额度、Token、任务状态或飞书。
-- KSFAssistant 自动管理 KSFAssistant Core 与飞书服务的完整生命周期。关闭面板或最小化到托盘不会停止服务；明确退出应用才会关闭进程树。
-- 飞书凭据由官方 CLI 管理本机安全存储；App Secret 通过私有 stdin 传入，Token 与设备凭据不返回界面、不进入普通日志或命令行。
-- 官方 CLI/Skills 随应用固定版本；任务报告 CLI 可在 Core 关闭时运行，报告不改变 Codex 的执行权。
-- 飞书真实用户 ID、消息正文和队列内容不进入 KSFAssistant 的渲染层。
+- Codex 继续运行在你的电脑上，使用原来的项目、任务和上下文。
+- 飞书负责把你的消息送进去，再把进度、问题和结果带回来。
+- 你不需要远程桌面，也不需要为了回复一句话重新坐回电脑前。
 
-## 平台支持
+控制已有 Codex Desktop 任务时，需要先在本机明确选择并连接；直接给机器人发送一条不引用卡片的新消息，也可以创建新的 Codex 任务。两种入口都只开放给已授权飞书账号和对应单聊。连接默认保留 24 小时；任务运行中、等待回复或已有排队消息时不会被中途切断。
 
-- macOS 13 或更新版本：Apple Silicon 与 Intel
-- Windows 10/11：x64 与 arm64
+## 它能做什么
 
-macOS 与 Windows 安装包都只携带 Go 飞书服务与固定版 `lark-cli`，不携带独立 Node 飞书运行时或服务源码。四个平台不会自动回退到 Node，也不会同时消费同一飞书应用的真实事件；尚未完成的实机验收会阻止发布，而不是切回旧实现。
+### 从工作台看清每一个 Codex 项目和任务
 
-## 开源与贡献
+工作台下半部分按 Codex 工作区组织任务。每张工作区卡片都显示目录、运行任务数、任务列表，以及累计和今日 Token；每个任务则保留自己的名称、运行状态、详情入口和飞书连接状态。正在运行、等待处理和已经完成，不需要打开多个 Codex 窗口逐个确认。
 
-本项目采用 [MIT License](LICENSE)。安全、隐私、支持与贡献规则见：
+工作区底部可以直接新建 Codex 任务或打开项目目录；点击任务名称会回到 Codex Desktop，点击信息图标可以查看详细状态。普通 Codex 工作区与可选 KSF 项目使用同一套视图，KSF 只提供额外的项目、路由和知识上下文，不限制基础任务管理。
+
+任务行最右侧的**小飞机**是飞书连接入口。点一下，KSFAssistant 就会为这个任务创建并发送一张飞书卡片：
+
+1. 卡片绑定当前这个 Codex 顶层任务，不复制任务，也不丢失原来的上下文。
+2. Codex 继续在你的电脑上、原来的工作目录中执行。
+3. 你可以离开工位，在手机或另一台设备的飞书里查看进展、补充要求、回答问题、停止或继续。
+
+只要任务能够在本机当前环境和 Codex 权限范围内自行执行，代码阅读、修改、测试、排错和文档整理等日常工作通常不再需要人守在电脑前。涉及秘密输入、必须在桌面确认的交互或本机环境故障时，卡片会如实显示需要回到桌面处理，而不会假装任务仍在自动推进。
+
+### 在飞书里控制同一个 Codex 任务
+
+- 从桌面选择一个明确的 Codex 顶层任务并连接飞书。
+- 在任务空闲时继续下一轮，不另外创建孤立会话。
+- 在任务运行中追加约束，优先通过 Codex `turn/steer` 修正当前轮次。
+- 查看运行、等待输入、完成、失败和中断等状态。
+- 通过飞书卡片回答普通问题、选择方案并继续实施 Plan。
+- 停止当前轮次，但保留任务连接，稍后仍可继续。
+- 发送图片及受限类型的普通附件给当前任务。
+
+### 一张卡片，就是一个持续更新的任务窗口
+
+<p align="center">
+  <img src="docs/images/ksfassistant-feishu-task-card.png" alt="在飞书中通过 KSFAssistant 任务卡片查看并控制正在运行的 Codex 任务" width="760">
+</p>
+
+<p align="center"><sub>真实飞书任务卡片：上方控制当前任务，下方仍可使用飞书原生输入框。</sub></p>
+
+这不是一张发完即止的通知卡片。KSFAssistant 会把它持续更新为当前任务的远程交互面板：标题和标签说明任务、运行状态与模式；正文显示本轮用户要求、Codex 的公开进展和最终回复；底部控件会跟随任务状态变化。
+
+| 你在飞书里的操作 | KSFAssistant 如何处理 |
+| --- | --- |
+| 在运行中输入“补充或修正” | 优先通过 Codex `turn/steer` 加入当前轮次，不另起一个失去上下文的会话 |
+| Codex 等待选择或普通回答 | 卡片展示可选项或回答框，答案提交回正在等待的原任务 |
+| 一轮完成或停止后继续输入 | 在同一个 Codex 任务中开始下一轮，并可选择默认模式或 Plan 模式 |
+| Plan 已生成 | 可以继续要求修改，也可以直接点击“开始执行” |
+| 点击“停止” | 中断当前轮次，但保留连接，随后仍可继续任务 |
+| 点击“断开” | 解除飞书与任务的连接；它不等于停止仍在本机运行的 Codex |
+
+从“开始做”到“做一半纠偏、回答问题、补充材料、执行计划、停止或继续”，已经覆盖日常远程使用 Codex 的主要动作。
+
+#### 卡片回复与原生输入框，是两条互补路径
+
+- **回复任务卡片：**飞书的回复关系会把消息准确关联到这张卡片对应的 Codex 任务。除了文字，也可以发送图片、普通文件、音频、视频及带图片的富文本；单条消息最多读取 10 个资源、总计不超过 25 MiB。附件会进入本机受限暂存区，以只读输入交给 Codex，并在任务结束或连接失效后清理。
+- **使用卡片内输入框：**适合快速补充、纠正、回答或开始下一轮。运行中提交会优先进入当前轮次，卡片会继续原地更新进展。
+- **直接使用飞书原生输入框：**在授权单聊中发送一条不回复现有卡片的新消息，会以消息首行为标题创建新的 Codex 任务并返回任务卡片。KSF 已配置时使用其工作区；未配置时创建不归属项目的任务。文字、图片和受支持附件都可以成为首条要求。
+
+旧卡片被断开或过期后不能继续控制 Codex；群聊消息和未授权账号也不会被当作远程任务入口。
+
+### 把 Codex 的本机状态放进菜单栏
+
+- 查看 Codex 通用额度和重置时间。
+- 汇总本机普通输入、缓存输入、输出及 30 天 Token 活动。
+- 按可选价格方案估算 API 成本；估算值不会冒充真实账单。
+- 查看 Codex Desktop 顶层任务的运行、等待和完成状态。
+- 按普通工作区或可选 KSF 项目组织任务与 Token。
+
+状态面板把几种容易混淆的数据分开呈现：
+
+<p align="center">
+  <img src="docs/images/ksfassistant-codex-status.png" alt="KSFAssistant Codex 用量与本机 Token 状态区域" width="720">
+</p>
+
+<p align="center"><sub>额度与 Token 区域的放大视图。</sub></p>
+
+- **剩余额度**来自 Codex 账号用量窗口，显示剩余百分比和预计重置时间。
+- **本机 Token**从本地 Codex 日志汇总，区分普通输入、缓存输入和模型输出；只解析计量与归属字段，不保存消息正文。
+- **API 估算**按你选择的公开价格方案计算，仅用于理解资源规模，不代表 ChatGPT 订阅扣费或 OpenAI 的实际账单。
+- **任务状态**来自 Codex Desktop 当前可见的顶层任务，菜单栏直接显示运行数和等待处理数。
+- **飞书连接**用状态点标明服务是否就绪；它表示消息通道状态，不代表扩大了 Codex 的本地权限。
+
+### 不把安装变成第二份工作
+
+公开安装包交付后，普通用户只需要安装并打开应用。KSFAssistant 会在界面内管理 Core、飞书服务、固定版本工具链、授权检查、诊断和进程生命周期。
+
+普通用户不需要安装 Node.js、Go、Git 或 Ruby，不需要运行 Terminal/PowerShell，也不需要编辑 `.env` 或 JSON。Codex 继续使用你已经登录的账号；KSFAssistant 不要求额外提供模型 API Key，也不代理模型请求。
+
+## 工作方式
+
+```mermaid
+flowchart LR
+    A[飞书授权单聊] -->|消息 / 卡片 / 附件| B[KSFAssistant 飞书服务]
+    B --> C[Go Shared Core]
+    C -->|App Server / Desktop IPC| D[本机 Codex 任务]
+    D -->|进度 / 问题 / 结果| C
+    C --> B
+    B --> A
+```
+
+飞书只承担身份确认、消息传输和交互呈现。本地文件、命令和工具的实际执行仍由 Codex 完成，并受 Codex 的 sandbox 与 approval 机制约束。KSFAssistant 不读取或复制 Codex 凭据文件。
+
+跨平台业务规则集中在 Go Shared Core；macOS 使用 SwiftUI/AppKit，Windows 使用 Electron 承担托盘、窗口和系统交互。飞书通信运行在独立的受管子进程中，明确退出 KSFAssistant 时会关闭完整进程树。更多细节见[架构说明](docs/ARCHITECTURE.md)。
+
+## 快速开始
+
+### 普通用户
+
+公开 Release 上线后：
+
+1. 下载与你的系统和处理器匹配的安装包，核对发布页提供的 SHA-256。
+2. 打开 KSFAssistant，并保持 Codex 已登录。
+3. 进入“设置 → 飞书”，点击“扫码连接飞书”；创建或选择已有应用都在飞书官方网页完成。
+4. 正常情况下这一次扫码会同时建立应用接入、本人绑定和机器人连接；文档、日历等用户能力在首次使用时再按所需权限单独授权。
+5. 回到任务列表，选择要连接的 Codex 任务，点击纸飞机按钮。
+6. 在飞书单聊中操作或回复任务卡片；也可以直接发送一条新消息创建新的 Codex 任务。
+
+<p align="center">
+  <img src="docs/images/ksfassistant-feishu-connected.png" alt="KSFAssistant 飞书接入状态与 Codex 飞书技能界面" width="420">
+</p>
+
+<p align="center"><sub>飞书接入与能力状态；图片由真实界面使用脱敏预览数据生成。</sub></p>
+
+飞书租户管理员必须完成的授权和应用发布仍发生在飞书官方页面。KSFAssistant 可以引导和核验，但不会绕过管理员决定。
+
+预览包可能尚未签名或公证，macOS 或 Windows 可能显示系统安全提醒。项目不会要求你关闭系统安全能力来完成安装。
+
+### 源码贡献者
+
+开发依赖、测试命令和打包方式见[开发者构建说明](docs/CONTRIBUTING_BUILD.md)。源码构建不等于安装包验收，也不会自动切换你的生产配置或真实消息队列。
+
+## 安全与隐私
+
+能从聊天窗口影响本机任务的工具，不应该是一个看不见内部逻辑的黑盒。这也是 KSFAssistant 选择开源的原因之一。
+
+- 飞书 Secret 与 OAuth 凭据保存在当前用户的 Keychain/DPAPI 安全存储中。
+- App Secret 通过私有 stdin 传递，不进入普通命令行、界面或日志。
+- 飞书真实用户 ID、消息正文和队列内容不会进入桌面渲染层。
+- 项目没有自有账号、云端同步、分析埋点、广告或额外遥测端点。
+- 已有 Codex Desktop 任务只能由本机显式连接；授权单聊中的独立新消息可以创建桥接任务，未配置 KSF 时任务保持无项目归属。
+- 群聊、自动全局连接、其他白名单用户和子任务控制当前均被拒绝。
+- 结果不确定的远端写入不会被当成失败后盲目重试。
+
+请阅读完整的[安全政策](SECURITY.md)和[隐私说明](PRIVACY.md)。发现漏洞时不要在公开 Issue、截图或日志中提交 Token、Secret、真实飞书 ID 或聊天内容。
+
+### 当前远程执行权限
+
+飞书不决定 Codex 能执行什么，本地文件、命令和工具权限最终都由 Codex 约束。KSFAssistant 创建 Thread、启动飞书轮次或通过 Desktop follower 续接时，均不再覆盖 Codex 的审批与沙箱字段；新轮次继承 Codex 或目标 Thread 的当前有效设置。24 小时只表示飞书连接租期，不表示全权限持续时间。
+
+普通非敏感问题仍可在飞书回答。已有 Desktop 任务需要本地审批时，飞书只提示回到 Codex Desktop；飞书直接创建的任务需要命令、文件或临时权限审批时，本轮会被拒绝并停止，连接锁定为只可断开。你在 Codex Desktop 打开同一任务并开始一个新的本地轮次后，连接才会自动切换为 Desktop 控制并恢复。
+
+旧版 KSFAssistant 曾把显式全权限覆盖写入 Thread；Codex 可能把该值保留为后续轮次默认。KSFAssistant 不猜测或自动迁移这些旧 Thread，请在 Codex Desktop 中为它们设置一次所需权限，此后远程轮次会继续继承。
+
+## 当前支持与真实边界
+
+| 平台 | 构建目标 | 当前验证状态 |
+| --- | --- | --- |
+| macOS 13+ · Apple Silicon | 支持 | 本机应用、飞书消息进入 Codex 并响应已验证 |
+| macOS 13+ · Intel | 支持 | universal2 构建通过，仍需独立真实硬件验收 |
+| Windows 10/11 · x64 | 支持 | Core 与安装目标已构建，真实硬件链路待验收 |
+| Windows 10/11 · arm64 | 支持 | Core 与安装目标已构建，真实硬件链路待验收 |
+
+还需要知道这些限制：
+
+- 当前是 `0.x` 预览版，协议和配置可能发生兼容性调整。
+- Codex Desktop IPC 不是公开稳定接口，Codex 升级后可能需要同步适配。
+- 同一个飞书应用不应由多台设备同时消费真实事件。
+- Linux、移动端、群聊协作、自动更新和任意飞书 OpenAPI/EventKey 当前不在支持范围内。
+- Windows 实机验收、公开安装包、公证和远端发布尚未完成。
+
+详细版本事实见[`0.11.0-preview.16` 说明](docs/releases/0.11.0-preview.16.md)、[版本管理](docs/architecture/versioning.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本机预览边界](docs/architecture/preview-0.11.md)。
+
+## KSF 是可选的
+
+KSFAssistant 的名字来自 Knowledge–Skills–Flywheel Assistant，中文是“知识－技能－飞轮－助手”。
+
+如果你使用 KSF，它可以把项目、知识、Skill 和任务状态带进同一个桌面工作台；如果你从未听说过 KSF，也不影响额度、Token、普通 Codex 工作区或飞书远程控制。安装后的第一条任务，不应该先考你一套方法论。
+
+当前产品首先要把一件事做好：让你随时接回正在运行的 Codex 任务。
+
+## 参与项目
+
+欢迎提交 Bug、兼容性结果、文档改进和代码贡献。较大的产品、协议或架构调整，请先发起设计讨论。
+
+提交前请阅读：
 
 - [贡献指南](CONTRIBUTING.md)
-- [安全政策](SECURITY.md)
-- [隐私说明](PRIVACY.md)
+- [开发者构建说明](docs/CONTRIBUTING_BUILD.md)
 - [支持范围](SUPPORT.md)
 - [行为准则](CODE_OF_CONDUCT.md)
-- [架构说明](docs/ARCHITECTURE.md)
-- [0.11 本机预览边界](docs/architecture/preview-0.11.md)
-- [产品身份与升级](docs/architecture/product-identity-migration.md)
-- [开发者构建说明](docs/CONTRIBUTING_BUILD.md)
 - [第三方依赖声明](THIRD_PARTY_NOTICES.md)
 
-本轮只准备源码与预览资产，不创建公开远端、不推送或发布。未来公开仓库将从审计通过的工作树导出干净快照并创建单一首提交，不携带当前私有 Git 历史、remote、refs、reflog 或对象库。
+安全问题请按[安全政策](SECURITY.md)私下报告，不要创建公开 Issue。
 
-文档和知识库操作使用受管 `ksfas-lark`；旧 docbox 与 `ksf-feishu-bridge` Skill 已清理，范围和兼容边界见 [遗留飞书能力清理](docs/architecture/feishu-legacy-retirement.md)。
+## 开源计划
+
+当前工作树仍在准备公开快照。本项目不会携带私有 Git 历史、remote、refs、reflog 或对象库直接公开；正式仓库会从通过秘密、许可证和发布卫生检查的工作树生成干净快照，再创建单一首提交。
+
+具体规则见[开源导出说明](docs/OPEN_SOURCE_EXPORT.md)。在公开仓库和 Release 真正上线前，请把这里视为可审查、可参与，但尚未承诺稳定性的预览工程。
+
+---
+
+**KSFAssistant：电脑留在桌上，Codex 继续干活；你在飞书里，把方向握在手上。**

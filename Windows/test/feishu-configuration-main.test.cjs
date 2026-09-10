@@ -9,7 +9,7 @@ const { pathToFileURL } = require('node:url');
 
 const main = fs.readFileSync(path.join(__dirname, '../src/main.cjs'), 'utf8');
 const preload = fs.readFileSync(path.join(__dirname, '../src/preload.cjs'), 'utf8');
-const request = (action = 'bind_operator', extra = {}) => ({ action, requestId: 'gesture-1', epoch: 'core-1', revision: 8, contextRevision: 'context-1', confirm: false, ...extra });
+const request = (action = 'logout', extra = {}) => ({ action, requestId: 'gesture-1', epoch: 'core-1', revision: 8, contextRevision: 'context-1', confirm: false, ...extra });
 
 function harness() {
   const handlers = new Map();
@@ -17,8 +17,8 @@ function harness() {
   const dialogs = [];
   const values = {
     response: 1, visible: true,
-    snapshot: { schemaVersion: 1, epoch: 'core-1', revision: 8, contextRevision: 'context-1',
-      actions: ['create_app', 'connect_app', 'start_auth', 'finish_auth', 'finish_app', 'cancel_flow', 'logout', 'bind_operator', 'set_feature', 'enable_outbound', 'test_message', 'restart']
+    snapshot: { schemaVersion: 2, epoch: 'core-1', revision: 8, contextRevision: 'context-1',
+      actions: ['create_app', 'start_auth', 'finish_auth', 'finish_app', 'cancel_flow', 'logout', 'test_message', 'restart']
         .map((id) => ({ id, title: 'Core ' + id, enabled: true, confirmation: 'Core 原生确认文案' })),
       diagnostics: {selfTarget:'fixture'}, flow: { id: 'flow-1', state: 'pending', verificationURL: 'https://accounts.feishu.cn/authorize', expiresAt: new Date(Date.now() + 60_000).toISOString() },
       connection: { targetAliases: ['fixture'], processState: 'degraded' },
@@ -45,13 +45,13 @@ function harness() {
 
 test('configuration writes are main-confirmed desktop actions with Core confirmation copy', async () => {
   const setup = harness();
-  for (const action of ['start_auth', 'bind_operator', 'test_message', 'logout']) {
+  for (const action of ['start_auth', 'test_message', 'logout']) {
     await setup.act(request(action, action === 'test_message' ? { targetAlias: 'fixture' } : {}));
   }
-  assert.equal(setup.dialogs.length, 4);
+  assert.equal(setup.dialogs.length, 3);
   const mutations = setup.calls.filter((call) => call.method === 'feishu/configuration/action');
-  assert.equal(mutations.length, 4);
-  assert.deepEqual(mutations.map((call) => call.params.action), ['start_auth', 'bind_operator', 'test_message', 'logout']);
+  assert.equal(mutations.length, 3);
+  assert.deepEqual(mutations.map((call) => call.params.action), ['start_auth', 'test_message', 'logout']);
   for (const options of setup.dialogs) {
     assert.equal(options.defaultId, 0);
     assert.equal(options.cancelId, 0);
@@ -111,7 +111,7 @@ test('renderer cannot forward scopes, arbitrary methods or generic approval capa
 });
 
 test('epoch, context, future revision and current action affordance remain strict', async () => {
-  for (const changed of [{ epoch: 'new-core' }, { revision: 7 }, { revision: undefined }, { revision: -1 }, { contextRevision: 'new-context' }, { schemaVersion: 2 }, { actions: [] }]) {
+  for (const changed of [{ epoch: 'new-core' }, { revision: 7 }, { revision: undefined }, { revision: -1 }, { contextRevision: 'new-context' }, { schemaVersion: 1 }, { actions: [] }]) {
     const setup = harness();
     Object.assign(setup.values.snapshot, changed);
     await assert.rejects(setup.act(), /配置已变化/);
@@ -182,13 +182,12 @@ test('flow actions, feature modes and target aliases stay scoped', async () => {
   assert.equal(setup.dialogs.length,1);
 });
 
-test('connect confirmation includes pending App ID but never its secret', async () => {
+test('retired credential entry is refused before secrets reach a dialog or Core', async () => {
   const setup = harness();
-  await setup.act(request('connect_app', { appId: 'cli_fixture_app', appSecret: 'fixture-private-secret' }));
-  assert.match(setup.dialogs[0].detail, /待接入 App ID：cli_fixture_app/);
+  await assert.rejects(setup.act(request('connect_app', { appId: 'cli_fixture_app', appSecret: 'fixture-private-secret' })));
   assert.doesNotMatch(JSON.stringify(setup.dialogs), /fixture-private-secret/);
-  assert.equal(setup.calls.at(-1).params.appId, 'cli_fixture_app');
-  assert.equal(setup.calls.at(-1).params.appSecret, 'fixture-private-secret');
+  assert.equal(setup.dialogs.length, 0);
+  assert.equal(setup.calls.length, 0);
 });
 
 test('retired feature operations are explicitly refused without a dialog or write', async () => {
@@ -230,7 +229,7 @@ test('finish checks without Core confirmation bypass the dialog without manufact
 test('mutations with missing or invalid Core confirmation fail closed instead of inventing copy', async () => {
   for (const confirmation of ['', undefined, true]) {
     const setup = harness();
-    setup.values.snapshot.actions.find((action) => action.id === 'bind_operator').confirmation = confirmation;
+    setup.values.snapshot.actions.find((action) => action.id === 'logout').confirmation = confirmation;
     await assert.rejects(setup.act(), /确认文案/);
     assert.equal(setup.dialogs.length, 0);
     assert.equal(setup.calls.some((call) => call.method === 'feishu/configuration/action'), false);

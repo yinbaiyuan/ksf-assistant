@@ -18,6 +18,17 @@ type PermissionScopes struct {
 	User          []string `json:"user"`
 }
 
+func BaseConnectionPermissionScopes() []string {
+	return []string{
+		"im:message",
+		"im:message:readonly",
+		"im:message:send_as_bot",
+		"im:message:update",
+		"im:message.p2p_msg:readonly",
+		"im:resource",
+	}
+}
+
 func RequiredPermissionScopes() (PermissionScopes, error) {
 	var value PermissionScopes
 	if err := json.Unmarshal(permissionScopesJSON, &value); err != nil {
@@ -114,10 +125,6 @@ func stringList(value any) []string {
 }
 
 func loginPermissionScopes(available []string) ([]string, error) {
-	contract, err := RequiredPermissionScopes()
-	if err != nil {
-		return nil, err
-	}
 	offered := map[string]bool{}
 	for _, scope := range available {
 		offered[scope] = true
@@ -125,11 +132,5 @@ func loginPermissionScopes(available []string) ([]string, error) {
 	if !offered["contact:user.base:readonly"] {
 		return nil, fmt.Errorf("application_permissions_missing")
 	}
-	requested := map[string]bool{"contact:user.base:readonly": true}
-	for _, scope := range contract.User {
-		if offered[scope] {
-			requested[scope] = true
-		}
-	}
-	return sortedScopeSet(requested), nil
+	return []string{"contact:user.base:readonly"}, nil
 }

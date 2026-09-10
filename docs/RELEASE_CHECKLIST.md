@@ -4,7 +4,7 @@
 
 ## 源码与安全
 
-- 工作区变更已经审阅，版本统一为 `0.11.0-preview.1`。
+- 工作区变更已经审阅，`version.json` 中的产品版本已按本次业务变化递增，并已运行 `node scripts/sync-versions.mjs`。
 - Go、Race Detector、Swift、Windows、UI 规范与 284 项 Node 契约测试通过。
 - `scripts/check-release-hygiene.sh`、秘密扫描、依赖许可检查与 SPDX SBOM 生成通过。
 - README、MIT License、贡献指南、安全政策、隐私说明、支持范围、行为准则和第三方声明一致。
@@ -13,7 +13,7 @@
 ## 构建与产物
 
 - macOS Universal App 同时包含 arm64/x86_64；Windows x64/arm64 安装包均已生成。
-- 四个平台包都携带匹配架构的飞书服务、任务 CLI、工具链管理器和固定 `lark-cli 1.0.93` / 同标签 Skills，普通用户安装后不下载运行组件。
+- 四个平台包都携带匹配架构的飞书服务、任务 CLI、工具链管理器和固定受管 `lark-cli 1.0.93-ksfassistant.1`；其上游源码与 Skills 固定为 `1.0.93`，普通用户安装后不下载运行组件。
 - 产物包含 SHA-256、来源清单、第三方声明和 SPDX 2.3 SBOM。
 - 未签名或未公证的预览包明确标注 `preview`、系统拦截风险和校验方法，禁止描述为受信任发行版。
 

@@ -1,9 +1,10 @@
 # 飞书桥技术规格
 
-> 迁移期维护者参考：本文主体记录 Node 兼容实现。KSFAssistant 的 Go
-> 迁移目标与当前切换边界以仓库 `docs/ARCHITECTURE.md` 和 roadmap 为准。
+> 冻结历史基线，仅供离线回放和回退对照：本文主体记录 Node 兼容实现，
+> 包括其中的全权限轮次行为；它不是生产 Go 运行时契约。当前边界以仓库
+> `docs/ARCHITECTURE.md` 和 roadmap 为准。
 
-首次部署入口为 `docs/installation.md`；本文件描述当前运行契约。
+首次部署入口为 `docs/installation.md`；下文“当前”均指冻结时的 Node 基线。
 
 更新日期：2026-09-03
 当前桥 / capability 版本：v1.0.0；npm 包版本：v1.2.0；Skill 兼容：`1.0.x`（保留 v0.6.1 稳定性基线）

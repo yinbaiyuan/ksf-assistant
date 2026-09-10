@@ -6,11 +6,11 @@ Core composes a single configuration snapshot; hosts do not derive overall readi
 
 Configuration reads never bind an operator, change a feature mode, restart a process, start authorization, or send a test message. Official CLI credential maintenance remains upstream-owned. Missing evidence is unknown, not verified. An existing live configuration remains live when its setup record is absent, incomplete, or cancelled.
 
-## Desktop contract v1
+## Desktop contract v2
 
 `feishu/configuration/read` accepts `{ "refresh": false }`; true explicitly refreshes slow checks. It returns:
 
-- `schemaVersion: 1`, `epoch: string`, `revision: uint64`, `contextRevision: string`, `observedAt: RFC3339`, `refreshing: bool`.
+- `schemaVersion: 2`, `epoch: string`, `revision: uint64`, `contextRevision: string`, `observedAt: RFC3339`, `refreshing: bool`.
 - `refreshing` reports a slow identity/permission verification or configuration action, not routine fast background observations. Internal refresh coalescing remains active for both kinds; a settled page does not show perpetual progress merely because every poll starts its next quick observation.
 - `summary: {state, title, detail, tone}`; tones are neutral, warning, success.
 - `facts: [{id, title, state, value, source, checkedAt, stale}]`. States distinguish unknown, present, missing, failed, stale. IDs include application, user, bot, permissions, connection, operator, outbound, actionbox, desktop.
@@ -20,9 +20,9 @@ Configuration reads never bind an operator, change a feature mode, restart a pro
 - Optional `flow: {id, kind, state, expiresAt, verificationURL, userCode, qrDataURL}`. QR data and links are transient; only a matching active session may supply them.
 - `issues: [{component, code, message}]`; safe diagnostics only, never secrets or raw CLI output.
 
-`feishu/configuration/action` accepts `{action, requestId, epoch, revision, contextRevision, confirm, appId?, appSecret?, targetAlias?, feature?, mode?, flowId?}`. Request IDs are unique per user gesture. It returns `{outcome, snapshot, message}`; outcome is completed, pending, failed, or unknown. Both hosts discard late snapshots after a newer local operation or Core epoch change. An error is not an empty initial state.
+`feishu/configuration/action` accepts `{action, requestId, epoch, revision, contextRevision, confirm, authorizationRequestId?, targetAlias?, flowId?}`. Desktop cannot submit an App Secret or invent scope. `authorizationRequestId` must identify the app-bound request generated from a reviewed command descriptor. Request IDs are unique per user gesture. It returns `{outcome, snapshot, message}`; outcome is completed, pending, failed, or unknown. Both hosts discard late snapshots after a newer local operation or Core epoch change. An error is not an empty initial state.
 
-Action IDs: `create_app`, `connect_app`, `start_auth`, `finish_auth`, `finish_app`, `cancel_flow`, `logout`, `bind_operator`, `set_feature`, `enable_outbound`, `test_message`, `restart`. Application creation, authentication, operator binding, enabling a feature, and sending a test message are distinct user gestures. Reuse of existing configuration is read/check, not another OAuth flow. Binding, logout, writes-mode enablement, and test sends require explicit confirmation. Existing business approval rules still apply.
+正常页面只提供 `create_app`（“扫码连接飞书”）、按需出现的 `start_auth`、`finish_auth`、`finish_app`、`cancel_flow`、`logout`、`test_message` 和 `restart`。`connect_app`、`bind_operator` 及旧功能开关 action 在 v2 中明确拒绝。注册返回本人身份时，`finish_app` 只公开 `operatorBound: true`；缺失时公开 `operatorAuthorizationRequired: true`，原始 `open_id` 不离开飞书桥。
 
 Mutations are serialized per Core configuration context, are checked again immediately before execution, and are not replayed on unknown results. Cancelling a local flow does not undo remote completion or revoke existing authorization. Starting/cancelling flows invalidates stale observation/QR responses. Old mutating endpoints must not bypass this coordinator.
 
@@ -49,7 +49,7 @@ Quick observations and active-flow reads are coalesced at a 2.5-second floor. Su
 
 Display revisions order snapshots; the context digest binds configuration gestures. An older display revision remains acceptable when the epoch and context still match and the action is still allowed. Future revisions are rejected. This prevents unrelated connection observations from dismissing an otherwise valid native confirmation. The application fact identifies the verified App ID; it does not invent an application name when the pinned upstream status command does not provide one.
 
-User permission completeness describes the fixed reviewed user scope list, not every Feishu capability. Bot identity, message transport, remote operators and user OAuth remain separate. Missing scope metadata is unknown. App creation and OAuth flows have process-local random IDs; expired and non-pending flows never expose QR data. The latest flow takes precedence over an older completed flow of a different kind.
+基础连接只比较固定的机器人消息、卡片、回调和附件权限，不再把 119 项潜在用户权限作为接入门槛。Bot identity、消息传输、app-bound operator 与可选用户 OAuth 分别表达。用户能力执行前按描述符生成精确授权请求，只授权已有 scope 与本次缺项；成功后要求用户重新执行原操作。App creation 与 OAuth flow 使用进程内随机 ID，过期和非 pending 流程不暴露二维码。
 
 The ordinary compatibility gateway cannot configure an app, start/finish authentication or bind the current user. These old commands return `configuration_desktop_required`; business operations retain their existing contracts. Ordinary target updates also cannot change or remove an alias already admitted as a remote operator. Configuration desktop actions are not exposed on the ordinary CLI gateway. A `confirm` flag only has meaning on the owning host control channel; it is not an Agent approval credential.
 

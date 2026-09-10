@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	managedfeishu "ksfassistant/core/internal/feishu"
 	"ksfassistant/core/internal/privatestore"
 )
 
@@ -19,6 +20,7 @@ type ConfigurationReceipt struct {
 	StatusText         string `json:"statusText,omitempty"`
 	StageText          string `json:"stageText,omitempty"`
 	ApplicationID      string `json:"applicationId,omitempty"`
+	FlowID             string `json:"flowId,omitempty"`
 	SchemaVersion      int    `json:"schemaVersion"`
 	RequestID          string `json:"requestId"`
 	Digest             string `json:"digest,omitempty"`
@@ -35,6 +37,9 @@ func (s *Service) receiptPath(id string) string {
 	return filepath.Join(s.feishuDataRoot, "configuration-receipts-v1", configurationHash(id)+".json")
 }
 func (s *Service) saveConfigurationReceipt(r ConfigurationReceipt) error {
+	if r.Action == "logout" && r.Outcome == "completed" {
+		r.ApplicationID, r.FlowID, r.PermissionRevision, r.ContextRevision, r.Digest = "", "", "", "", ""
+	}
 	r.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	return privatestore.WriteJSON(s.receiptPath(r.RequestID), r)
 }
@@ -57,7 +62,7 @@ func (s *Service) ApplyFeishuConfiguration(ctx context.Context, request Configur
 				result = ConfigurationActionResult{Outcome: "failed", Snapshot: s.ReadFeishuConfiguration(ctx, false), Message: "请求内容与原记录不符，未执行。"}
 				return nil
 			}
-			if authorizationEndedByLogout(receipt, s.loadConfigurationReceipts()) {
+			if configurationFlowEndedByLogout(receipt, s.loadConfigurationReceipts()) {
 				result = ConfigurationActionResult{Outcome: "failed", Snapshot: s.ReadFeishuConfiguration(ctx, false), Message: "此登录流程已随之后的注销结束，请发起新的登录。"}
 				return nil
 			}
@@ -86,6 +91,13 @@ func (s *Service) ApplyFeishuConfiguration(ctx context.Context, request Configur
 			receipt.PermissionRevision = persisted.PermissionRevision
 		}
 		receipt.Outcome, receipt.Message = result.Outcome, result.Message
+		if request.FlowID != "" {
+			receipt.FlowID = request.FlowID
+		} else if result.receiptFlowID != "" {
+			receipt.FlowID = result.receiptFlowID
+		} else if result.Snapshot.Flow != nil && (request.Action == "create_app" || request.Action == "start_auth") {
+			receipt.FlowID = result.Snapshot.Flow.ID
+		}
 		if result.Code != "" {
 			receipt.Code = result.Code
 		}
@@ -93,6 +105,30 @@ func (s *Service) ApplyFeishuConfiguration(ctx context.Context, request Configur
 			receipt.Stage = "verified"
 		} else if result.Outcome == "unknown" {
 			receipt.Stage = "submitted"
+		}
+		if request.Action == "logout" && result.Outcome == "completed" {
+			// Scrub the current receipt before walking older receipts. If any
+			// later scrub fails, restore the fail-closed cleanup journal so the
+			// desktop offers a safe, idempotent "continue cleanup" path.
+			if e := s.saveConfigurationReceipt(receipt); e != nil {
+				_ = managedfeishu.BeginLocalFeishuCleanup(s.feishuDataRoot)
+				return e
+			}
+			if e := s.scrubConfigurationReceiptsAfterLogout(request.RequestID); e != nil {
+				_ = managedfeishu.BeginLocalFeishuCleanup(s.feishuDataRoot)
+				return e
+			}
+			return nil
+		}
+		if result.Outcome == "completed" && (request.Action == "finish_app" || request.Action == "finish_auth") {
+			if e := s.saveConfigurationReceipt(receipt); e != nil {
+				return e
+			}
+			origin := "create_app"
+			if request.Action == "finish_auth" {
+				origin = "start_auth"
+			}
+			return s.completeConfigurationFlowReceipt(origin, request.FlowID)
 		}
 		if e := s.saveConfigurationReceipt(receipt); e != nil {
 			return e
@@ -104,6 +140,81 @@ func (s *Service) ApplyFeishuConfiguration(ctx context.Context, request Configur
 	}
 	return result, nil
 }
+
+func (s *Service) scrubConfigurationReceiptsAfterLogout(currentRequestID string) error {
+	root := filepath.Join(s.feishuDataRoot, "configuration-receipts-v1")
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		var receipt ConfigurationReceipt
+		missing, err := privatestore.ReadJSON(path, &receipt)
+		if err != nil {
+			return err
+		}
+		if missing {
+			return errors.New("configuration_receipt_disappeared")
+		}
+		if receipt.RequestID == currentRequestID {
+			continue
+		}
+		receipt.ApplicationID, receipt.FlowID, receipt.PermissionRevision, receipt.ContextRevision, receipt.Digest = "", "", "", "", ""
+		if configurationFlowAction(receipt.Action) && (receipt.Outcome == "pending" || receipt.Outcome == "unknown") {
+			receipt.Outcome, receipt.Stage, receipt.Code = "failed", "verified", "cancelled_by_logout"
+			receipt.Message = "连接流程已随注销终止，不会重放。"
+		}
+		if err := privatestore.WriteJSON(path, receipt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) completeConfigurationFlowReceipt(originAction, flowID string) error {
+	if (originAction != "create_app" && originAction != "start_auth") || strings.TrimSpace(flowID) == "" {
+		return errors.New("configuration_flow_receipt_invalid")
+	}
+	root := filepath.Join(s.feishuDataRoot, "configuration-receipts-v1")
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		var receipt ConfigurationReceipt
+		missing, err := privatestore.ReadJSON(path, &receipt)
+		if err != nil {
+			return err
+		}
+		if missing {
+			return errors.New("configuration_flow_receipt_missing")
+		}
+		if receipt.Action != originAction || receipt.FlowID != flowID || (receipt.Outcome != "pending" && receipt.Outcome != "unknown") {
+			continue
+		}
+		receipt.Outcome, receipt.Stage, receipt.Code = "completed", "verified", ""
+		receipt.Message = "后续核验已完成，本次连接流程不会再次执行。"
+		if err := s.saveConfigurationReceipt(receipt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Service) ConfigurationResult(ctx context.Context, id string) (ConfigurationActionResult, error) {
 	if id == "" || len(id) > 128 {
 		return ConfigurationActionResult{}, errors.New("configuration_invalid_request")
@@ -125,7 +236,7 @@ func (s *Service) configurationResult(ctx context.Context, id string) (Configura
 	if missing {
 		return ConfigurationActionResult{Outcome: "failed", Snapshot: snapshot, Message: "未找到本次操作的接收记录；不会自动重发。"}, nil
 	}
-	if authorizationEndedByLogout(r, s.loadConfigurationReceipts()) {
+	if configurationFlowEndedByLogout(r, s.loadConfigurationReceipts()) {
 		return ConfigurationActionResult{Outcome: "failed", Snapshot: snapshot, Message: "此登录流程已随之后的注销结束，请发起新的登录。"}, nil
 	}
 	if (r.Outcome == "unknown" || r.Outcome == "pending") && r.Stage == "submitted" {
@@ -170,6 +281,7 @@ func (s *Service) configurationResult(ctx context.Context, id string) (Configura
 	}
 	return ConfigurationActionResult{Outcome: r.Outcome, Snapshot: snapshot, Message: r.Message}, nil
 }
+
 func (s *Service) loadConfigurationReceipts() []ConfigurationReceipt {
 	entries, _ := os.ReadDir(filepath.Join(s.feishuDataRoot, "configuration-receipts-v1"))
 	var result []ConfigurationReceipt
@@ -185,11 +297,21 @@ func (s *Service) loadConfigurationReceipts() []ConfigurationReceipt {
 	return result
 }
 
-// A verified later logout ends that application's earlier login flow. This is
-// lifecycle reconciliation, not proof that the old request succeeded; preserve
-// original receipts and never resend their operations.
-func authorizationEndedByLogout(r ConfigurationReceipt, all []ConfigurationReceipt) bool {
-	if (r.Action != "start_auth" && r.Action != "finish_auth") || (r.Outcome != "pending" && r.Outcome != "unknown") || r.ApplicationID == "" {
+func configurationFlowAction(action string) bool {
+	switch action {
+	case "create_app", "finish_app", "start_auth", "finish_auth", "cancel_flow":
+		return true
+	default:
+		return false
+	}
+}
+
+// A verified later logout is a product-wide disconnect and therefore ends
+// every earlier unresolved application or authorization flow. This does not
+// prove the old request succeeded; it only makes the old operation terminal
+// and non-replayable after all local credentials and bindings were removed.
+func configurationFlowEndedByLogout(r ConfigurationReceipt, all []ConfigurationReceipt) bool {
+	if !configurationFlowAction(r.Action) || (r.Outcome != "pending" && r.Outcome != "unknown") {
 		return false
 	}
 	started, err := time.Parse(time.RFC3339Nano, r.UpdatedAt)
@@ -197,7 +319,7 @@ func authorizationEndedByLogout(r ConfigurationReceipt, all []ConfigurationRecei
 		return false
 	}
 	for _, later := range all {
-		if later.Action != "logout" || later.Outcome != "completed" || later.Stage != "verified" || later.ApplicationID != r.ApplicationID {
+		if later.Action != "logout" || later.Outcome != "completed" || later.Stage != "verified" {
 			continue
 		}
 		ended, err := time.Parse(time.RFC3339Nano, later.UpdatedAt)
@@ -208,11 +330,55 @@ func authorizationEndedByLogout(r ConfigurationReceipt, all []ConfigurationRecei
 	return false
 }
 
+// Old builds did not persist the root flow ID. Configuration actions were
+// serialized and a pending root blocked another root action, so exactly one
+// verified matching finish within the session lifetime is sufficient legacy
+// evidence. Multiple candidates remain unresolved instead of being guessed.
+func configurationFlowCompletedByCheck(r ConfigurationReceipt, all []ConfigurationReceipt) (string, bool) {
+	finishAction := ""
+	switch r.Action {
+	case "create_app":
+		finishAction = "finish_app"
+	case "start_auth":
+		finishAction = "finish_auth"
+	default:
+		return "", false
+	}
+	if r.Outcome != "pending" && r.Outcome != "unknown" {
+		return "", false
+	}
+	started, err := time.Parse(time.RFC3339Nano, r.UpdatedAt)
+	if err != nil {
+		return "", false
+	}
+	candidates := map[string]bool{}
+	for _, later := range all {
+		if later.Action != finishAction || later.Outcome != "completed" || later.Stage != "verified" || strings.TrimSpace(later.FlowID) == "" {
+			continue
+		}
+		finished, err := time.Parse(time.RFC3339Nano, later.UpdatedAt)
+		if err != nil || !finished.After(started) || finished.Sub(started) > 10*time.Minute {
+			continue
+		}
+		if r.FlowID != "" && later.FlowID != r.FlowID {
+			continue
+		}
+		candidates[later.FlowID] = true
+	}
+	if len(candidates) != 1 {
+		return "", false
+	}
+	for flowID := range candidates {
+		return flowID, true
+	}
+	return "", false
+}
+
 func (s *Service) configurationFailures() []ConfigurationReceipt {
 	all := s.loadConfigurationReceipts()
 	result := make([]ConfigurationReceipt, 0, len(all))
 	for _, r := range all {
-		if authorizationEndedByLogout(r, all) {
+		if configurationFlowEndedByLogout(r, all) {
 			continue
 		}
 		r.Title = configurationOperationTitle(r.Action)
@@ -221,7 +387,7 @@ func (s *Service) configurationFailures() []ConfigurationReceipt {
 		if r.Action == "restart" && r.RecoveryVerifiedAt != "" {
 			r.Outcome, r.StatusText, r.Message = "resolved", "连接已恢复", recoveryVerifiedMessage
 		}
-		r.Digest, r.ApplicationID = "", ""
+		r.Digest, r.ApplicationID, r.FlowID = "", "", ""
 		result = append(result, r)
 	}
 
@@ -244,7 +410,51 @@ func (s *Service) configurationFailures() []ConfigurationReceipt {
 	return result
 }
 
+// Older builds could leave the root create_app/start_auth receipt pending after
+// the matching flow completed and was later logged out.  The temporal logout
+// projection above already keeps that stale receipt from blocking the UI; this
+// migration also makes the durable record terminal, scrubbed and non-replayable
+// so the correction survives future changes to presentation code.
+func (s *Service) persistLegacyConfigurationFlowOutcomes() {
+	all := s.loadConfigurationReceipts()
+	for _, receipt := range all {
+		endedByLogout := configurationFlowEndedByLogout(receipt, all)
+		completedFlowID, completedByCheck := configurationFlowCompletedByCheck(receipt, all)
+		if !endedByLogout && !completedByCheck {
+			continue
+		}
+		path := s.receiptPath(receipt.RequestID)
+		_ = privatestore.WithFileLock(path+".lock", func() error {
+			var current ConfigurationReceipt
+			missing, err := privatestore.ReadJSON(path, &current)
+			if err != nil {
+				return err
+			}
+			if missing {
+				return errors.New("configuration_flow_receipt_missing")
+			}
+			currentReceipts := s.loadConfigurationReceipts()
+			endedByLogout = configurationFlowEndedByLogout(current, currentReceipts)
+			completedFlowID, completedByCheck = configurationFlowCompletedByCheck(current, currentReceipts)
+			if !endedByLogout && !completedByCheck {
+				return nil
+			}
+			current.ApplicationID, current.FlowID, current.PermissionRevision, current.ContextRevision, current.Digest = "", "", "", "", ""
+			current.Stage = "verified"
+			if endedByLogout {
+				current.Outcome, current.Code = "failed", "cancelled_by_logout"
+				current.Message = "连接流程已随注销终止，不会重放。"
+			} else {
+				current.Outcome, current.Code, current.FlowID = "completed", "", completedFlowID
+				current.Message = "后续核验已完成，本次连接流程不会再次执行。"
+			}
+			return privatestore.WriteJSON(path, current)
+		})
+	}
+}
+
 func (s *Service) reconcileConfigurationReceipts() {
+	s.persistLegacyConfigurationFlowOutcomes()
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
 	for _, receipt := range s.configurationFailures() {
@@ -258,7 +468,7 @@ func (s *Service) reconcileConfigurationReceipts() {
 }
 
 func configurationOperationTitle(action string) string {
-	title := map[string]string{"start_auth": "用户授权", "finish_auth": "核验用户授权", "logout": "注销用户授权", "test_message": "向我发送测试消息", "connect_app": "接入应用", "create_app": "创建应用", "finish_app": "核验应用", "bind_operator": "绑定本人控制", "restart": "恢复连接", "cancel_flow": "取消授权等待"}[action]
+	title := map[string]string{"start_auth": "补充本人授权", "finish_auth": "核验用户授权", "logout": "注销并清除飞书", "test_message": "向我发送测试消息", "create_app": "扫码连接飞书", "finish_app": "核验应用", "restart": "恢复连接", "cancel_flow": "取消授权等待"}[action]
 	if title == "" {
 		return "配置操作"
 	}

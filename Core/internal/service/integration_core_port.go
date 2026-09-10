@@ -98,6 +98,19 @@ func (client *coreCapabilityClient) InterruptTurn(ctx context.Context, taskKey, 
 	return err
 }
 
+func (client *coreCapabilityClient) CancelApproval(ctx context.Context, taskKey, runtimeOwner, threadID, turnID string, expectedRequestID json.RawMessage, method string) error {
+	if runtimeOwner != "bridge" {
+		return fmt.Errorf("Codex Desktop approvals must be handled in Desktop")
+	}
+	if err := capabilitypolicy.CheckSession(client.service.feishuDataRoot); err != nil {
+		return err
+	}
+	if client.service.codex == nil {
+		return fmt.Errorf("Codex App Server unavailable")
+	}
+	return client.service.codex.CancelBridgeApproval(ctx, threadID, turnID, expectedRequestID, method)
+}
+
 func (client *coreCapabilityClient) AnswerInput(ctx context.Context, taskKey, runtimeOwner, threadID, turnID string, expectedRequestID json.RawMessage, questionID, questionRevision, answer string) (json.RawMessage, error) {
 	result, err := client.control(ctx, corebridge.ControlRequest{Operation: "question.answer", TaskKey: taskKey, RuntimeOwner: runtimeOwner, ThreadID: threadID, TurnID: turnID, RequestTarget: pendingRequestID(expectedRequestID), RequestTargetRaw: expectedRequestID, QuestionID: questionID, QuestionRevision: questionRevision, Answer: answer})
 	if len(result.RequestIDRaw) > 0 {
@@ -143,4 +156,18 @@ func (c *coreCapabilityClient) ObserveThread(ctx context.Context, owner, thread,
 	c.owners[thread] = t.OwnerClientID
 	c.mu.Unlock()
 	return t.State, desktop.ObservationVersion(t), nil
+}
+
+func (c *coreCapabilityClient) ObserveDesktopThread(ctx context.Context, threadID string) (map[string]any, string, string, bool, error) {
+	if c.service.desktop == nil {
+		return nil, "", "", false, nil
+	}
+	target, found, err := c.service.desktop.ObserveKnownConversationState(ctx, threadID)
+	if err != nil || !found {
+		return nil, "", "", found, err
+	}
+	c.mu.Lock()
+	c.owners[threadID] = target.OwnerClientID
+	c.mu.Unlock()
+	return target.State, target.OwnerClientID, desktop.ObservationVersion(target), true, nil
 }

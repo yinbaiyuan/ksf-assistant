@@ -47,6 +47,13 @@ func (port eventCorePort) InterruptTurn(ctx context.Context, key, owner, thread,
 	return port.CorePort.InterruptTurn(ctx, key, owner, thread, turn)
 }
 
+func (port eventCorePort) CancelApproval(ctx context.Context, key, owner, thread, turn string, request json.RawMessage, method string) error {
+	if err := beginEventEffect(ctx); err != nil {
+		return err
+	}
+	return port.CorePort.CancelApproval(ctx, key, owner, thread, turn, request, method)
+}
+
 func (port eventCorePort) AnswerInput(ctx context.Context, key, owner, thread, turn string, request json.RawMessage, question, revision, answer string) (json.RawMessage, error) {
 	if err := beginEventEffect(ctx); err != nil {
 		return nil, err

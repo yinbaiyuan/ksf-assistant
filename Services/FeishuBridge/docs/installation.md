@@ -100,12 +100,12 @@ node scripts/install-requirements.js scopes --identity user --format lines
 node scripts/install-requirements.js events --format lines
 ```
 
-- Bot 当前需要 17 项应用身份权限。
-- User 当前需要 119 项应用权限和相同的用户 OAuth 授权。
+- 基础连接只要求消息、卡片、按钮回调与附件链路所需的 6 项 Bot 权限；其余 Bot scope 属于具体能力目录。
+- User 清单中的 119 项是当前版本可用能力的权限上限，不是首次连接或一次性 OAuth 的要求。首次缺少本人标识时只申请 `contact:user.base:readonly`；文档、日历等能力在首次使用时按命令描述符申请缺项。
 - 固定事件为 23 项非 Approval EventKey。
 - 多余权限不会自动成为桥能力。
 
-把上述输出作为本版本的精确申请清单。不要申请 Approval，不要因控制台中存在额外权限就扩展桥能力。
+把上述输出作为本版本的能力目录与管理员预配置参考，不要将 User 全集作为首次授权清单。不要申请 Approval，不要因控制台中存在额外权限就扩展桥能力。
 
 ### 4.2 通讯录与知识库附加配置
 

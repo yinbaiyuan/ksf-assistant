@@ -14,7 +14,7 @@ module.exports = async function sealRuntime(context) {
     const artifact = manifest.artifacts[target];
     const cli = path.join(root, 'lark-cli', target, 'lark-cli.exe');
     if (!existsSync(cli)) continue;
-    artifact.upstreamExecutableSha256 ||= artifact.executableSha256;
+    artifact.controlledExecutableSha256 ||= artifact.executableSha256;
     artifact.executableSha256 = digest(cli);
     artifact.taskExecutableSha256 = digest(path.join(root, 'task', target, 'ksf-assistant-task.exe'));
   }

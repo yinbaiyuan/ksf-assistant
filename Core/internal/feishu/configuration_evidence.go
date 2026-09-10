@@ -8,8 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"ksfassistant/core/internal/capabilitypolicy"
-	"ksfassistant/core/internal/userapproval"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,7 +22,21 @@ func ReadConfigurationEvidence(ctx context.Context, runner CapabilityExecutor, d
 		UserPermissions: "unknown", BotPermissions: "unknown", OperatorState: "unknown",
 		CheckedAt: time.Now().UTC().Format(time.RFC3339Nano), Problems: []string{}, Flow: configurationFlow(dataRoot),
 	}
-	presence, stamp, err := configurationFileEvidence()
+	if _, err := os.Lstat(logoutCleanupPath(dataRoot)); !errors.Is(err, os.ErrNotExist) {
+		result.CleanupPending = true
+		if err != nil {
+			result.Problems = append(result.Problems, "cleanup_state_unreadable")
+		}
+	}
+	if !result.CleanupPending {
+		if err := MigrateOwnedLegacyProfile(ctx, runner, dataRoot); err != nil {
+			result.Problems = append(result.Problems, "legacy_migration_pending")
+		}
+		if err := RecoverRegistrationOperator(dataRoot); err != nil {
+			result.Problems = append(result.Problems, "operator_recovery_pending")
+		}
+	}
+	presence, stamp, err := configurationFileEvidenceFor(dataRoot)
 	if err != nil {
 		result.ApplicationState = "failed"
 		result.Problems = append(result.Problems, "application_unreadable")
@@ -70,6 +82,15 @@ func ReadConfigurationEvidence(ctx context.Context, runner CapabilityExecutor, d
 	}
 	result.ApplicationState = "present"
 	result.ApplicationID = appID
+	if request, requestErr := readProgressiveAuthorizationRequest(dataRoot); requestErr != nil {
+		result.Problems = append(result.Problems, "authorization_request_unreadable")
+	} else if request != nil {
+		if request.ApplicationID == appID {
+			result.AuthorizationRequest = &feishuprotocol.AuthorizationRequest{ID: request.ID, Purpose: request.Purpose, Scopes: append([]string{}, request.Scopes...)}
+		} else {
+			result.Problems = append(result.Problems, "authorization_request_application_mismatch")
+		}
+	}
 	result.BotState = configurationIdentityState(bot)
 	status := emptyAuthStatus("unknown")
 	status.ProfileValid = true
@@ -82,40 +103,35 @@ func ReadConfigurationEvidence(ctx context.Context, runner CapabilityExecutor, d
 		status.Status = "failed"
 	}
 	result.Auth = &status
-	if status.Status == "unauthorized" && capabilitypolicy.CheckSession(dataRoot) == nil {
-		// Migrate an already logged-out installation, serialized with login/logout.
-		if release, leaseErr := userapproval.TryExecutionLease(dataRoot); leaseErr == nil {
-			latest, checkErr := runner.RunAuthJSON(ctx, []string{"auth", "status", "--verify", "--json"}, nil, 15*time.Second)
-			identities, _ := latest["identities"].(map[string]any)
-			latestUser, _ := identities["user"].(map[string]any)
-			if checkErr == nil && cliUserAuthState(latestUser) == "unauthorized" {
-				checkErr = capabilitypolicy.SignOut(dataRoot)
-			}
-			release()
-			if checkErr != nil {
-				return result, checkErr
-			}
-		}
+	var applicationUserScopes []string
+	result.PermissionRevision = configurationDigest(fmt.Sprint(BaseConnectionPermissionScopes()))
+	required := []string{"contact:user.base:readonly"}
+	if scope, exists := user["scope"]; exists && validPermissionScopeValue(scope) {
+		granted := stringList(scope)
+		status.GrantedScopeCount = len(comparePermissionScopes(nil, granted).Excess)
+		result.UserPermissions = configurationScopeState(scope, required)
+		result.MissingUserScopes = comparePermissionScopes(required, granted).Missing
 	}
-	contract, contractErr := RequiredPermissionScopes()
-	if contractErr != nil {
-		result.Problems = append(result.Problems, "permission_contract_unavailable")
-	} else {
-		result.PermissionRevision = configurationDigest(fmt.Sprint(contract.User))
-		required := []string{"contact:user.base:readonly"}
-		if scope, exists := user["scope"]; exists && validPermissionScopeValue(scope) {
-			granted := stringList(scope)
-			status.GrantedScopeCount = len(comparePermissionScopes(nil, granted).Excess)
-			result.UserPermissions = configurationScopeState(scope, required)
-			result.MissingUserScopes = comparePermissionScopes(required, granted).Missing
+	scopes, scopeErr := runner.RunAuthJSON(ctx, []string{"auth", "scopes", "--json"}, nil, 15*time.Second)
+	if scopeErr != nil {
+		result.Problems = append(result.Problems, "application_permissions_unavailable")
+	} else if botScope, exists := scopes["botScopes"]; exists && validPermissionScopeValue(botScope) && validPermissionScopeValue(scopes["userScopes"]) && scopes["appId"] == appID && scopes["brand"] == "feishu" && scopes["tokenType"] == "user" {
+		base := BaseConnectionPermissionScopes()
+		result.ApplicationPermissions = configurationScopeState(botScope, base)
+		result.BotPermissions = result.ApplicationPermissions
+		result.MissingApplicationScopes = comparePermissionScopes(base, stringList(botScope)).Missing
+		applicationUserScopes = stringList(scopes["userScopes"])
+		requestedUserScopes := []string{}
+		if result.AuthorizationRequest != nil {
+			requestedUserScopes = result.AuthorizationRequest.Scopes
 		}
-		scopes, scopeErr := runner.RunAuthJSON(ctx, []string{"auth", "scopes", "--json"}, nil, 15*time.Second)
-		if scopeErr != nil {
-			result.Problems = append(result.Problems, "application_permissions_unavailable")
-		} else if scope, exists := scopes["userScopes"]; exists && validPermissionScopeValue(scope) && scopes["appId"] == appID && scopes["brand"] == "feishu" && scopes["tokenType"] == "user" {
-			result.ApplicationPermissions = configurationScopeState(scope, required)
-			result.MissingApplicationScopes = comparePermissionScopes(required, stringList(scope)).Missing
-		}
+		result.MissingApplicationScopes = sortedScopeSet(func() map[string]bool {
+			missing := map[string]bool{}
+			for _, scope := range append(result.MissingApplicationScopes, comparePermissionScopes(requestedUserScopes, applicationUserScopes).Missing...) {
+				missing[scope] = true
+			}
+			return missing
+		}())
 	}
 	if result.UserPermissions == "missing" {
 		status.MissingCapabilities = append(status.MissingCapabilities, "用户授权范围")
@@ -123,24 +139,38 @@ func ReadConfigurationEvidence(ctx context.Context, runner CapabilityExecutor, d
 	if result.ApplicationPermissions == "missing" {
 		status.MissingCapabilities = append(status.MissingCapabilities, "应用功能权限")
 	}
-	if capabilitypolicy.CheckSession(dataRoot) != nil {
-		status.Status, status.IdentityValid = "unauthorized", false
-	}
 	config, configErr := NewClientConfigStore(dataRoot).Load()
 	if configErr != nil {
 		result.OperatorState = "failed"
 		result.Problems = append(result.Problems, "operator_policy_unreadable")
-	} else if status.IdentityValid && userID != "" {
+	} else if config.Operator != nil && config.Operator.AppID == appID && config.Operator.OpenID != "" {
 		result.OperatorState = "missing"
 		for _, alias := range config.DirectAllowedAliases {
 			target, exists := config.MessageTargets[alias]
-			if exists && target.Type == "open_id" && target.ID == userID {
+			if exists && target.Type == "open_id" && target.ID == config.Operator.OpenID {
 				result.OperatorState, result.OperatorAlias = "present", alias
 				break
 			}
 		}
+		if userID == "" {
+			userID = config.Operator.OpenID
+			identityBytes, _ := json.Marshal([]string{appID, "feishu", "default", userID})
+			result.IdentityRevision = configurationDigest(string(identityBytes))
+		}
+	} else if config.Operator != nil {
+		result.OperatorState = "failed"
+		result.Problems = append(result.Problems, "operator_application_mismatch")
+	} else {
+		result.OperatorState = "missing"
 	}
-	currentPresence, currentStamp, currentErr := configurationFileEvidence()
+	if result.OperatorState == "missing" && applicationUserScopes != nil {
+		missing := map[string]bool{}
+		for _, scope := range append(result.MissingApplicationScopes, comparePermissionScopes([]string{"contact:user.base:readonly"}, applicationUserScopes).Missing...) {
+			missing[scope] = true
+		}
+		result.MissingApplicationScopes = sortedScopeSet(missing)
+	}
+	currentPresence, currentStamp, currentErr := configurationFileEvidenceFor(dataRoot)
 	if currentErr != nil || currentPresence != presence || currentStamp != stamp {
 		result.ApplicationState = "stale"
 		result.Auth = nil
@@ -187,14 +217,10 @@ func configurationScopeState(value any, required []string) string {
 	return "missing"
 }
 
-func configurationFileEvidence() (string, string, error) {
-	root := os.Getenv("LARKSUITE_CLI_CONFIG_DIR")
-	if root == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", "", err
-		}
-		root = filepath.Join(home, ".lark-cli")
+func configurationFileEvidenceFor(dataRoot string) (string, string, error) {
+	root, err := ManagedLarkCLIConfigDir(dataRoot)
+	if err != nil {
+		return "", "", err
 	}
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root {
 		return "", "", errors.New("invalid configuration directory")
@@ -215,6 +241,10 @@ func configurationFileEvidence() (string, string, error) {
 		return "", "", errors.New("unsafe configuration file")
 	}
 	return "present", fmt.Sprintf("%d:%d", info.ModTime().UnixNano(), info.Size()), nil
+}
+
+func configurationFileEvidence() (string, string, error) {
+	return configurationFileEvidenceFor("")
 }
 
 func configurationDigest(value string) string {

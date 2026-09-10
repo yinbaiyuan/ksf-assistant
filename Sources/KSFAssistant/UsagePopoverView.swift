@@ -19,9 +19,6 @@ struct UsagePopoverView: View {
     @State private var pricingCachedInput = ""
     @State private var pricingOutput = ""
     @State private var pricingFormError: String?
-    @State private var feishuAppID = ""
-    @State private var feishuAppSecret = ""
-    @State private var showExistingFeishuApp = false
     @State private var feishuExpandedSection: String?
     @State private var pendingFeishuAction: FeishuActionIntent?
     @State private var confirmToolchainInstall = false
@@ -762,7 +759,7 @@ struct UsagePopoverView: View {
             if let link {
                 VStack(alignment: .leading, spacing: 3) {
                     Label(
-                        "\(link.targetAlias) · 全权限 · 24 小时",
+                        "\(link.targetAlias) · 连接 24 小时",
                         systemImage: feishuTaskLinkSymbol(link.presentationState)
                     )
                     .foregroundStyle(feishuTaskLinkColor(link.presentationState))
@@ -1904,10 +1901,10 @@ struct UsagePopoverView: View {
             feishuConfigurationOverview
             feishuSurface { toolchainSettings }
             feishuDiagnostics
-            Text(viewModel.feishuConfiguration.snapshot?.diagnostics?.versionSummary ?? "飞书服务 未知 · lark-cli 未知")
+            Text(viewModel.feishuConfiguration.snapshot?.diagnostics?.versionSummary ?? "KSFAssistant 未知 · lark-cli 未知")
                 .font(.caption2).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center).frame(maxWidth: .infinity)
-            if viewModel.feishuConfiguration.snapshot?.auth?.isAuthorized == true {
+            if viewModel.feishuConfiguration.snapshot?.action("logout")?.enabled == true && !feishuNeedsApplicationSetup {
                 HStack { Spacer(); feishuActionButton("logout"); Spacer() }.padding(.vertical, 8)
             }
         }
@@ -2062,28 +2059,20 @@ struct UsagePopoverView: View {
             Text("当前结果尚未确认，不会自动重试配置操作。").font(.caption2).foregroundStyle(.secondary)
         } else if let flow = configuration.actionFlow {
             feishuPendingStep(flow)
-        } else if configuration.snapshot?.action("create_app")?.enabled == true
-                    || configuration.snapshot?.action("connect_app")?.enabled == true {
-            Text("应用接入").font(.caption.weight(.semibold))
-            Text("应用凭据由官方 CLI 保存；创建应用与用户授权是独立操作。")
-                .font(.caption2).foregroundStyle(.secondary)
-            if showExistingFeishuApp && configuration.snapshot?.action("connect_app")?.enabled == true {
-                TextField("App ID", text: $feishuAppID).textFieldStyle(.roundedBorder)
-                    .accessibilityLabel("已有飞书应用 App ID")
-                SecureField("App Secret", text: $feishuAppSecret).textFieldStyle(.roundedBorder)
-                    .accessibilityLabel("已有飞书应用 App Secret")
-                feishuActionButton("connect_app", primary: true)
-                    .disabled(feishuAppID.isEmpty || feishuAppSecret.isEmpty)
-                Button("返回接入方式") { showExistingFeishuApp = false }.controlSize(.small)
-            } else {
-                if configuration.snapshot?.action("create_app")?.enabled == true {
-                    feishuActionButton("create_app", primary: true)
+        } else if feishuNeedsApplicationSetup, let create = configuration.snapshot?.action("create_app") {
+            VStack(spacing: 6) {
+                Text("连接飞书").font(.caption.weight(.semibold))
+                Text("扫码后在飞书官方页面创建或选择应用；正常流程只需扫码一次。")
+                    .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                feishuActionButton("create_app", primary: true)
+                if !create.enabled, let reason = create.reason, !reason.isEmpty {
+                    Text(reason).font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }
-                if let action = configuration.snapshot?.action("connect_app"), action.enabled {
-                    Button(action.title) { showExistingFeishuApp = true }
-                        .controlSize(.small).disabled(!configuration.allows(action.id))
+                if configuration.snapshot?.action("logout")?.enabled == true {
+                    feishuActionButton("logout")
                 }
             }
+            .frame(maxWidth: .infinity)
         } else if let action = configuration.priorityAction {
             HStack { Spacer(); feishuActionButton(action, primary: true); Spacer() }.padding(.vertical, 4)
             ForEach(configuration.pendingSetupActions) { action in feishuActionButton(action.id) }
@@ -2097,8 +2086,11 @@ struct UsagePopoverView: View {
         return configuration.phase != .current || configuration.snapshot?.flow != nil
             || (configuration.lastAction == "start_auth" && configuration.outcome == "pending" && configuration.snapshot?.flow == nil)
             || configuration.priorityAction != nil || !configuration.pendingSetupActions.isEmpty
-            || configuration.snapshot?.action("connect_app")?.enabled == true
-            || configuration.snapshot?.action("create_app")?.enabled == true
+            || feishuNeedsApplicationSetup
+    }
+
+    private var feishuNeedsApplicationSetup: Bool {
+        viewModel.feishuConfiguration.snapshot?.fact("application")?.state == "missing"
     }
 
     private func feishuPendingStep(_ flow: FeishuConfigurationSnapshot.Flow) -> some View {
@@ -2114,7 +2106,7 @@ struct UsagePopoverView: View {
                 if viewModel.feishuConfiguration.acting || flow.state == "completed" {
                     ProgressView().controlSize(.small)
                     Text(viewModel.feishuConfiguration.lastAction == "cancel_flow" ? "正在取消登录…" : "正在确认登录…")
-                } else { Text(flow.kind == "user" ? "请用飞书扫码授权" : "请用飞书扫码创建应用") }
+                } else { Text(flow.kind == "user" ? "请用飞书补充本人授权" : "请用飞书扫码连接") }
             }.font(.caption2).foregroundStyle(.secondary).frame(height: 20)
             HStack(spacing: 12) {
                 if flow.verificationURL != nil {
@@ -2169,17 +2161,15 @@ struct UsagePopoverView: View {
         let feature: String?
         let mode: String?
         let targetAlias: String?
-        let appID: String?
     }
 
     private func requestFeishuAction(_ id: String, feature: String? = nil, mode: String? = nil, flowID: String? = nil) {
         guard viewModel.feishuConfiguration.allows(id),
               let snapshot = viewModel.feishuConfiguration.snapshot,
               let action = snapshot.action(id) else { return }
-        let appID = id == "connect_app" ? feishuAppID.trimmingCharacters(in: .whitespacesAndNewlines) : nil
         let featureTitle = snapshot.overview?.features.first { $0.id == feature }?.title
         let selfTarget = snapshot.diagnostics?.selfTarget ?? viewModel.selectedFeishuTargetAlias
-        let confirmation = action.confirmationText(targetAlias: selfTarget, mode: mode, featureTitle: featureTitle, appID: appID)
+        let confirmation = action.confirmationText(targetAlias: selfTarget, mode: mode, featureTitle: featureTitle)
         guard !action.requiresConfirmation || confirmation != nil else {
             viewModel.reportFeishuConfigurationIssue("缺少有效的操作确认内容，请检查配置后重试。")
             return
@@ -2187,18 +2177,16 @@ struct UsagePopoverView: View {
         let intent = FeishuActionIntent(id: id, title: action.title, confirmation: confirmation ?? "",
             context: snapshot.context,
             flowID: flowID, feature: feature, mode: mode,
-            targetAlias: id == "test_message" ? selfTarget : nil, appID: appID)
+            targetAlias: id == "test_message" ? selfTarget : nil)
         if confirmation == nil { submitFeishuAction(intent, confirm: false) }
         else { pendingFeishuAction = intent }
     }
 
     private func submitFeishuAction(_ intent: FeishuActionIntent, confirm: Bool) {
         viewModel.performFeishuConfigurationAction(intent.id, confirm: confirm,
-            appID: intent.appID,
-            appSecret: intent.id == "connect_app" ? feishuAppSecret : nil,
+            appID: nil, appSecret: nil,
             targetAlias: intent.targetAlias, feature: intent.feature, mode: intent.mode, flowID: intent.flowID,
             expectedContext: intent.context)
-        if intent.id == "connect_app" { feishuAppSecret = "" }
     }
 
     private var feishuActivationTargetPicker: some View {

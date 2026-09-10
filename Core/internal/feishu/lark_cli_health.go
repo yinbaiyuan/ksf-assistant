@@ -12,9 +12,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"ksfassistant/core/internal/larkversion"
 )
 
-const PinnedLarkCLIVersion = "1.0.93"
+const PinnedLarkCLIVersion = larkversion.Version
+const PinnedLarkCLIUpstreamVersion = larkversion.UpstreamVersion
 
 const (
 	larkCLIProbeTimeout = 3 * time.Second
@@ -74,10 +77,28 @@ func ProbeLarkCLI(parent context.Context, binary string) LarkCLIProbeResult {
 	}
 
 	result := executeLarkCLIProbe(parent, absolute, now)
-	larkCLIProbeCache.Lock()
-	larkCLIProbeCache.entries[absolute] = larkCLIProbeEntry{signature: signature, expiresAt: now.Add(larkCLIProbeTTL), result: result}
-	larkCLIProbeCache.Unlock()
+	// A first launch can be delayed by platform executable verification. Do not
+	// turn that transient timeout (or another execution failure) into a five
+	// minute outage. Only cache results that describe the inspected binary
+	// itself; transient failures are retried by the next read/action.
+	if cacheableLarkCLIProbe(result) {
+		larkCLIProbeCache.Lock()
+		larkCLIProbeCache.entries[absolute] = larkCLIProbeEntry{signature: signature, expiresAt: now.Add(larkCLIProbeTTL), result: result}
+		larkCLIProbeCache.Unlock()
+	}
 	return result
+}
+
+func cacheableLarkCLIProbe(result LarkCLIProbeResult) bool {
+	if result.State == "ready" {
+		return true
+	}
+	switch result.Code {
+	case "invalid_path", "path_unavailable", "unsafe_path", "not_executable", "version_mismatch", "schema_probe_invalid":
+		return true
+	default:
+		return false
+	}
 }
 
 func executeLarkCLIProbe(parent context.Context, binary string, now time.Time) LarkCLIProbeResult {

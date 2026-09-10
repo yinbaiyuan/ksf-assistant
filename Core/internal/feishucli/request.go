@@ -14,10 +14,11 @@ import (
 
 	"ksfassistant/core/internal/localipc"
 	"ksfassistant/core/internal/privateipc"
+	"ksfassistant/core/internal/productversion"
 )
 
 const MethodExecute = "cli/execute"
-const Version = "0.11.0-preview.4"
+const Version = productversion.Version
 const MaxPayloadBytes = 4 * 1024 * 1024
 const MaxRequestBytes = privateipc.MaxFrameBytes - 65536
 

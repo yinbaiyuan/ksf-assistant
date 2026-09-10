@@ -8,7 +8,7 @@ import (
 )
 
 func readPlatformMasterKey() ([]byte, error) {
-	output, err := exec.Command("/usr/bin/security", "find-generic-password", "-s", "lark-cli", "-a", "master.key", "-w").Output()
+	output, err := exec.Command("/usr/bin/security", "find-generic-password", "-s", ManagedLarkCLIKeyService, "-a", "master.key", "-w").Output()
 	if err != nil {
 		return nil, errors.New("lark-cli master key is unavailable from the macOS Keychain")
 	}

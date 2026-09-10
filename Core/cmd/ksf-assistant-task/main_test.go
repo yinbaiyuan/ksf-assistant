@@ -59,7 +59,7 @@ func TestCoreClosedCLIAndCrossProcessCAS(t *testing.T) {
 		return response, err
 	}
 	version, err := run("--version", nil)
-	if err != nil || !version.OK || version.SoftwareVersion != "0.11.0-preview.4" || version.Version != 1 {
+	if err != nil || !version.OK || version.SoftwareVersion != taskruntime.SoftwareVersion || version.Version != 1 {
 		t.Fatal("version probe failed", version, err)
 	}
 	input := []byte(`{"protocol":"ksfassistant-task-runtime-v1","version":1,"event_id":"create","expected_revision":0,"state":{"scope":"unresolved","reported_status":"running"}}`)

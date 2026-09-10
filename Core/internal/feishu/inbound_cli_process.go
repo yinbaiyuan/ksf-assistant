@@ -89,7 +89,7 @@ func (inbound *OfficialInbound) runConsumers(ctx context.Context) error {
 		}
 		args = append(args, "event", "consume", key, "--as", "bot")
 		command := exec.CommandContext(runCtx, inbound.runner.Binary, args...)
-		command.Env = authEnvironment()
+		command.Env = authEnvironment(inbound.runner.DataRoot)
 		command.Dir = inbound.runner.WorkingDirectory
 		stdin, err := command.StdinPipe()
 		if err != nil {

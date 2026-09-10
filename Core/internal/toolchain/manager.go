@@ -58,7 +58,7 @@ func (manager *Manager) ownership() (*receipt, error) {
 	if err != nil || owned.SchemaVersion != 1 || owned.Version == "" || len(owned.Files) != 4 || owned.Files["launcher.json"] == "" || owned.Files["bin/ksfas-lark"+suffix()] == "" || owned.Files["bin/lark-cli"+suffix()] == "" || owned.Files["bin/ksf-assistant-task"+suffix()] == "" {
 		return nil, errors.New("invalid_receipt")
 	}
-	if !owned.Adaptation.valid(owned.Version) {
+	if !owned.Adaptation.valid(UpstreamVersion) {
 		return nil, errors.New("invalid_receipt")
 	}
 	seen := map[string]bool{}

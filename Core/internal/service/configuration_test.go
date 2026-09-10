@@ -64,7 +64,7 @@ func TestConfigurationUserBotOperatorAndPermissionAreIndependent(t *testing.T) {
 	state.data.evidence.Auth.Status = "unauthorized"
 	state.data.evidence.Auth.IdentityValid = false
 	snapshot := configurationTestSnapshot(&state)
-	if snapshot.Summary.State != "authorization_required" || configurationFact(snapshot, "user").State != "missing" || configurationFact(snapshot, "bot").State != "present" || configurationFact(snapshot, "permissions").State != "unknown" {
+	if snapshot.Summary.State != "connected" || configurationFact(snapshot, "user").State != "missing" || configurationFact(snapshot, "bot").State != "present" || configurationFact(snapshot, "permissions").State != "unknown" {
 		t.Fatalf("identities conflated: %+v", snapshot)
 	}
 	if action, _ := configurationActionByID(snapshot, "test_message"); action.Enabled {
@@ -72,6 +72,61 @@ func TestConfigurationUserBotOperatorAndPermissionAreIndependent(t *testing.T) {
 	}
 	if action, _ := configurationActionByID(snapshot, "bind_operator"); action.Enabled {
 		t.Fatal("unverified user offered operator binding")
+	}
+}
+
+func TestConfigurationMissingApplicationOffersCleanupBeforeReconnectWhenOldBindingsRemain(t *testing.T) {
+	state := configurationReadyState()
+	state.data.connection = normalizedFeishuSnapshot(domain.FeishuSnapshot{
+		Availability: "notConfigured", ProcessRunning: true, ProcessState: "idle_unconfigured",
+		Capabilities: map[string]domain.CapabilityHealth{"desktopIPC": {State: "ready"}},
+	})
+	state.data.evidence = feishuprotocol.ConfigurationEvidence{
+		SchemaVersion: 1, ContextRevision: "missing", ApplicationState: "missing", BotState: "unknown",
+		OperatorState: "unknown", UserPermissions: "unknown", ApplicationPermissions: "unknown", CreationBlocked: true,
+	}
+	snapshot := configurationTestSnapshot(&state)
+	if snapshot.Summary.State != "cleanup_required" {
+		t.Fatalf("residual connection was not explained: %+v", snapshot.Summary)
+	}
+	create, _ := configurationActionByID(snapshot, "create_app")
+	if create.Enabled || !strings.Contains(create.Reason, "活动飞书连接") {
+		t.Fatalf("unsafe reconnect was offered: %+v", create)
+	}
+	cleanup, _ := configurationActionByID(snapshot, "logout")
+	if !cleanup.Enabled || cleanup.Title != "清理旧连接数据" {
+		t.Fatalf("residual connection has no recovery action: %+v", cleanup)
+	}
+}
+
+func TestConfigurationExposesOnlyCoreGeneratedAuthorizationRequestID(t *testing.T) {
+	state := configurationReadyState()
+	state.data.evidence.OperatorState = "present"
+	state.data.evidence.AuthorizationRequest = &feishuprotocol.AuthorizationRequest{ID: "0123456789abcdef0123456789abcdef", Purpose: "docs.fixture.read", Scopes: []string{"docx:document:readonly"}}
+	snapshot := configurationTestSnapshot(&state)
+	action, ok := configurationActionByID(snapshot, "start_auth")
+	if !ok || !action.Enabled || action.AuthorizationRequestID != state.data.evidence.AuthorizationRequest.ID || len(action.Scopes) != 1 || !strings.Contains(action.Confirmation, "不会自动重放") {
+		t.Fatalf("progressive authorization affordance invalid: %#v", action)
+	}
+	request := configurationRequest(snapshot, "start_auth")
+	request.AuthorizationRequestID = "desktop-invented"
+	if request.AuthorizationRequestID == action.AuthorizationRequestID {
+		t.Fatal("invalid fixture")
+	}
+}
+
+func TestConfigurationWaitsForApplicationScopeBeforeProgressiveOAuth(t *testing.T) {
+	state := configurationReadyState()
+	state.data.evidence.OperatorState = "present"
+	state.data.evidence.AuthorizationRequest = &feishuprotocol.AuthorizationRequest{ID: "0123456789abcdef0123456789abcdef", Purpose: "docs.fixture.read", Scopes: []string{"docx:document:readonly"}}
+	state.data.evidence.MissingApplicationScopes = []string{"docx:document:readonly"}
+	snapshot := configurationTestSnapshot(&state)
+	action, ok := configurationActionByID(snapshot, "start_auth")
+	if !ok || action.Enabled || !strings.Contains(action.Reason, "开放平台") {
+		t.Fatalf("progressive OAuth was offered before the application scope existed: %#v", action)
+	}
+	if len(snapshot.Issues) == 0 || snapshot.Issues[len(snapshot.Issues)-1].Code != "application_permissions_missing" {
+		t.Fatalf("missing application scope was not explained: %#v", snapshot.Issues)
 	}
 }
 
@@ -251,31 +306,18 @@ func TestConfigurationRoutinePollingDoesNotLeaveVisibleRefreshPending(t *testing
 	}
 }
 
-func TestConfigurationBindingThroughCoordinatorIsSingleUse(t *testing.T) {
+func TestConfigurationBindingActionIsRetired(t *testing.T) {
 	service, _ := newAppSetupFixture(t)
 	t.Cleanup(service.closeConfiguration)
 	snapshot := awaitConfiguration(t, service)
 	request := configurationRequest(snapshot, "bind_operator")
-	service.configuration.mu.Lock()
-	service.configuration.data.connection.InboundConnection = false
-	changed := service.configuration.snapshot(time.Now())
-	service.configuration.mu.Unlock()
-	if changed.Revision <= request.Revision || changed.ContextRevision != request.ContextRevision {
-		t.Fatal("fixture did not isolate a presentation-only change")
-	}
 	before := appSetupTrace(t, service)
 	result, err := service.ApplyFeishuConfiguration(context.Background(), request)
-	if err != nil || result.Outcome != "completed" {
-		t.Fatalf("binding failed: %+v %v", result, err)
-	}
-	if _, err := service.ApplyFeishuConfiguration(context.Background(), request); err != nil {
-		t.Fatal(err)
+	if err != nil || result.Outcome != "failed" || !strings.Contains(result.Message, "configuration_action_retired") {
+		t.Fatalf("retired binding action executed: %+v %v", result, err)
 	}
 	trace := appSetupTrace(t, service)[len(before):]
-	if strings.Count(trace, feishuprotocol.MethodAuthEnsureUser+" ") != 1 {
-		t.Fatalf("binding not exactly once: %s", trace)
-	}
-	for _, forbidden := range []string{feishuprotocol.MethodAuthStart, feishuprotocol.SettingsWrite, feishuprotocol.MethodMessageTest} {
+	for _, forbidden := range []string{feishuprotocol.MethodAuthEnsureUser, feishuprotocol.MethodAuthStart, feishuprotocol.SettingsWrite, feishuprotocol.MethodMessageTest} {
 		if strings.Contains(trace, forbidden) {
 			t.Fatalf("binding also did %s", forbidden)
 		}
@@ -411,8 +453,8 @@ func TestConfigurationCoordinatorCarriesSettingsCASAndClassifiesConflict(t *test
 	}
 }
 
-func TestConfigurationConnectRestartsTransportWithoutStartingOAuth(t *testing.T) {
-	service, connected := newAppSetupFixture(t)
+func TestConfigurationExistingAppActionIsRetired(t *testing.T) {
+	service, _ := newAppSetupFixture(t)
 	t.Cleanup(service.closeConfiguration)
 	writeSetupFixture(t, service, "fixture-evidence.json", map[string]any{"applicationState": "missing", "contextRevision": "missing", "auth": nil, "botState": "unknown"})
 	snapshot := awaitConfiguration(t, service)
@@ -420,14 +462,11 @@ func TestConfigurationConnectRestartsTransportWithoutStartingOAuth(t *testing.T)
 	request.AppID, request.AppSecret = "cli_fixture", "fixture-only-secret"
 	before := appSetupTrace(t, service)
 	result, err := service.ApplyFeishuConfiguration(context.Background(), request)
-	if err != nil || result.Outcome != "completed" {
-		t.Fatalf("connect failed: %+v %v", result, err)
-	}
-	if connection := fixtureConnection(t, connected); connection.err != nil {
-		t.Fatal(connection.err)
+	if err != nil || result.Outcome != "failed" || !strings.Contains(result.Message, "configuration_action_retired") {
+		t.Fatalf("retired existing-app action executed: %+v %v", result, err)
 	}
 	trace := appSetupTrace(t, service)[len(before):]
-	if strings.Count(trace, feishuprotocol.Initialize+" ") != 1 || strings.Count(trace, feishuprotocol.MethodAuthConfigure+" ") != 1 || strings.Contains(trace, feishuprotocol.MethodAuthStart+" ") || strings.Contains(trace, feishuprotocol.MethodAuthEnsureUser+" ") || strings.Contains(trace, feishuprotocol.MethodMessageTest+" ") {
+	if strings.Contains(trace, feishuprotocol.Initialize+" ") || strings.Contains(trace, feishuprotocol.MethodAuthConfigure+" ") || strings.Contains(trace, feishuprotocol.MethodAuthStart+" ") || strings.Contains(trace, feishuprotocol.MethodAuthEnsureUser+" ") || strings.Contains(trace, feishuprotocol.MethodMessageTest+" ") {
 		t.Fatalf("connect side effects incorrect: %s", trace)
 	}
 	encoded, _ := json.Marshal(result)

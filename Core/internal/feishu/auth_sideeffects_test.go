@@ -36,47 +36,33 @@ func TestConfigureExistingAppRefusesEveryExistingConfigBeforeCLI(t *testing.T) {
 	}
 }
 
-func TestLogoutRequiresExplicitUserMissingEvidence(t *testing.T) {
-	for _, test := range []struct {
-		name, response, want string
-	}{
-		{"missing", `{"available":false,"status":"missing"}`, "unauthorized"},
-		{"unavailable-only", `{"available":false}`, "unknown"},
-		{"verify-failed", `{"available":false,"verified":false,"status":"verify_failed"}`, "unknown"},
-		{"missing-but-verify-failed", `{"available":false,"verified":false,"status":"missing"}`, "unknown"},
-		{"not-configured", `{"available":false,"status":"not_configured"}`, "unknown"},
-		{"available", `{"available":true,"verified":true}`, "unknown"},
-		{"available-unverified", `{"available":true,"verified":false}`, "unknown"},
-		{"unknown", `{}`, "unknown"},
-		{"malformed", `{"available":"false"}`, "unknown"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			runner := fakeAuthCLI(t, `printf '%s\n' "$4" >> calls
-case "$4" in
-logout) printf '{"ok":true,"loggedOut":true}' ;;
-status) printf '%s' '{"appId":"cli_fixture","brand":"feishu","identities":{"user":`+test.response+`}}' ;;
-*) exit 1 ;;
-esac`)
-			status, err := LogoutUserAuth(context.Background(), runner, runner.DataRoot)
-			if err != nil || status.Status != test.want {
-				t.Fatalf("logout result: %+v %v", status, err)
-			}
-			if capabilitypolicy.CheckSession(runner.DataRoot) == nil {
-				t.Fatal("logout did not block bot execution")
-			}
-			calls, err := os.ReadFile(filepath.Join(runner.DataRoot, "calls"))
-			if err != nil || string(calls) != "logout\nstatus\n" {
-				t.Fatalf("unexpected logout actions: %s %v", calls, err)
-			}
-		})
+func TestLogoutPurgesLocalProfileWithoutDependingOnUserStatus(t *testing.T) {
+	runner := fakeAuthCLI(t, `printf '%s\n' "$4" >> calls
+if [ "$4" = logout ]; then rm -f "$LARKSUITE_CLI_CONFIG_DIR/config.json"; printf '{"ok":true,"loggedOut":true,"purged":true,"remoteRevocationConfirmed":false}'; else exit 1; fi`)
+	if err := capabilitypolicy.SignOut(runner.DataRoot); err != nil {
+		t.Fatal(err)
 	}
-	t.Run("verification-failed", func(t *testing.T) {
-		runner := fakeAuthCLI(t, `if [ "$4" = logout ]; then printf '{"ok":true,"loggedOut":true}'; else exit 1; fi`)
-		status, err := LogoutUserAuth(context.Background(), runner, runner.DataRoot)
-		if err != nil || status.Status != "unknown" {
-			t.Fatalf("unverified logout claimed success: %+v %v", status, err)
-		}
-	})
+	status, err := LogoutUserAuth(context.Background(), runner, runner.DataRoot)
+	if err != nil || status.Status != "unauthorized" || status.RemoteRevocationConfirmed == nil || *status.RemoteRevocationConfirmed {
+		t.Fatalf("logout result: %+v %v", status, err)
+	}
+	if capabilitypolicy.CheckSession(runner.DataRoot) != nil {
+		t.Fatal("legacy signed-out marker was not removed with local authentication state")
+	}
+	calls, err := os.ReadFile(filepath.Join(runner.DataRoot, "calls"))
+	if err != nil || string(calls) != "logout\n" {
+		t.Fatalf("unexpected logout actions: %s %v", calls, err)
+	}
+}
+
+func TestLogoutCLIFailureLeavesCleanupFailClosed(t *testing.T) {
+	runner := fakeAuthCLI(t, `exit 1`)
+	if _, err := LogoutUserAuth(context.Background(), runner, runner.DataRoot); err == nil {
+		t.Fatal("failed CLI logout claimed success")
+	}
+	if !LocalFeishuCleanupPending(runner.DataRoot) || capabilitypolicy.CheckSession(runner.DataRoot) == nil {
+		t.Fatal("failed CLI logout did not preserve the cleanup gate")
+	}
 }
 
 func TestReadCLIAuthStatusDoesNotTurnVerificationFailureIntoUnauthorized(t *testing.T) {
@@ -157,9 +143,34 @@ esac`)
 			if permissions["verified"] != nil || user["ready"] != nil || bot["ready"] != nil || user["complete"] != nil || user["missing"] != nil {
 				t.Fatalf("unknown fields claimed evidence: %+v", permissions)
 			}
-			if (user["application"] != nil) != test.appKnown || (user["oauth"] != nil) != test.oauthKnown || bot["scopeVerification"] != "not_exposed_by_lark_cli_auth_scopes" {
+			if (user["application"] != nil) != test.appKnown || (user["oauth"] != nil) != test.oauthKnown || bot["scopeVerification"] != "verified_by_lark_cli_auth_scopes" {
 				t.Fatalf("independent evidence lost: %+v", permissions)
 			}
 		})
+	}
+}
+
+func TestAuthPermissionsComparesOnlyCurrentProgressiveRequest(t *testing.T) {
+	scopes, _ := json.Marshal(map[string]any{
+		"appId": "cli_fixture", "brand": "feishu", "tokenType": "user",
+		"userScopes": []string{"docx:document:readonly"}, "botScopes": BaseConnectionPermissionScopes(),
+	})
+	runner := fakeAuthCLI(t, `case "$4" in
+status) printf '{"appId":"cli_fixture","brand":"feishu","identities":{"user":{"available":true,"verified":true,"scope":[]},"bot":{"available":true,"verified":true}}}' ;;
+scopes) printf '%s' '`+string(scopes)+`' ;;
+esac`)
+	request, err := writeProgressiveAuthorizationRequest(runner.DataRoot, "cli_fixture", "docs.fixture.read", []string{"docx:document:readonly"})
+	if err != nil || request == nil {
+		t.Fatal(err)
+	}
+	result, err := AuthPermissions(context.Background(), runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	permissions := result["permissions"].(map[string]any)
+	user := permissions["identities"].(map[string]any)["user"].(map[string]any)
+	missing := user["missing"].([]string)
+	if user["requiredCount"] != 1 || len(missing) != 1 || missing[0] != "docx:document:readonly" {
+		t.Fatalf("full user catalog leaked into base readiness: %#v", user)
 	}
 }

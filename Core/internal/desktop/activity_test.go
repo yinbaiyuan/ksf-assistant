@@ -59,6 +59,18 @@ func TestFollowerControlRequestsUseFrozenMethodsAndReturnTurnID(t *testing.T) {
 	if request["method"] != "thread-follower-start-turn" || request["version"].(json.Number).String() != "2" || request["targetClientId"] != "desktop-owner" {
 		t.Fatalf("unexpected follower request: %#v", request)
 	}
+	params := request["params"].(map[string]any)
+	turnStart := params["turnStart"].(map[string]any)
+	turnRequest := turnStart["request"].(map[string]any)
+	contextValue := turnStart["context"].(map[string]any)
+	if turnRequest["cwd"] != "/tmp/project" || contextValue["inheritThreadSettings"] != true {
+		t.Fatalf("thread settings were not inherited: %#v", turnStart)
+	}
+	for _, field := range []string{"approvalPolicy", "sandbox", "sandboxPolicy"} {
+		if _, found := turnRequest[field]; found {
+			t.Fatalf("Desktop follower overrode %s: %#v", field, turnRequest)
+		}
+	}
 	client.handle(mustJSON(t, map[string]any{"type": "response", "requestId": request["requestId"], "result": map[string]any{"turn": map[string]any{"id": "turn-456"}}}))
 	select {
 	case value := <-result:

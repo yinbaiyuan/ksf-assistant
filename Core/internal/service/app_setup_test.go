@@ -15,6 +15,7 @@ import (
 	"ksfassistant/core/internal/feishuprotocol"
 	"ksfassistant/core/internal/integration"
 	"ksfassistant/core/internal/privateipc"
+	"ksfassistant/core/internal/privatestore"
 )
 
 func newAppSetupFixture(t *testing.T, executables ...string) (*Service, <-chan bridgeFixtureConnection) {
@@ -62,6 +63,13 @@ func TestAppSetupBridgeProcess(t *testing.T) {
 	activeKind := "app"
 	outcome, flow := "pending", "app-create"
 	startError := false
+	registrationBound := func() bool {
+		_, err := os.Stat(filepath.Join(root, "fixture-registration-bound"))
+		return err == nil
+	}
+	markRegistrationBound := func() error {
+		return os.WriteFile(filepath.Join(root, "fixture-registration-bound"), nil, 0o600)
+	}
 	readEvidence := func() feishuprotocol.ConfigurationEvidence {
 		evidence := feishuprotocol.ConfigurationEvidence{
 			SchemaVersion: 1, ContextRevision: "fixture", IdentityRevision: "fixture-identity", ApplicationID: "cli_fixture", ApplicationState: "present", BotState: "present", BotPermissions: "unknown",
@@ -70,6 +78,11 @@ func TestAppSetupBridgeProcess(t *testing.T) {
 		}
 		if data, err := os.ReadFile(filepath.Join(root, "fixture-evidence.json")); err == nil {
 			_ = json.Unmarshal(data, &evidence)
+		}
+		if registrationBound() {
+			evidence.OperatorState, evidence.OperatorAlias = "present", "我"
+			evidence.Auth = &feishuprotocol.AuthStatus{SchemaVersion: 1, Status: "unauthorized", Identity: "user", Profile: "default", ProfileValid: true, MissingCapabilities: []string{}}
+			evidence.UserPermissions = "unknown"
 		}
 		if active {
 			evidence.Flow = &feishuprotocol.ConfigurationFlow{ID: "fixture-flow", Kind: activeKind, State: outcome}
@@ -209,12 +222,22 @@ func TestAppSetupBridgeProcess(t *testing.T) {
 				return nil, errors.New("official_cli_config_exists")
 			}
 			active, activeKind = request["createNew"] == true, "app"
+			if request["createNew"] == true && outcome == "completed" && flow == "app-create" {
+				if err := markRegistrationBound(); err != nil {
+					return nil, err
+				}
+			}
 			return map[string]any{"status": outcome, "flow": flow, "verificationUrl": "https://example.test/create-only", "userCode": "CREATE-CODE", "qrDataURL": "data:image/png;base64,fixture"}, nil
 		case feishuprotocol.MethodAuthConfigFinish:
 			if !active || outcome == "expired" {
 				return nil, errors.New("app_configuration_session_missing")
 			}
-			return map[string]any{"status": outcome, "flow": flow, "verificationUrl": "https://example.test/create-only", "userCode": "CREATE-CODE"}, nil
+			if outcome == "completed" && flow == "app-create" {
+				if err := markRegistrationBound(); err != nil {
+					return nil, err
+				}
+			}
+			return map[string]any{"status": outcome, "flow": flow, "operatorBound": registrationBound(), "verificationUrl": "https://example.test/create-only", "userCode": "CREATE-CODE"}, nil
 		case feishuprotocol.MethodAuthCancel:
 			return nil, errors.New("unscoped_cancel_forbidden")
 		case feishuprotocol.MethodAuthStatus:
@@ -292,7 +315,7 @@ func appSetupTrace(t *testing.T, service *Service) string {
 	return string(data)
 }
 
-func TestNewAppSetupWaitsForCreationBeforeSeparateOAuthAction(t *testing.T) {
+func TestNewAppSetupUsesRegistrationIdentityWithoutSecondOAuth(t *testing.T) {
 	service, connected := newAppSetupFixture(t)
 	writeSetupFixture(t, service, "fixture-evidence.json", map[string]any{"auth": unauthorizedSetupFixture()})
 	ctx := context.Background()
@@ -330,14 +353,56 @@ func TestNewAppSetupWaitsForCreationBeforeSeparateOAuthAction(t *testing.T) {
 		t.Fatal("creation completion automatically started OAuth")
 	}
 	result, err = service.ContinueFeishuSetup(ctx)
-	if err != nil || result["setup"].(managedfeishu.SetupState).Stage != managedfeishu.SetupAuthorizationPending {
-		t.Fatalf("separate user authorization action: %+v %v", result, err)
+	if err != nil || result["status"] != "connected" || result["setup"].(managedfeishu.SetupState).Stage != managedfeishu.SetupPlatformPending {
+		t.Fatalf("registration identity did not complete connection: %+v %v", result, err)
 	}
 	trace := appSetupTrace(t, service)
 	for _, forbidden := range []string{feishuprotocol.MethodMessageTest, feishuprotocol.MethodAuthEnsureUser, feishuprotocol.SettingsWrite, feishuprotocol.MethodSettingsCompareAndSwap} {
 		if strings.Contains(trace, forbidden) {
 			t.Fatalf("creation caused unrelated side effect: %s", forbidden)
 		}
+	}
+}
+
+func TestConfigurationCreateAndFinishSettleTheSameDurableFlow(t *testing.T) {
+	service, connected := newAppSetupFixture(t)
+	writeSetupFixture(t, service, "fixture-evidence.json", map[string]any{
+		"schemaVersion": 1, "contextRevision": "missing", "applicationState": "missing", "botState": "missing",
+		"applicationPermissions": "unknown", "userPermissions": "unknown", "botPermissions": "unknown", "operatorState": "missing",
+		"checkedAt": time.Now().UTC().Format(time.RFC3339Nano), "problems": []string{}, "auth": unauthorizedSetupFixture(),
+	})
+	snapshot := awaitConfiguration(t, service)
+	create := configurationRequest(snapshot, "create_app")
+	result, err := service.ApplyFeishuConfiguration(context.Background(), create)
+	if err != nil || result.Outcome != "pending" || result.receiptFlowID != "fixture-flow" {
+		t.Fatalf("create did not capture its submitted flow: %+v %v", result, err)
+	}
+	var rootReceipt ConfigurationReceipt
+	if missing, err := privatestore.ReadJSON(service.receiptPath(create.RequestID), &rootReceipt); err != nil || missing || rootReceipt.FlowID != "fixture-flow" || rootReceipt.Outcome != "pending" {
+		t.Fatalf("root connection receipt lacks its flow: %+v %v", rootReceipt, err)
+	}
+
+	// Let the action-triggered refresh settle before changing the fixture result;
+	// the following forced refresh must observe the completed state, not race the
+	// earlier pending observation.
+	_ = awaitConfiguration(t, service)
+	setAppSetupResult(t, service, "completed", "app-create", false)
+	service.ReadFeishuConfiguration(context.Background(), true)
+	snapshot = awaitConfiguration(t, service)
+	finish := configurationRequest(snapshot, "finish_app")
+	if snapshot.Flow == nil {
+		t.Fatal("completed configuration flow was not projected")
+	}
+	finish.FlowID = snapshot.Flow.ID
+	result, err = service.ApplyFeishuConfiguration(context.Background(), finish)
+	if err != nil || result.Outcome != "completed" {
+		t.Fatalf("finish failed: %+v %v", result, err)
+	}
+	if connection := fixtureConnection(t, connected); connection.err != nil {
+		t.Fatalf("finish did not reconnect the bridge: %+v", connection)
+	}
+	if missing, err := privatestore.ReadJSON(service.receiptPath(create.RequestID), &rootReceipt); err != nil || missing || rootReceipt.FlowID != "fixture-flow" || rootReceipt.Outcome != "completed" || rootReceipt.Stage != "verified" {
+		t.Fatalf("finish did not settle its root receipt: %+v %v", rootReceipt, err)
 	}
 }
 
@@ -469,7 +534,7 @@ func TestRejectedReuseAppSetupPreservesPreviousState(t *testing.T) {
 	}
 }
 
-func TestNewAppSetupAlreadyCompletedStillRequiresSeparateOAuth(t *testing.T) {
+func TestNewAppSetupAlreadyCompletedNeedsNoSecondOAuth(t *testing.T) {
 	service, connected := newAppSetupFixture(t)
 	setAppSetupResult(t, service, "completed", "app-create", false)
 	generation := service.managedFeishuSupervisor.Generation()
@@ -480,8 +545,9 @@ func TestNewAppSetupAlreadyCompletedStillRequiresSeparateOAuth(t *testing.T) {
 	if connection := fixtureConnection(t, connected); connection.err != nil || connection.generation <= generation {
 		t.Fatalf("completed start did not reload bridge: %+v", connection)
 	}
-	if _, err := service.VerifyFeishuSetup(context.Background()); err == nil {
-		t.Fatal("completed creation bypassed separate user authorization")
+	verified, err := service.VerifyFeishuSetup(context.Background())
+	if err != nil || verified["status"] != "verified" {
+		t.Fatalf("completed creation did not become ready: %+v %v", verified, err)
 	}
 	if strings.Contains(appSetupTrace(t, service), `"kind":"user"`) {
 		t.Fatal("completed start automatically authorized user")

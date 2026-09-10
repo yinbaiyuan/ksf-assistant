@@ -3,6 +3,7 @@ package rpc
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -36,6 +37,19 @@ func TestServerPublishesVersionedInitializeContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("CODEX_BIN", fakeCodex)
+	receipts := filepath.Join(root, "configuration-receipts-v1")
+	if err := os.MkdirAll(receipts, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	receiptPath := func(id string) string {
+		return filepath.Join(receipts, fmt.Sprintf("%x.json", sha256.Sum256([]byte(fmt.Sprintf("%q", id)))))
+	}
+	if err := os.WriteFile(receiptPath("legacy-create"), []byte(`{"schemaVersion":1,"requestId":"legacy-create","action":"create_app","outcome":"pending","stage":"submitted","message":"waiting","updatedAt":"2026-09-10T10:30:45Z"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(receiptPath("later-logout"), []byte(`{"schemaVersion":1,"requestId":"later-logout","action":"logout","outcome":"completed","stage":"verified","message":"done","updatedAt":"2026-09-10T10:32:48Z"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	input := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` + "\n")
 	var output bytes.Buffer
 	core := service.New()
@@ -59,6 +73,15 @@ func TestServerPublishesVersionedInitializeContract(t *testing.T) {
 	}
 	if !response.Result.Capabilities["tokenHistory"] || !response.Result.Capabilities["tokenHistoryComparison"] || !response.Result.Capabilities["tokenCostEstimate"] || !response.Result.Capabilities["feishuTaskLinks"] || !response.Result.Capabilities["feishuCapabilityGovernance"] {
 		t.Fatalf("missing public capabilities: %#v", response.Result.Capabilities)
+	}
+	var migrated struct {
+		Outcome string `json:"outcome"`
+		Stage   string `json:"stage"`
+		Code    string `json:"code"`
+	}
+	bytes, err := os.ReadFile(receiptPath("legacy-create"))
+	if err != nil || json.Unmarshal(bytes, &migrated) != nil || migrated.Outcome != "failed" || migrated.Stage != "verified" || migrated.Code != "cancelled_by_logout" {
+		t.Fatalf("initialize did not migrate the legacy connection flow: %+v %v", migrated, err)
 	}
 }
 

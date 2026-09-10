@@ -48,7 +48,7 @@ func adaptFixture(t *testing.T, manager *Manager) map[string]any {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest["adaptation"] = map[string]any{"schemaVersion": 1, "revision": "ksfas-entry-v1", "digest": digest, "upstreamVersion": Version, "upstreamManifestSha256": upstreamHash}
+	manifest["adaptation"] = map[string]any{"schemaVersion": 1, "revision": "ksfas-entry-v1", "digest": digest, "upstreamVersion": UpstreamVersion, "upstreamManifestSha256": upstreamHash}
 	writeAdaptationJSON(t, manifestPath, manifest)
 	return manifest
 }

@@ -5,7 +5,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { defaultDataRoot, privatePathBoundary, windowsPowerShellEnv } = require('./platform-runtime');
 
-const LARK_CLI_KEYCHAIN_SERVICE = 'lark-cli';
+const LARK_CLI_KEYCHAIN_SERVICE = 'ksfassistant-lark-cli';
 const LARK_CLI_MASTER_KEY_ACCOUNT = 'master.key';
 const MASTER_KEY_BYTES = 32;
 const GCM_IV_BYTES = 12;
@@ -200,32 +200,12 @@ function loadOfficialCredentials({
   projectRoot = path.resolve(__dirname, '..'),
   spawnSyncFn = spawnSync,
 } = {}) {
-  const envAppId = String(env.FEISHU_APP_ID || '').trim();
-  const envAppSecret = String(env.FEISHU_APP_SECRET || '').trim();
-  if (envAppId || envAppSecret) {
-    if (!envAppId || !envAppSecret) {
-      throw new Error('FEISHU_APP_ID and FEISHU_APP_SECRET must be configured together');
-    }
-    return {
-      appId: envAppId,
-      appSecret: envAppSecret,
-      brand: String(env.FEISHU_APP_BRAND || 'feishu').toLowerCase(),
-      source: 'environment',
-    };
-  }
-
-  if (platform === 'win32') {
-    const credential = readWindowsDpapiCredential({ env, homeDir, projectRoot, spawnSyncFn });
-    if (credential) return credential;
-  }
-
-  const configDir = env.LARKSUITE_CLI_CONFIG_DIR
-    ? path.resolve(env.LARKSUITE_CLI_CONFIG_DIR)
-    : path.join(homeDir, '.lark-cli');
+	const dataRoot = defaultDataRoot({ platform, env, homeDir });
+	const configDir = path.join(dataRoot, 'lark-cli');
   const configPath = path.join(configDir, 'config.json');
   assertPrivateRegularFile(configPath, 'lark-cli config');
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-  const selected = selectProfile(config, String(env.LARK_CLI_PROFILE || '').trim());
+  const selected = selectProfile(config, 'default');
   const appId = String(selected?.appId || '').trim();
   if (!appId) throw new Error('lark-cli profile has no app id');
 

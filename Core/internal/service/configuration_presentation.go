@@ -39,15 +39,18 @@ func (state *configurationRuntime) convergePresentation(result *ConfigurationSna
 	}
 	user := fact("user")
 	user.ID = "authorizedUser"
-	user.Title = "授权用户"
+	user.Title = "用户能力授权"
+	if user.State == "missing" {
+		user.Value = "按需授权（不影响消息和卡片）"
+	}
 	if user.State == "present" {
 		switch {
-		case e.UserPermissions == "missing" || e.ApplicationPermissions == "missing":
-			user.Value = "授权未完成"
-		case e.UserPermissions != "present" || e.ApplicationPermissions != "present":
-			user.Value = "权限待核验"
+		case e.UserPermissions == "missing":
+			user.Value = "本次功能尚缺权限"
+		case e.UserPermissions != "present":
+			user.Value = "已授权，权限待核验"
 		default:
-			user.Value = "已登录"
+			user.Value = "已授权"
 		}
 		if e.UserName != "" {
 			user.Value = e.UserName + " · " + user.Value
@@ -72,26 +75,14 @@ func (state *configurationRuntime) convergePresentation(result *ConfigurationSna
 		connection.State = "unknown"
 		connection.Value = "连接中"
 	}
-	if user.State == "missing" {
-		robot.State, robot.Value = "missing", "登录后显示"
-		connection.State, connection.Value = "missing", "等待飞书登录"
-		result.Summary = ConfigurationSummary{State: "authorization_required", Title: "等待飞书登录", Detail: "登录后恢复消息和任务卡片功能。", Tone: "neutral"}
-		issues := result.Issues[:0]
-		for _, issue := range result.Issues {
-			if issue.Code != "task_connection_unavailable" {
-				issues = append(issues, issue)
-			}
-		}
-		result.Issues = issues
-	}
 	result.Facts = append(result.Facts, robot, user, connection)
 	if result.Flow != nil && result.Flow.Kind == "user" && result.Flow.State == "completed" && e.Auth != nil && e.Auth.IdentityValid {
 		result.Flow = nil
 	}
-	if len(e.MissingApplicationScopes) > 0 {
+	if e.AuthorizationRequest != nil && len(e.MissingApplicationScopes) > 0 {
 		result.Issues = append(result.Issues, ConfigurationIssue{"application", "application_permissions_missing", "应用尚未开通所需权限，请在飞书开放平台完善应用权限后刷新。"})
-	} else if len(e.MissingUserScopes) > 0 {
-		result.Issues = append(result.Issues, ConfigurationIssue{"authorization", "user_permissions_missing", "当前用户授权未覆盖本版本所需权限，请重新授权。"})
+	} else if e.AuthorizationRequest != nil {
+		result.Issues = append(result.Issues, ConfigurationIssue{"authorization", "user_permissions_missing", "本次用户能力需要补充授权；授权成功后请重新执行原操作。"})
 	}
 	if e.CLIState != "" && e.CLIState != "ready" {
 		result.Issues = append(result.Issues, ConfigurationIssue{"runtime", "cli_unavailable", "lark-cli 不可用或版本不兼容，请修复运行组件。"})
@@ -102,8 +93,7 @@ func (state *configurationRuntime) convergePresentation(result *ConfigurationSna
 			continue
 		}
 		if a.ID == "start_auth" {
-			a.Enabled = a.Enabled && e.ApplicationPermissions == "present" && (fact("user").State == "missing" || e.UserPermissions == "missing")
-			a.Title = "登录飞书"
+			a.Enabled = a.Enabled && (e.OperatorState == "missing" || e.AuthorizationRequest != nil)
 		}
 		if a.ID == "restart" {
 			a.Enabled = a.Enabled && (fact("connection").State == "missing")

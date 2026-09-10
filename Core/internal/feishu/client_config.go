@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-const ClientConfigSchemaVersion = 4
+const ClientConfigSchemaVersion = 5
 
 var ErrClientConfigConflict = errors.New("client_config_changed: 配置已被其他操作修改，请重新读取后确认；未覆盖当前配置")
 
@@ -23,6 +23,13 @@ type MessageTarget struct {
 type DocumentTarget struct {
 	Kind  string `json:"kind"`
 	Value string `json:"value"`
+}
+
+// OperatorBinding is deliberately app-bound: an open_id is only meaningful
+// inside the application that issued it and must never survive an app switch.
+type OperatorBinding struct {
+	AppID  string `json:"appId"`
+	OpenID string `json:"openId"`
 }
 
 type ClientConfig struct {
@@ -39,6 +46,7 @@ type ClientConfig struct {
 	DocumentTargets      map[string]DocumentTarget  `json:"documentTargets"`
 	TestAssets           map[string]map[string]any  `json:"testAssets"`
 	EventWatches         []any                      `json:"eventWatches"`
+	Operator             *OperatorBinding           `json:"operator,omitempty"`
 	Extra                map[string]json.RawMessage `json:"-"`
 }
 
@@ -62,7 +70,7 @@ func (config *ClientConfig) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*plain)(&defaults)); err != nil {
 		return err
 	}
-	for _, key := range []string{"schemaVersion", "launchdLabel", "windowsTaskName", "defaultSource", "messageTargets", "directAllowedAliases", "nameBindings", "groupNameBindings", "documentTargets", "testAssets", "eventWatches"} {
+	for _, key := range []string{"schemaVersion", "launchdLabel", "windowsTaskName", "defaultSource", "messageTargets", "directAllowedAliases", "nameBindings", "groupNameBindings", "documentTargets", "testAssets", "eventWatches", "operator"} {
 		delete(raw, key)
 	}
 	defaults.Extra = raw
@@ -242,7 +250,11 @@ func PublicClientTargets(config ClientConfig) map[string]any {
 		target := config.DocumentTargets[alias]
 		documents = append(documents, map[string]any{"alias": alias, "kind": target.Kind, "valueFingerprint": fingerprintIdentifier(target.Value)})
 	}
-	return map[string]any{"messages": messages, "nameBindings": publicBindings(config.NameBindings), "groupNameBindings": publicBindings(config.GroupNameBindings), "documents": documents, "testAssets": publicTestAssets(config.TestAssets)}
+	operator := map[string]any{"bound": false}
+	if config.Operator != nil && config.Operator.AppID != "" && config.Operator.OpenID != "" {
+		operator = map[string]any{"bound": true, "appFingerprint": fingerprintIdentifier(config.Operator.AppID), "identityFingerprint": fingerprintIdentifier(config.Operator.OpenID)}
+	}
+	return map[string]any{"messages": messages, "operator": operator, "nameBindings": publicBindings(config.NameBindings), "groupNameBindings": publicBindings(config.GroupNameBindings), "documents": documents, "testAssets": publicTestAssets(config.TestAssets)}
 }
 
 func fingerprintIdentifier(value string) string {

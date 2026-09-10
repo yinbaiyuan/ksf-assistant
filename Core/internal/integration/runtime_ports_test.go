@@ -24,6 +24,10 @@ type fakeCorePort struct {
 	workspace    func(context.Context) (string, error)
 	startThread  func(context.Context, string, string) (StartedThread, error)
 	start        func(context.Context, string) (string, error)
+	read         func(context.Context, string, string, string) (map[string]any, error)
+	pending      func(string) (corebridge.PendingUserInput, bool)
+	cancel       func(json.RawMessage, string) error
+	desktop      func(context.Context, string) (map[string]any, string, string, bool, error)
 	answer       func(json.RawMessage) (json.RawMessage, error)
 	interruptErr error
 }
@@ -35,11 +39,18 @@ func (port *fakeCorePort) Workspace(ctx context.Context) (string, error) {
 	return "/workspace", nil
 }
 func (port *fakeCorePort) ReadThread(ctx context.Context, owner, threadID, turnID string) (map[string]any, error) {
+	if port.read != nil {
+		return port.read(ctx, owner, threadID, turnID)
+	}
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
 func (port *fakeCorePort) ProjectionOwner(threadID, owner string) string { return owner }
-func (port *fakeCorePort) PendingInput(string) (corebridge.PendingUserInput, bool) {
+
+func (port *fakeCorePort) PendingInput(threadID string) (corebridge.PendingUserInput, bool) {
+	if port.pending != nil {
+		return port.pending(threadID)
+	}
 	return corebridge.PendingUserInput{}, false
 }
 func (port *fakeCorePort) StartThread(ctx context.Context, cwd, title string) (StartedThread, error) {
@@ -66,6 +77,20 @@ func (port *fakeCorePort) InterruptTurn(context.Context, string, string, string,
 	port.calls.Add(1)
 	return port.interruptErr
 }
+func (port *fakeCorePort) CancelApproval(_ context.Context, _, _, _, _ string, request json.RawMessage, method string) error {
+	port.calls.Add(1)
+	if port.cancel != nil {
+		return port.cancel(request, method)
+	}
+	return nil
+}
+
+func (port *fakeCorePort) ObserveDesktopThread(ctx context.Context, threadID string) (map[string]any, string, string, bool, error) {
+	if port.desktop != nil {
+		return port.desktop(ctx, threadID)
+	}
+	return nil, "", "", false, nil
+}
 func (port *fakeCorePort) AnswerInput(ctx context.Context, key, owner, threadID, turnID string, request json.RawMessage, questionID, revision, answer string) (json.RawMessage, error) {
 	port.calls.Add(1)
 	if port.answer != nil {
@@ -82,6 +107,7 @@ type fakeFeishuPort struct {
 	stage    func(context.Context, InboundMessage) (StagedInboundMessage, error)
 	mu       sync.Mutex
 	keys     []string
+	replies  []string
 	patchErr error
 }
 
@@ -94,6 +120,9 @@ func (port *fakeFeishuPort) Send(ctx context.Context, target MessageTarget, form
 }
 func (port *fakeFeishuPort) Reply(ctx context.Context, messageID, format, content, key string) (string, error) {
 	port.calls.Add(1)
+	port.mu.Lock()
+	port.replies = append(port.replies, content)
+	port.mu.Unlock()
 	if port.reply != nil {
 		return port.reply(ctx, messageID)
 	}

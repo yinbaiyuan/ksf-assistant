@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+
+	"ksfassistant/core/internal/larkversion"
 )
 
-const Version = "1.0.93"
+const Version = larkversion.Version
 const PolicyVersion = "ksfassistant-user-command-v2"
 const MaxRequestBytes = 3 * 1024 * 1024
 const MaxContentBytes = 2 * 1024 * 1024

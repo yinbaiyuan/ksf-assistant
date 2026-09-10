@@ -11,10 +11,10 @@ const source = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), '
 const action = (id, enabled = true) => ({ id, title: id, enabled });
 const flow = (extra = {}) => ({ id: 'flow-1', kind: 'auth', state: 'pending', expiresAt: new Date(Date.now() + 60_000).toISOString(), verificationURL: 'https://accounts.feishu.cn/authorize', qrDataURL: 'data:image/png;base64,QUJD', userCode: 'ABC', ...extra });
 const snapshot = (extra = {}) => ({
-  schemaVersion: 1, epoch: 'core-1', revision: 1, contextRevision: 'context-1', observedAt: '2026-09-06T10:00:00Z', refreshing: false,
+  schemaVersion: 2, epoch: 'core-1', revision: 1, contextRevision: 'context-1', observedAt: '2026-09-06T10:00:00Z', refreshing: false,
   summary: { state: 'partial', title: '部分可用', detail: '用户身份未知；机器人已验证', tone: 'warning' },
   facts: [{ id: 'application', title: '应用', state: 'present', value: '已有应用' }, { id: 'user', title: '用户', state: 'unknown' }, { id: 'bot', title: '机器人', state: 'present', value: '机器人可用' }],
-  diagnostics: {selfTarget:'fixture',serviceVersion:'0.11.0-preview.4',cliVersion:'1.0.93'}, actions: [], setup: { stage: 'not_started' }, connection: { targetAliases: ['fixture'], processState: 'ready' }, issues: [], ...extra,
+  diagnostics: {selfTarget:'fixture',serviceVersion:'0.11.0-preview.16',cliVersion:'1.0.93-ksfassistant.1'}, actions: [], setup: { stage: 'not_started' }, connection: { targetAliases: ['fixture'], processState: 'ready' }, issues: [], ...extra,
 });
 
 function harness(value = snapshot()) {
@@ -98,14 +98,30 @@ test('normal configuration has one diagnostics section and bottom logout', () =>
  const {context}=harness(snapshot({auth:{identityValid:true},actions:[action('logout'),action('start_auth',false)]}));
  const html=context.renderFeishuPage(); assert.doesNotMatch(html,/feishu-step"|feishu-config-start_auth|feishu-primary|authorization|feishu-feature/);
  assert.ok(html.indexOf('feishu-logout')>html.indexOf('data-feishu-section="diagnostics"'));
- assert.match(html,/飞书服务 v0.11.0-preview.4 · lark-cli v1.0.93/);
+ assert.match(html,/KSFAssistant v0.11.0-preview.16 · lark-cli v1.0.93-ksfassistant.1/);
+});
+
+test('optional user authorization does not appear as a required setup action', () => {
+  const { context } = harness(snapshot({
+    facts: [
+      { id: 'application', title: '接入应用', state: 'present', value: '已验证' },
+      { id: 'robot', title: '飞书机器人', state: 'present', value: '尹超 Codex' },
+      { id: 'authorizedUser', title: '用户能力授权', state: 'missing', value: '按需授权（不影响消息和卡片）' },
+      { id: 'taskConnection', title: '任务连接', state: 'present', value: '正常' },
+    ],
+    actions: [action('logout'), action('start_auth', false)],
+  }));
+  assert.equal(context.feishuPrimaryAction(), null);
+  const html = context.renderFeishuPage();
+  assert.match(html, /按需授权（不影响消息和卡片）/);
+  assert.doesNotMatch(html, /feishu-config-start_auth|补充本人授权/);
 });
 
 test('one enabled next action is prioritized using facts without deriving lifecycle readiness', () => {
   const { context } = harness(snapshot({
     summary: { state: 'unknown', title: '保持 Core 未知状态', tone: 'warning' },
     facts: [{ id: 'user', title: '用户', state: 'missing' }, { id: 'operator', title: '操作人', state: 'missing' }],
-    actions: [action('start_auth'), action('bind_operator'), action('enable_outbound'), action('finish_app', false)],
+    actions: [action('start_auth'), action('finish_app', false)],
   }));
   assert.equal(context.feishuPrimaryAction(), 'start_auth');
   let html = context.renderFeishuPage();
@@ -114,10 +130,6 @@ test('one enabled next action is prioritized using facts without deriving lifecy
   assert.match(html, /保持 Core 未知状态/);
   context.state.feishuConfiguration.facts[0].state = 'present';
   context.state.feishuConfiguration.actions.find(action=>action.id==='start_auth').enabled=false;
-  assert.equal(context.feishuPrimaryAction(), 'bind_operator');
-  context.state.feishuConfiguration.actions.find((action) => action.id === 'bind_operator').enabled = false;
-  assert.equal(context.feishuPrimaryAction(), null);
-  context.state.feishuConfiguration.actions.find((action) => action.id === 'enable_outbound').enabled = false;
   assert.equal(context.feishuPrimaryAction(), null);
   context.state.feishuConfiguration.facts[0].state = 'unknown';
   assert.equal(context.feishuPrimaryAction(), null);
@@ -142,13 +154,25 @@ test('current matching flow finish is the only primary and never leaks wrong or 
   assert.doesNotMatch(context.renderFeishuPage(), /feishu-config-finish_app/);
 });
 
-test('credential entry has one primary connect action rather than a second create button', () => {
-  const { context } = harness(snapshot({ actions: [action('create_app'), action('connect_app')] }));
-  context.state.feishuSetupMode = 'existing';
+test('one scan entry is the only application setup action', () => {
+  const { context } = harness(snapshot({ facts: [{ id: 'application', title: '应用', state: 'missing' }], actions: [action('create_app')] }));
   const html = context.renderFeishuPage();
-  assert.match(html, /feishu-config-connect_app/);
-  assert.doesNotMatch(html, /feishu-config-create_app/);
+  assert.match(html, /feishu-config-create_app/);
+  assert.match(html, /连接飞书|正常流程只需扫码一次/);
+  assert.doesNotMatch(html, /connect_app|接入已有应用|type="password"/);
   assert.equal((html.match(/class="button primary /g) || []).length, 1);
+});
+
+test('blocked reconnect keeps the scan guidance visible and offers controlled cleanup', () => {
+  const create = { id: 'create_app', title: '扫码连接飞书', enabled: false, reason: '仍有活动飞书连接，请先完成注销清理。' };
+  const cleanup = { id: 'logout', title: '清理旧连接数据', enabled: true };
+  const { context } = harness(snapshot({ facts: [{ id: 'application', title: '应用', state: 'missing' }], actions: [create, cleanup] }));
+  const html = context.renderFeishuPage();
+  assert.match(html, /连接飞书|正常流程只需扫码一次/);
+  assert.match(html, /feishu-config-create_app[^>]*disabled/);
+  assert.match(html, /仍有活动飞书连接/);
+  assert.equal((html.match(/feishu-config-logout/g) || []).length, 1);
+  assert.match(html, /清理旧连接数据/);
 });
 
 test('fact help exposes escaped source and check time without repeating the visible value', () => {
@@ -243,24 +267,24 @@ test('late reads and retired epochs are rejected while current hidden responses 
 });
 
 test('actions carry an unconfirmed unique gesture and exact snapshot context, applying one whole result', async () => {
-  const initial = snapshot({ actions: [action('start_auth'), action('bind_operator'), action('test_message'), action('logout')] });
+  const initial = snapshot({ actions: [action('start_auth'), action('test_message'), action('logout')] });
   const { context, calls } = harness(initial);
   let revision = 1;
   context.api.actFeishuConfiguration = async (payload) => {
     calls.push(['action', { ...payload }]);
     return { outcome: 'completed', snapshot: snapshot({ revision: ++revision, actions: initial.actions, summary: { state: 'ready', title: 'Core 新状态', tone: 'success' } }) };
   };
-  for (const id of ['start_auth', 'bind_operator', 'test_message', 'logout']) await context.performFeishuConfigurationAction(id);
-  assert.equal(calls.length, 4);
-  assert.equal(new Set(calls.map((entry) => entry[1].requestId)).size, 4);
+  for (const id of ['start_auth', 'test_message', 'logout']) await context.performFeishuConfigurationAction(id);
+  assert.equal(calls.length, 3);
+  assert.equal(new Set(calls.map((entry) => entry[1].requestId)).size, 3);
   calls.forEach((entry, index) => {
     assert.equal(entry[1].confirm, false);
     assert.equal(entry[1].epoch, 'core-1');
     assert.equal(entry[1].contextRevision, 'context-1');
     assert.equal(entry[1].revision, index + 1);
   });
-  assert.equal(calls[2][1].targetAlias, 'fixture');
-  assert.equal(context.state.feishuConfiguration.revision, 5);
+  assert.equal(calls[1][1].targetAlias, 'fixture');
+  assert.equal(context.state.feishuConfiguration.revision, 4);
   assert.equal(context.state.feishuConfiguration.summary.title, 'Core 新状态');
 });
 
@@ -315,20 +339,19 @@ test('QR, link, finish and cancel are bound to the current flow; terminals and e
   assert.doesNotMatch(context.renderFeishuPage(), /<img/);
 });
 
-test('new application entry comes only from Core affordances and credentials never enter state', async () => {
-  const { context, calls, fields } = harness(snapshot({ actions: [action('create_app'), action('connect_app')] }));
-  assert.match(context.renderFeishuPage(), /feishu-config-create_app|接入已有应用/);
-  await context.handleAction('feishu-show-existing', {});
-  assert.match(context.renderFeishuPage(), /type="password"/);
-  await context.performFeishuConfigurationAction('connect_app');
-  assert.equal(calls[0][1].appId, 'fixture-app');
-  assert.equal(calls[0][1].appSecret, 'fixture-secret');
-  assert.equal(fields.secret.value, '');
-  assert.doesNotMatch(JSON.stringify(context.state), /fixture-secret/);
+test('new application entry comes only from the one-scan Core affordance', async () => {
+  const { context, calls } = harness(snapshot({ actions: [action('create_app')] }));
+  assert.match(context.renderFeishuPage(), /feishu-config-create_app/);
+  assert.doesNotMatch(context.renderFeishuPage(), /接入已有应用|type="password"|feishu-app-secret/);
+  await context.performFeishuConfigurationAction('create_app');
+  assert.equal(calls[0][1].action, 'create_app');
+  assert.equal(calls[0][1].appId, undefined);
+  assert.equal(calls[0][1].appSecret, undefined);
   context.state.feishuConfiguration = snapshot();
   assert.doesNotMatch(context.renderFeishuPage(), /feishu-app-secret/);
-  context.state.feishuConfiguration = snapshot({ actions: [action('create_app', false), action('connect_app', false)] });
-  assert.doesNotMatch(context.renderFeishuPage(), /feishu-config-create_app|feishu-app-secret|接入已有应用/);
+  context.state.feishuConfiguration = snapshot({ facts: [{ id: 'application', title: '应用', state: 'missing' }], actions: [action('create_app', false)] });
+  assert.match(context.renderFeishuPage(), /feishu-config-create_app[^>]*disabled/);
+  assert.doesNotMatch(context.renderFeishuPage(), /feishu-app-secret|接入已有应用/);
 });
 
 test('cached background reads do not replace focused controls while the response is pending', async () => {
@@ -378,7 +401,7 @@ test('native confirmation cancellation is local failure, not operation success o
 test('malformed snapshot is rejected before any assignment', () => {
   const value = snapshot();
   const { context } = harness(value);
-  for (const changed of [{ schemaVersion: 2 }, { facts: [null] }, { actions: [null] }, { revision: Number.MAX_SAFE_INTEGER + 1 }, { overview: { features: {} } }]) {
+  for (const changed of [{ schemaVersion: 1 }, { facts: [null] }, { actions: [null] }, { revision: Number.MAX_SAFE_INTEGER + 1 }, { overview: { features: {} } }]) {
     assert.throws(() => context.applyFeishuConfiguration(snapshot(changed), 0));
     assert.equal(context.state.feishuConfiguration, value);
   }
@@ -403,25 +426,13 @@ test('native disclosures keep one expanded section and scroll/focus fallbacks re
   assert.match(source, /event.key === 'Escape'/);
 });
 
-test('background rendering preserves same-context credentials and focus without persistence', () => {
-  const { context } = harness(snapshot({ actions: [action('connect_app')] }));
-  context.state.feishuSetupMode = 'existing';
-  const oldField = { id: 'feishu-app-secret', value: 'in-memory-only', selectionStart: 3, selectionEnd: 3, dataset: { field: 'feishu-app-secret' } };
-  let focused = false;
-  const newField = { ...oldField, value: '', setSelectionRange: () => {}, focus: () => { focused = true; } };
-  context.document.activeElement = oldField;
-  context.root.dataset = { feishuContext: JSON.stringify(['core-1', 'context-1']) };
-  context.root.contains = () => true;
-  context.root.querySelectorAll = (selector) => selector === '.feishu-credentials input' ? [oldField] : [newField];
-  context.root.querySelector = () => newField;
+test('background rendering has no credential-entry state to preserve', () => {
+  const { context } = harness(snapshot({ actions: [action('create_app')] }));
+  context.root.dataset = {};
+  context.root.contains = () => false;
+  context.root.querySelectorAll = () => [];
   context.renderFeishuSurface();
-  assert.equal(newField.value, 'in-memory-only');
-  assert.equal(focused, true);
-  assert.doesNotMatch(JSON.stringify(context.state), /in-memory-only/);
-  newField.value = '';
-  context.state.feishuConfiguration.contextRevision = 'new-context';
-  context.renderFeishuSurface();
-  assert.equal(newField.value, '');
+  assert.doesNotMatch(context.root.innerHTML || '', /feishu-app-secret|type="password"|connect_app/);
 });
 
 test('pending OAuth stays visible through background polling and has no manual finish', async () => {
@@ -432,7 +443,7 @@ test('pending OAuth stays visible through background polling and has no manual f
   context.api.readFeishuConfiguration = () => new Promise(resolve => { release = resolve; });
   const pending = context.readFeishuConfiguration(false, true);
   assert.equal(context.renderFeishuPage(), before);
-  assert.match(before, /请用飞书扫码授权/);
+  assert.match(before, /请用飞书补充本人授权/);
   assert.doesNotMatch(before, /feishu-config-finish_auth/);
   release(value); await pending;
   assert.equal(context.renderFeishuPage(), before);

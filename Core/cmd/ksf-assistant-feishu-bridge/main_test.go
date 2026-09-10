@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"ksfassistant/core/internal/capabilitypolicy"
 	"ksfassistant/core/internal/feishu"
 	"ksfassistant/core/internal/feishucli"
 	"ksfassistant/core/internal/localipc"
@@ -38,7 +37,7 @@ func TestManagedEventStartupKeepsCLIAndIdentityGates(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			versionOutput := "lark-cli version 1.0.93"
+			versionOutput := "lark-cli version " + feishu.PinnedLarkCLIVersion
 			if mode == "wrong-version" {
 				versionOutput = "lark-cli version 1.0.92"
 			}
@@ -71,9 +70,6 @@ exit %s
 				runner.Profile = "manual-only"
 			}
 			client, err := managedMessageClient(context.Background(), runner)
-			if mode == "ready" && capabilitypolicy.CheckSession(root) == nil {
-				t.Fatal("startup left logged-out legacy installation active")
-			}
 			if mode == "ready" && (err != nil || client == nil) || mode != "ready" && (err == nil || client != nil) {
 				t.Fatalf("managed event startup gate %s: client=%v error=%v", mode, client != nil, err)
 			}
