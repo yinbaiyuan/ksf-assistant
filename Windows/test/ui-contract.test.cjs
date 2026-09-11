@@ -110,6 +110,12 @@ test('interactive states and reduced motion are present', () => {
   assert.match(app, /data-action="task-detail"/);
 });
 
+test('pending Feishu task links expose a safe release path', () => {
+  assert.match(app, /function isTaskLinkReleasable\(link\)/);
+  assert.match(app, /link\?\.linkState === 'pending'/);
+  assert.match(app, /为避免重复发送，系统不会自动重试/);
+});
+
 test('explicit app exit waits for the KSFAssistant Core to stop the full server tree', () => {
   assert.match(main, /event\.preventDefault\(\)/);
   assert.match(main, /Promise\.resolve\(userApproval\?\.stop\(\)\)/);

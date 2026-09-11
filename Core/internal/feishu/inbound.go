@@ -45,6 +45,12 @@ const ApprovalTaskStatusChangedEvent = "approval.task.status_changed_v4"
 type EventSink func(context.Context, string, []byte) error
 type ConnectionObserver func(string)
 
+type cliEventNormalizationError struct{ code string }
+
+func (err *cliEventNormalizationError) Error() string { return err.code }
+
+func rejectCLIEvent(code string) error { return &cliEventNormalizationError{code: code} }
+
 type OfficialInbound struct {
 	runner   CapabilityExecutor
 	messages *OfficialMessageClient
@@ -141,27 +147,27 @@ func (inbound *OfficialInbound) HandlePayload(ctx context.Context, payload []byt
 
 func (inbound *OfficialInbound) HandleCLIEvent(ctx context.Context, key string, payload []byte) error {
 	if !contains(FixedEventKeys, key) {
-		return errors.New("unsupported_event_key")
+		return rejectCLIEvent("unsupported_event_key")
 	}
 	var raw map[string]any
 	if json.Unmarshal(payload, &raw) != nil {
-		return errors.New("invalid_cli_event")
+		return rejectCLIEvent("invalid_cli_event")
 	}
 	if raw["type"] != key {
-		return errors.New("cli_event_type_mismatch")
+		return rejectCLIEvent("cli_event_type_mismatch")
 	}
 	if key != "im.message.receive_v1" && key != "card.action.trigger" {
 		return inbound.sink(ctx, key, payload)
 	}
 	identity := stringValue(raw["event_id"])
 	if identity == "" {
-		return errors.New("cli_event_identity_missing")
+		return rejectCLIEvent("cli_event_identity_missing")
 	}
 	event := map[string]any{}
 	if key == "im.message.receive_v1" {
 		messageID, chatID, senderID := stringValue(raw["message_id"]), stringValue(raw["chat_id"]), stringValue(raw["sender_id"])
 		if messageID == "" || chatID == "" || senderID == "" {
-			return errors.New("cli_message_binding_missing")
+			return rejectCLIEvent("cli_message_binding_missing")
 		}
 		messageType := stringValue(raw["message_type"])
 		content := ""
@@ -178,12 +184,12 @@ func (inbound *OfficialInbound) HandleCLIEvent(ctx context.Context, key string, 
 			}
 			sender, _ := original["sender"].(map[string]any)
 			if original["chat_id"] != chatID || original["msg_type"] != messageType || sender["id"] != senderID || sender["id_type"] != "open_id" {
-				return errors.New("cli_original_message_binding_mismatch")
+				return rejectCLIEvent("cli_original_message_binding_mismatch")
 			}
 			body, _ := original["body"].(map[string]any)
 			content = stringValue(body["content"])
 			if content == "" {
-				return errors.New("cli_original_message_content_missing")
+				return rejectCLIEvent("cli_original_message_content_missing")
 			}
 		}
 		mentions := []any{}
@@ -191,7 +197,7 @@ func (inbound *OfficialInbound) HandleCLIEvent(ctx context.Context, key string, 
 			for _, entry := range entries {
 				mention, ok := entry.(map[string]any)
 				if !ok {
-					return errors.New("cli_mention_invalid")
+					return rejectCLIEvent("cli_mention_invalid")
 				}
 				mentions = append(mentions, map[string]any{"key": mention["key"], "name": mention["name"], "id": map[string]any{"open_id": mention["id"]}})
 			}
@@ -200,18 +206,18 @@ func (inbound *OfficialInbound) HandleCLIEvent(ctx context.Context, key string, 
 		event["message"] = map[string]any{"message_id": messageID, "chat_id": chatID, "chat_type": raw["chat_type"], "message_type": messageType, "content": content, "root_id": raw["root_id"], "parent_id": raw["reply_to"], "thread_id": raw["thread_id"], "mentions": mentions}
 	} else {
 		if stringValue(raw["message_id"]) == "" || stringValue(raw["operator_id"]) == "" {
-			return errors.New("cli_card_binding_missing")
+			return rejectCLIEvent("cli_card_binding_missing")
 		}
 		value := jsonObject(raw["action_value"])
 		if len(value) == 0 && raw["action_tag"] == "overflow" {
 			value = jsonObject(raw["option"])
 		}
 		if len(value) == 0 {
-			return errors.New("cli_card_action_value_missing")
+			return rejectCLIEvent("cli_card_action_value_missing")
 		}
 		form := map[string]any{}
 		if text := stringValue(raw["form_value"]); text != "" && (json.Unmarshal([]byte(text), &form) != nil || form == nil) {
-			return errors.New("cli_card_form_invalid")
+			return rejectCLIEvent("cli_card_form_invalid")
 		}
 		action := map[string]any{"tag": raw["action_tag"], "name": raw["action_name"], "value": value, "form_value": form, "input_value": raw["input_value"], "option": raw["option"], "checked": raw["checked"]}
 		if options := stringValue(raw["options"]); options != "" {

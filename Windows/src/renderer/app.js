@@ -348,7 +348,7 @@ function renderProjectCard(item) {
 
 function renderTask(task, project, workspace = null, containerName = null) {
   const link = state.dashboard.feishu.links.find((item) => item.taskKey === task.taskKey);
-  const linkActive = link?.linkState === 'active';
+  const linkReleasable = isTaskLinkReleasable(link);
   const detail = taskDetail(task, link);
   return `<div class="task-row">
     ${taskStateIcon(task.classification)}
@@ -356,7 +356,7 @@ function renderTask(task, project, workspace = null, containerName = null) {
     <div class="task-actions">
       <button class="icon-button" type="button" data-action="task-detail" data-task="${escapeHTML(task.id)}" title="任务详情" aria-label="任务详情">${icon('info')}</button>
       ${link?.controls?.canInterrupt ? `<button class="icon-button" type="button" data-action="interrupt-link" data-thread="${escapeHTML(task.threadId)}" title="停止本轮" aria-label="停止本轮">${icon('stop')}</button>` : ''}
-      <button class="icon-button" type="button" data-action="toggle-link" data-thread="${escapeHTML(task.threadId)}" data-title="${escapeHTML(task.name || '未命名任务')}" data-project="${escapeHTML(containerName || project?.name || workspace?.name || '其他任务')}" data-linked="${linkActive}" title="${linkActive ? '解除飞书连接' : '连接到飞书'}" aria-label="${linkActive ? '解除飞书连接' : '连接到飞书'}" >${icon(linkActive ? 'close' : 'send')}</button>
+      <button class="icon-button" type="button" data-action="toggle-link" data-thread="${escapeHTML(task.threadId)}" data-title="${escapeHTML(task.name || '未命名任务')}" data-project="${escapeHTML(containerName || project?.name || workspace?.name || '其他任务')}" data-linked="${linkReleasable}" title="${linkReleasable ? (link?.linkState === 'pending' ? '解除待核实的飞书连接' : '解除飞书连接') : '连接到飞书'}" aria-label="${linkReleasable ? '解除飞书连接' : '连接到飞书'}" >${icon(linkReleasable ? 'close' : 'send')}</button>
       <button class="icon-button" type="button" data-action="open-task" data-thread="${escapeHTML(task.threadId)}" title="在 Codex 中打开" aria-label="在 Codex 中打开">${icon('open')}</button>
     </div>
   </div>`;
@@ -392,7 +392,7 @@ function renderTaskPage() {
   const showsKSFRoute = Boolean(project) || ksfUnassigned;
   const containerName = ksfUnassigned ? '无项目' : project?.name || workspace?.name || '其他任务';
   const link = state.dashboard.feishu.links.find((item) => item.taskKey === task.taskKey);
-  const linkActive = link?.linkState === 'active';
+  const linkReleasable = isTaskLinkReleasable(link);
   const route = !task.taskRuntime || task.taskRuntime.routeFreshness === 'current' ? task.route : null;
   const routeRows = [];
   if (route?.category?.name) routeRows.push(['工作类别', route.category.name, route.category.validation_status]);
@@ -404,7 +404,7 @@ function renderTaskPage() {
       <div class="detail-status"><span class="status-chip ${escapeHTML(task.classification)}">${escapeHTML(taskClassificationText(task))}</span><span>${escapeHTML(containerName)}</span></div>
       <p class="detail-summary">${escapeHTML(taskDetail(task, link))}</p>
       ${renderTaskRuntimeDetails(task.taskRuntime)}
-      <div class="detail-actions"><button class="button primary" type="button" data-action="open-task" data-thread="${escapeHTML(task.threadId)}">打开 Codex</button><button class="button" type="button" data-action="toggle-link" data-thread="${escapeHTML(task.threadId)}" data-title="${escapeHTML(task.name || '未命名任务')}" data-project="${escapeHTML(containerName)}" data-linked="${linkActive}" >${linkActive ? '解除飞书' : '连接飞书'}</button>${link?.controls?.canInterrupt ? `<button class="button danger" type="button" data-action="interrupt-link" data-thread="${escapeHTML(task.threadId)}">停止本轮</button>` : ''}</div>
+      <div class="detail-actions"><button class="button primary" type="button" data-action="open-task" data-thread="${escapeHTML(task.threadId)}">打开 Codex</button><button class="button" type="button" data-action="toggle-link" data-thread="${escapeHTML(task.threadId)}" data-title="${escapeHTML(task.name || '未命名任务')}" data-project="${escapeHTML(containerName)}" data-linked="${linkReleasable}" >${linkReleasable ? (link?.linkState === 'pending' ? '解除待核实连接' : '解除飞书') : '连接飞书'}</button>${link?.controls?.canInterrupt ? `<button class="button danger" type="button" data-action="interrupt-link" data-thread="${escapeHTML(task.threadId)}">停止本轮</button>` : ''}</div>
     </section>
     ${showsKSFRoute ? `<div class="section-header"><h2 class="section-title">KSF 路由</h2></div>
     <div class="setting-description">${escapeHTML(taskRouteSourceLabel(task.taskRuntime, Boolean(task.route)))}</div>
@@ -807,9 +807,21 @@ function trim(value) { return value.toFixed(value >= 100 ? 0 : value >= 10 ? 1 :
 
 function taskDetail(task, link) {
   if (link?.linkState === 'active') return `飞书 · ${turnStateText(link.turnState)} · ${Math.max(0, Math.floor(link.remainingSeconds / 3600))} 小时`;
+  if (link?.linkState === 'pending') return '飞书 · 待核实；可解除后重新连接';
   if (task.classification === 'waiting') return waitingReasonText(task.waitingReason);
   if (task.classification === 'running') return '正在运行';
   return '已完成';
+}
+
+function isTaskLinkReleasable(link) {
+  return link?.controls?.canRelease === true && (link?.linkState === 'active' || link?.linkState === 'pending');
+}
+
+function taskLinkErrorMessage(error) {
+  if (/outcome[_ ]unknown|transport operation/i.test(error?.message || '')) {
+    return '任务卡片尚未确认送达。请先在飞书检查；若没有卡片，请解除待核实连接后重试。为避免重复发送，系统不会自动重试。';
+  }
+  return error?.message || '飞书任务连接失败。';
 }
 
 function taskClassificationText(task) {
@@ -979,7 +991,12 @@ async function handleAction(action, element) {
     const reason = taskLinkUnavailableReason();
     if (element.dataset.linked !== 'true' && reason) { showToast(reason, true); return; }
     const payload = { threadId: element.dataset.thread, title: element.dataset.title, projectName: element.dataset.project, targetAlias: state.settings.selectedFeishuTargetAlias };
-    if (element.dataset.linked === 'true') await api.releaseTaskLink(payload); else await api.createTaskLink(payload);
+    try {
+      if (element.dataset.linked === 'true') await api.releaseTaskLink(payload); else await api.createTaskLink(payload);
+    } catch (error) {
+      await refreshDashboard({ quiet: true });
+      throw new Error(taskLinkErrorMessage(error));
+    }
     return refreshDashboard({ quiet: true });
   } else if (action === 'interrupt-link') {
     await api.interruptTaskLink({ threadId: element.dataset.thread });

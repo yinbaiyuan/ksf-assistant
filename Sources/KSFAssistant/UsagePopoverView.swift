@@ -507,6 +507,7 @@ struct UsagePopoverView: View {
         case "waiting_input": return "等待输入"
         case "desktop_action_required": return "需要桌面操作"
         case "queued": return "消息排队"
+        case "pending": return "待核实"
         case "completed": return "本轮完成"
         case "interrupted": return "本轮已停止"
         case "failed": return "执行失败"
@@ -520,6 +521,7 @@ struct UsagePopoverView: View {
         case "running": return "paperplane.fill"
         case "waiting_input": return "questionmark.bubble"
         case "desktop_action_required": return "desktopcomputer"
+        case "pending": return "exclamationmark.circle.fill"
         case "interrupted": return "stop.circle"
         case "failed": return "exclamationmark.triangle"
         default: return "paperplane.circle.fill"
@@ -2309,7 +2311,7 @@ struct UsagePopoverView: View {
 
     private func feishuTaskLinkColor(_ state: String) -> Color {
         switch state {
-        case "waiting_current_turn", "waiting_input", "queued", "desktop_action_required": return .orange
+        case "waiting_current_turn", "waiting_input", "queued", "desktop_action_required", "pending": return .orange
         case "running", "connected": return .blue
         case "completed": return .green
         case "failed", "expired": return .red

@@ -186,3 +186,36 @@ func TestCLIInboundSurvivesOneFailedStatusProbe(t *testing.T) {
 		t.Fatal("healthy consumers were restarted")
 	}
 }
+
+func TestCLIInboundSkipsMalformedEventWithoutStoppingConsumers(t *testing.T) {
+	runner := fakeEventCLI(t)
+	script, err := os.ReadFile(runner.Binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script = []byte(strings.Replace(string(script), "  read ignored", `  if [ "$key" = "card.action.trigger" ]; then
+   printf 'not-json\n'
+   printf '{"type":"card.action.trigger","event_id":"evt-valid","message_id":"om-card","operator_id":"ou-user","chat_id":"oc-chat","action_tag":"button","action_value":"{\\"operation\\":\\"release\\"}"}\n'
+  fi
+  read ignored`, 1))
+	if err := os.WriteFile(runner.Binary, script, 0700); err != nil {
+		t.Fatal(err)
+	}
+	received := make(chan struct{}, 1)
+	inbound, _ := NewOfficialInbound(runner, nil, func(_ context.Context, key string, _ []byte) error {
+		if key == "card.action.trigger" {
+			received <- struct{}{}
+		}
+		return nil
+	}, nil)
+	done := make(chan error, 1)
+	go func() { done <- inbound.Start(context.Background()) }()
+	defer inbound.Close()
+	select {
+	case <-received:
+	case err := <-done:
+		t.Fatalf("one malformed event stopped the listeners: %v", err)
+	case <-time.After(6 * time.Second):
+		t.Fatal("valid event after malformed input was not delivered")
+	}
+}

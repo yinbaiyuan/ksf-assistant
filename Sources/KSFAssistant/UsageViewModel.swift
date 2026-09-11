@@ -830,7 +830,7 @@ final class UsageViewModel: ObservableObject {
 
     func feishuTaskLink(for task: ProjectTaskItem) -> FeishuTaskLinkSnapshot? {
         guard let link = feishuTaskLinks[FeishuTaskLinkSnapshot.taskKey(for: task.threadID)],
-              link.linkState == "active" else { return nil }
+              link.linkState == "active" || link.linkState == "pending" else { return nil }
         return link
     }
 
@@ -911,7 +911,14 @@ final class UsageViewModel: ObservableObject {
                 self.feishuTaskLinkErrors.removeValue(forKey: task.id)
                 self.feishuFeedback = existing == nil ? "“\(title)”已连接到飞书。" : "“\(title)”的飞书连接已解除。"
             } catch {
-                let message = error.localizedDescription
+                await self.refreshSharedDashboard()
+                let taskKey = FeishuTaskLinkSnapshot.taskKey(for: task.threadID)
+                let message: String
+                if self.feishuTaskLinks[taskKey]?.linkState == "pending" {
+                    message = "任务卡片尚未确认送达。请先在飞书检查；若没有卡片，点击“待核实”连接可解除后重试。为避免重复发送，系统不会自动重试。"
+                } else {
+                    message = error.localizedDescription
+                }
                 self.feishuTaskLinkErrors[task.id] = message
                 self.feishuFeedback = message
             }
@@ -1143,7 +1150,7 @@ final class UsageViewModel: ObservableObject {
                 guard let self, self.popoverIsOpen else { break }
                 let hasLiveState = self.taskActivity.runningCount > 0
                     || self.taskActivity.waitingCount > 0
-                    || self.feishuTaskLinks.values.contains { $0.linkState == "active" }
+                    || self.feishuTaskLinks.values.contains { $0.linkState == "active" || $0.linkState == "pending" }
                 let interval: UInt64 = hasLiveState ? 3_000_000_000 : 15_000_000_000
                 do { try await Task.sleep(nanoseconds: interval) } catch { break }
                 guard !Task.isCancelled else { break }

@@ -39,6 +39,10 @@ func TestFailedCardDeliveryIsNotPresentedAsConnectedAndCanRetry(t *testing.T) {
 	if link.LinkState != "pending" {
 		t.Fatalf("undelivered card presented as %s", link.LinkState)
 	}
+	controls := link.Controls.(map[string]bool)
+	if !controls["canRelease"] {
+		t.Fatal("pending delivery has no safe release path")
+	}
 	id := file.Links[0].ID
 	messages.fail = false
 	link, err = runtime.CreateTaskLink(context.Background(), request)

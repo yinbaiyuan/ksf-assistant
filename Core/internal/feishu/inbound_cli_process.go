@@ -154,8 +154,13 @@ func (inbound *OfficialInbound) runConsumers(ctx context.Context) error {
 			scanner.Buffer(make([]byte, 4096), maximumCapabilityOutputBytes)
 			for scanner.Scan() {
 				if err := inbound.HandleCLIEvent(runCtx, key, append([]byte(nil), scanner.Bytes()...)); err != nil {
+					var rejected *cliEventNormalizationError
+					if errors.As(err, &rejected) {
+						_ = NewDiagnosticLog(inbound.runner.DataRoot).Record(SupervisorDiagnostic{Code: "cli_event_input_rejected", Component: "event-consumers", SafeSummary: "one invalid event was rejected; listeners remain active"})
+						continue
+					}
 					select {
-					case failures <- errors.New("cli_event_normalization_or_persistence_failed"):
+					case failures <- errors.New("cli_event_persistence_failed"):
 					default:
 					}
 					cancel()
