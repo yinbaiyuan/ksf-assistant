@@ -115,8 +115,10 @@ func retryableConsumerFailure(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
+	// The sink stages inbound work before Core delivery. Reconnecting the
+	// listener restores future callbacks without replaying a side effect.
 	switch err.Error() {
-	case "cli_event_consumer_failed", "cli_event_consumer_exited", "cli_event_ready_timeout", "cli_event_status_unavailable":
+	case "cli_event_consumer_failed", "cli_event_consumer_exited", "cli_event_ready_timeout", "cli_event_status_unavailable", "cli_event_persistence_failed":
 		return true
 	}
 	return false

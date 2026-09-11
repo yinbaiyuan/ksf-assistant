@@ -2,6 +2,7 @@ package feishu
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -217,5 +218,44 @@ func TestCLIInboundSkipsMalformedEventWithoutStoppingConsumers(t *testing.T) {
 		t.Fatalf("one malformed event stopped the listeners: %v", err)
 	case <-time.After(6 * time.Second):
 		t.Fatal("valid event after malformed input was not delivered")
+	}
+}
+
+func TestCLIInboundRecoversAfterTransientPersistenceFailure(t *testing.T) {
+	runner := fakeEventCLI(t)
+	script, err := os.ReadFile(runner.Binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script = []byte(strings.Replace(string(script), "  read ignored", `  if [ "$key" = "card.action.trigger" ] && [ ! -f "$root/emitted-once" ]; then
+	   : > "$root/emitted-once"
+	   sleep 1
+	   printf '{"type":"card.action.trigger","event_id":"evt-transient","message_id":"om-card","operator_id":"ou-user","chat_id":"oc-chat","action_tag":"button","action_value":"{\\"operation\\":\\"release\\"}"}\n'
+  fi
+  read ignored`, 1))
+	if err := os.WriteFile(runner.Binary, script, 0700); err != nil {
+		t.Fatal(err)
+	}
+	states := make(chan string, 10)
+	inbound, _ := NewOfficialInbound(runner, nil, func(context.Context, string, []byte) error {
+		return errors.New("fixture_persistence_failure")
+	}, func(state string) { states <- state })
+	done := make(chan error, 1)
+	go func() { done <- inbound.Start(context.Background()) }()
+	defer inbound.Close()
+	connected := 0
+	timer := time.NewTimer(8 * time.Second)
+	defer timer.Stop()
+	for connected < 2 {
+		select {
+		case state := <-states:
+			if state == "connected" {
+				connected++
+			}
+		case err := <-done:
+			t.Fatalf("transient persistence failure stopped the listeners: %v", err)
+		case <-timer.C:
+			t.Fatal("listeners did not recover after transient persistence failure")
+		}
 	}
 }
