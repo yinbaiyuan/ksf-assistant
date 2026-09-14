@@ -679,6 +679,9 @@ func (runtime *Runtime) waitForTurn(parent context.Context, taskKey, threadID, t
 				return
 			}
 			state, final := bridgeTurnProjection(snapshot, turnID)
+			if state == "running" {
+				runtime.projectBridgeProgress(link, snapshot, turnID)
+			}
 			if state == "running" && link.TurnState == "waiting_input" {
 				link, _ = runtime.links.UpdateActiveByID(link.ID, func(value *TaskLink) {
 					value.TurnState = "running"
@@ -702,6 +705,7 @@ func (runtime *Runtime) waitForTurn(parent context.Context, taskKey, threadID, t
 					value.ActiveTurnID = ""
 					value.Phase = map[string]string{"completed": "已完成", "failed": "失败", "interrupted": "已停止"}[state]
 					value.Detail = final
+					value.SetExtraValue("cardSyncPending", true)
 					value.SetExtraString("pendingCleanupDir", "")
 					value.SetExtraValue("pendingQuestions", nil)
 					value.SetExtraString("pendingQuestionRequestID", "")
@@ -712,6 +716,10 @@ func (runtime *Runtime) waitForTurn(parent context.Context, taskKey, threadID, t
 					final = map[string]string{"completed": "任务已完成。", "failed": "任务执行失败，请在 Codex Desktop 查看。", "interrupted": "任务已停止。"}[state]
 				}
 				link, _, _ := runtime.links.FindByTaskKey(taskKey)
+				if TaskLinkCardMessageID(link) != "" {
+					runtime.deliverTaskCard(link.ID)
+					return
+				}
 				patched := false
 				if cardMessageID != "" {
 					patched = runtime.patchTaskLinkCard(ctx, cardMessageID, link) == nil
@@ -1316,7 +1324,7 @@ func (runtime *Runtime) applyDesktopTaskSnapshot(ctx context.Context, link TaskL
 	}
 	if revision != "" && revision == link.ExtraString("observedSnapshotRevision") &&
 		link.ExtraString("userMessageProjectionVersion") == "1" &&
-		link.ExtraString("progressProjectionVersion") == "1" {
+		link.ExtraString("progressProjectionVersion") == "2" {
 		return nil
 	}
 	projection := projectDesktopTaskLink(snapshot)
@@ -1342,7 +1350,7 @@ func (runtime *Runtime) applyDesktopTaskSnapshot(ctx context.Context, link TaskL
 		value.SetExtraString("latestInput", projection.UserInput)
 		value.SetExtraString("latestInputTurnId", projection.TurnID)
 		value.SetExtraString("userMessageProjectionVersion", "1")
-		value.SetExtraString("progressProjectionVersion", "1")
+		value.SetExtraString("progressProjectionVersion", "2")
 		value.SetExtraValue("desktopTurnStartedAtMs", projection.TurnStartedAtMS)
 		value.TurnState = projection.TurnState
 		value.TurnOwner = projection.TurnOwner
@@ -1394,15 +1402,8 @@ func (runtime *Runtime) applyDesktopTaskSnapshot(ctx context.Context, link TaskL
 	if err != nil {
 		return err
 	}
-	if err := SyncTaskLinkCard(ctx, runtime.links, runtime.messages, updated, ""); err != nil {
-		return err
-	}
-	if projection.TurnState != "running" && projection.TurnState != "waiting_input" && projection.TurnState != "desktop_action_required" && projection.TurnState != "plan_ready" {
-		_, err = runtime.links.UpdateActiveByID(link.ID, func(value *TaskLink) {
-			value.SetExtraString("lastDeliveredTurnId", projection.TurnID)
-		})
-	}
-	return err
+	runtime.deliverTaskCard(updated.ID)
+	return nil
 }
 
 func projectDesktopTaskLink(snapshot map[string]any) desktopTaskProjection {

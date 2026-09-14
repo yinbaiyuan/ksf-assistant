@@ -89,12 +89,16 @@ func TestNewCardVersionSupersedesUncertainOutcome(t *testing.T) {
 	l, _, _ = s.FindByID(l.ID)
 	var uncertain CardSyncState
 	l.ExtraValue("cardSync", &uncertain)
-	if uncertain.State != "needs_review" || TaskLinkCardSyncPending(l) {
-		t.Fatalf("uncertain version was not quarantined: %#v", uncertain)
+	if uncertain.State != "waiting_retry" {
+		t.Fatalf("uncertain replacement was not scheduled: %#v", uncertain)
 	}
 	l, _ = s.UpdateByID(l.ID, func(l *TaskLink) {
 		l.Detail = "new text"
 		l.SetExtraValue("cardSyncPending", true)
+		var st CardSyncState
+		l.ExtraValue("cardSync", &st)
+		st.NextAttemptAt = time.Time{}
+		l.SetExtraValue("cardSync", st)
 	})
 	if !TaskLinkCardSyncPending(l) {
 		t.Fatal("new card version did not supersede the uncertain version")
@@ -107,6 +111,59 @@ func TestNewCardVersionSupersedesUncertainOutcome(t *testing.T) {
 	l.ExtraValue("cardSync", &synced)
 	if calls != 2 || synced.State != "synced" || TaskLinkCardSyncPending(l) {
 		t.Fatalf("new card version did not converge: calls=%d sync=%#v", calls, synced)
+	}
+}
+
+func TestUnknownCardReplacementRetriesWithoutNewContent(t *testing.T) {
+	s := NewTaskLinkStore(t.TempDir())
+	l, _ := s.Upsert("thread", "title", "", "me")
+	l, _ = s.UpdateByID(l.ID, func(l *TaskLink) { l.RootMessageID = "card" })
+	calls := 0
+	p := updatingCardPatcher(func(context.Context, string, string) error {
+		calls++
+		if calls == 1 {
+			return errors.New("outcome_unknown")
+		}
+		return nil
+	})
+	_ = SyncTaskLinkCard(context.Background(), s, p, l, "")
+	l, _ = s.UpdateByID(l.ID, func(l *TaskLink) {
+		var st CardSyncState
+		l.ExtraValue("cardSync", &st)
+		st.NextAttemptAt = time.Time{}
+		l.SetExtraValue("cardSync", st)
+	})
+	if !TaskLinkCardSyncPending(l) {
+		t.Fatal("unchanged content cannot recover")
+	}
+	if err := SyncTaskLinkCard(context.Background(), s, p, l, ""); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatal(calls)
+	}
+}
+
+func TestLegacyUnknownCardCanRecoverButBudgetIsPreserved(t *testing.T) {
+	l := TaskLink{}
+	l.SetExtraValue("cardSync", CardSyncState{State: "needs_review", ErrorCode: "outcome_unknown", Attempts: 1, FirstFailureAt: time.Now()})
+	l.SetExtraValue("cardSyncPending", false)
+	if !TaskLinkCardSyncPending(l) {
+		t.Fatal("legacy quarantine cannot recover")
+	}
+	l.SetExtraValue("cardSync", CardSyncState{State: "needs_review", ErrorCode: "outcome_unknown", Attempts: 20, FirstFailureAt: time.Now()})
+	if TaskLinkCardSyncPending(l) {
+		t.Fatal("retry budget reset by migration")
+	}
+}
+
+func TestNewTurnDoesNotInheritPreviousProgress(t *testing.T) {
+	l := TaskLink{}
+	l.SetExtraString("progressTurnId", "old")
+	l.SetExtraValue("progressSegments", []taskProgressSegment{{ID: "old-answer", Text: "old"}})
+	got := desktopProjectionProgressSegments(l, desktopTaskProjection{TurnID: "new", TurnState: "running", ProgressSegments: []taskProgressSegment{{ID: "new-answer", Text: "new"}}})
+	if len(got) != 1 || got[0].Text != "new" {
+		t.Fatal("previous turn leaked into new card", got)
 	}
 }
 

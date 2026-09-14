@@ -89,6 +89,32 @@ and the Feishu `TestDelivery`, `TestInboundProcessor`, `TestNormalizeInbound`,
 
 ## Card delivery and readiness
 
+Task observation persists a latest-value card mailbox independently of network
+delivery. A per-link worker checks it every two seconds; the existing sync lock
+serializes workers, explicit actions and recovery, and reloads the latest link
+under the lock. Updates that arrive during a send replace the pending version,
+not a FIFO backlog. Terminal delivery is recorded only after a successful patch
+of the still-current card. Bridge-owned turns use the same public progress
+projection. Public commentary and partial final answers are included; analysis,
+unknown phases and tool payloads are excluded. Completion still requires a final
+reply and a successful turn, not merely a partial answer.
+
+Desktop trusted snapshot pushes refresh the observation cache. Five seconds of
+silence triggers a full refresh on the next observation (normally every three
+seconds), rather than retaining a potentially stale snapshot for a minute. This
+is a bounded-staleness fallback, not a per-token latency guarantee; the tradeoff
+is more full-history reads while pushes are absent.
+
+Failed card replacements retain a durable retry marker even if content stops
+changing. Backoff and the existing 20-attempt/one-hour budget still apply, and
+permission/binding failures stop automatic delivery. Only the governed full-card
+replacement transport may supersede a *finished* uncertain edit with a new
+authorized operation, retaining the original audit record. In-flight/abandoned
+writing operations remain fail-closed; creation, replies and task-control actions
+never acquire this exception. An existing card is retried instead of sending
+duplicate terminal fallback messages. Remote acceptance is not a guarantee of
+immediate rendering by every Feishu client.
+
 A durable task-link reservation is not a delivered card. Public projections use
 `pending` until Feishu returns the root message ID, then `active`. Failed sends
 retain their original link/idempotency identity for an explicit user retry;

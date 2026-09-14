@@ -136,8 +136,12 @@ func (transport *ServiceTransport) executeMessage(ctx context.Context, capabilit
 		}
 		// Cancelled/expired reviews and local authorization contention can be
 		// prepared afresh because neither condition can reach the remote write.
-		// Keep the old audit record; never reprepare an uncertain remote effect.
-		if serviceMessageCanReprepare(view, ledger) {
+		// Keep the old audit record. Ordinary message effects never replay.
+		replaceCard, _ := ctx.Value(cardReplacementKey{}).(bool)
+		// A completed uncertain full-card edit can be superseded by a fresh
+		// governed replacement. Never resume an in-flight operation or extend this
+		// exception to sends/replies. The original audit receipt stays unchanged.
+		if serviceMessageCanReprepare(view, ledger) || (replaceCard && capabilityID == "im.message.edit" && view.Status == OperationOutcomeUnknown && ledger.Phase == "terminal") {
 			prepared, err := operations.PrepareBoundMessage(capabilityID, input, "core-service-transport")
 			if err != nil {
 				return err

@@ -15,7 +15,12 @@ func desktopTurnProgressSegments(turn map[string]any) []taskProgressSegment {
 	segments := make([]taskProgressSegment, 0, len(items))
 	for _, raw := range items {
 		item, _ := raw.(map[string]any)
-		if item == nil || fmt.Sprint(item["type"]) != "agentMessage" || strings.ToLower(fmt.Sprint(item["phase"])) != "commentary" {
+		if item == nil || fmt.Sprint(item["type"]) != "agentMessage" {
+			continue
+		}
+		// Explicitly allow only public channels; unknown/private phases stay out.
+		phase := strings.ToLower(cleanString(item["phase"]))
+		if phase != "commentary" && phase != "final_answer" && phase != "" {
 			continue
 		}
 		text := normalizePublicText(fmt.Sprint(item["text"]))

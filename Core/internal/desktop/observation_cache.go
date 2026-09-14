@@ -20,6 +20,10 @@ type observationCache struct {
 }
 type ObservationCounters struct{ CacheHits, FullReads atomic.Uint64 }
 
+// Trusted pushes keep this deadline moving; silence triggers a bounded refresh
+// even when the previously observed turn was terminal (a new turn may start).
+const observationMaxSilence = 5 * time.Second
+
 func (c *ActivityClient) ObservationDiagnostics() map[string]uint64 {
 	return map[string]uint64{"cacheHits": c.observationCounters.CacheHits.Load(), "fullHistoryReads": c.observationCounters.FullReads.Load()}
 }
@@ -93,7 +97,7 @@ func (c *ActivityClient) ObserveConversationState(ctx context.Context, id string
 			e.target = target
 			e.generation = generation
 			e.failures = 0
-			e.nextRead = time.Now().Add(time.Minute)
+			e.nextRead = time.Now().Add(observationMaxSilence)
 		} else {
 			e.failures++
 			e.nextRead = time.Now().Add(retrypolicy.Delay(e.failures, id))
@@ -144,6 +148,7 @@ func (c *ActivityClient) cachePushedObservation(key taskKey, state map[string]an
 		e.target.State = state
 		e.target.SnapshotRevision = revision
 		e.target.SnapshotSourceClientID = source
+		e.nextRead = time.Now().Add(observationMaxSilence)
 	}
 	return true
 }

@@ -146,7 +146,7 @@ func TestProjectDesktopTaskLinkTracksRunningDesktopTurn(t *testing.T) {
 	}
 }
 
-func TestDesktopTurnProgressAccumulatesOnlyCommentarySegments(t *testing.T) {
+func TestDesktopTurnProgressAccumulatesPublicMessages(t *testing.T) {
 	turn := map[string]any{"items": []any{
 		map[string]any{"id": "one", "type": "agentMessage", "phase": "commentary", "text": "第一段"},
 		map[string]any{"id": "private", "type": "agentMessage", "phase": "analysis", "text": "内部推理"},
@@ -155,10 +155,10 @@ func TestDesktopTurnProgressAccumulatesOnlyCommentarySegments(t *testing.T) {
 		map[string]any{"id": "final", "type": "agentMessage", "phase": "final_answer", "text": "最终回答"},
 	}}
 	segments := desktopTurnProgressSegments(turn)
-	if len(segments) != 2 || segments[0].Text != "第一段" || segments[1].Text != "第二段" {
+	if len(segments) != 3 || segments[0].Text != "第一段" || segments[1].Text != "第二段" || segments[2].Text != "最终回答" {
 		t.Fatalf("unexpected public progress: %#v", segments)
 	}
-	if got := desktopTurnProgress(turn); got != "第一段\n\n第二段" {
+	if got := desktopTurnProgress(turn); got != "第一段\n\n第二段\n\n最终回答" {
 		t.Fatalf("progress = %q", got)
 	}
 }

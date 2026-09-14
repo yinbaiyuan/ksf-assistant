@@ -185,6 +185,18 @@ func (transport *ServiceTransport) Message(ctx context.Context, reply bool, requ
 }
 
 func (transport *ServiceTransport) Patch(ctx context.Context, request feishuprotocol.CardRequest) error {
+	// Only this governed, full-card replacement path may supersede a finished
+	// uncertain edit. Message creation/reply and explicit operation replay retain
+	// their no-replay policy. Serialize replacements across RPC callers/processes.
+	return withProcessFileLock(transport.bindingPath(request.MessageID)+".patch.lock", func() error {
+		return transport.patchLatest(ctx, request)
+	})
+}
+
+type cardReplacementKey struct{}
+
+func (transport *ServiceTransport) patchLatest(ctx context.Context, request feishuprotocol.CardRequest) error {
+	ctx = context.WithValue(ctx, cardReplacementKey{}, true)
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	binding, err := transport.readBinding(request.MessageID)
@@ -203,10 +215,12 @@ func (transport *ServiceTransport) Patch(ctx context.Context, request feishuprot
 		if err != nil {
 			return err
 		}
-		if view.Status != OperationSucceeded {
+		if view.Status != OperationSucceeded && view.Status != OperationOutcomeUnknown {
 			return errors.New("transport_patch_outcome_unconfirmed")
 		}
-		return nil
+		if view.Status == OperationSucceeded {
+			return nil
+		}
 	}
 	key := "patch:" + secretHash(request.MessageID+":"+fmt.Sprint(binding.Revision)+":"+fingerprint)
 	input := map[string]any{"target-type": binding.Target.Type, "target-id": binding.Target.ID, "message-id": request.MessageID, "format": "card", "content": request.Content, "idempotency-key": key}

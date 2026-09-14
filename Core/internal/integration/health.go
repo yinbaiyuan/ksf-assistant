@@ -55,6 +55,19 @@ func (runtime *Runtime) Health() RuntimeHealth {
 		issues = append(issues, component)
 	}
 	runtime.healthMu.Unlock()
+	if file, err := runtime.links.Load(); err == nil {
+		failedCards := 0
+		for _, link := range file.Links {
+			var state CardSyncState
+			link.ExtraValue("cardSync", &state)
+			if state.State == "waiting_retry" || state.State == "needs_review" {
+				failedCards++
+			}
+		}
+		if failedCards > 0 {
+			issues = append(issues, fmt.Sprintf("%d task cards require synchronization", failedCards))
+		}
+	}
 	runtime.inbox.mu.Lock()
 	unknown := len(runtime.inbox.unknownReceipts)
 	for _, event := range runtime.inbox.file.Events {
@@ -132,7 +145,11 @@ func (runtime *Runtime) reconcileTaskLinkCards(ctx context.Context) error {
 		link.ExtraValue("cardSync", &syncState)
 		expiredSinceSync := syncState.State == "synced" && syncState.LinkState != "" && syncState.LinkState != effectiveTaskLinkState(link, time.Now())
 		if TaskLinkCardSyncPending(link) || expiredSinceSync {
-			syncErrors = errors.Join(syncErrors, SyncTaskLinkCard(ctx, runtime.links, runtime.messages, link, ""))
+			if expiredSinceSync {
+				_, err := runtime.links.UpdateByID(link.ID, func(value *TaskLink) { value.SetExtraValue("cardSyncPending", true) })
+				syncErrors = errors.Join(syncErrors, err)
+			}
+			runtime.deliverTaskCard(link.ID)
 		}
 		if effectiveTaskLinkState(link, time.Now()) != "active" || !runtime.desktopOwned(link) {
 			continue

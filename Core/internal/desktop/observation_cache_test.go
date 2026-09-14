@@ -128,6 +128,20 @@ func TestObservationCacheRejectsOutOfOrderNumericPushes(t *testing.T) {
 	}
 }
 
+func TestTrustedPushBoundsObservationFreshness(t *testing.T) {
+	c := New("test")
+	key := taskKey{"local", "thread"}
+	c.owners[key] = "owner"
+	c.observationCache = map[taskKey]*observationCache{key: {target: UserInputTarget{OwnerClientID: "owner"}, nextRead: time.Now().Add(time.Minute)}}
+	c.mu.Lock()
+	c.cachePushedObservation(key, map[string]any{"status": "running"}, "owner", "2")
+	remaining := time.Until(c.observationCache[key].nextRead)
+	c.mu.Unlock()
+	if remaining > 6*time.Second || remaining <= 0 {
+		t.Fatalf("stale cache window: %v", remaining)
+	}
+}
+
 func TestConcurrentObservationInitializesOnceAndCalibratesAfterMinute(t *testing.T) {
 	a, b := net.Pipe()
 	defer a.Close()

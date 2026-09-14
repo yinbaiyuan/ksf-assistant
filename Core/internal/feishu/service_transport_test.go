@@ -145,6 +145,39 @@ func TestServiceTransportReplyAndPatchUseFixedProfileAndRealPolicies(t *testing.
 	}
 }
 
+func TestCardPatchRetriesSameContentAfterDNSFailure(t *testing.T) {
+	client := &transportClientFixture{}
+	root, transport := newTransportFixture(t, client)
+	if err := transport.BindInbound(InboundMessage{MessageID: "om_inbound", ChatType: "p2p", SenderOpenID: "ou_fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := transport.Message(context.Background(), true, feishuprotocol.MessageRequest{MessageID: "om_inbound", Format: "card", Content: `{"elements":[]}`, IdempotencyKey: "reply"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch := feishuprotocol.CardRequest{MessageID: result.MessageID, Content: `{"elements":[{"tag":"hr"}]}`}
+	client.err = &CLIExecutionError{Code: "lark_cli_network_dns", Started: true, Outcome: "unknown", Structured: map[string]any{"type": "network", "subtype": "dns"}}
+	if transport.Patch(context.Background(), patch) == nil {
+		t.Fatal("expected DNS failure")
+	}
+	var original transportExecution
+	key := "patch:" + secretHash(result.MessageID+":0:"+secretHash(patch.Content))
+	if missing, err := readPrivateJSON(transport.executionPath(key), &original); err != nil || missing {
+		t.Fatal("missing failed execution", err)
+	}
+	client.err = nil
+	if err := NewServiceTransport(root, client).Patch(context.Background(), patch); err != nil {
+		t.Fatal(err)
+	}
+	if client.calls.Load() != 3 {
+		t.Fatalf("calls=%d", client.calls.Load())
+	}
+	unknown, err := NewOperationService(root, NewCapabilityPolicyStore(root), nil).Status(original.OperationID)
+	if err != nil || unknown.Status != OperationOutcomeUnknown || unknown.ErrorCode != "lark_cli_network_dns" {
+		t.Fatal("original uncertain audit record was not retained", err)
+	}
+}
+
 func TestServiceTransportPatchRepreparesAfterLocalAuthorizationContention(t *testing.T) {
 	client := &transportClientFixture{}
 	root, transport := newTransportFixture(t, client)

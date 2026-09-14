@@ -30,14 +30,14 @@ func TaskLinkCardMessageID(link TaskLink) string {
 
 func TaskLinkCardSyncPending(link TaskLink) bool {
 	var pending bool
-	if !link.ExtraValue("cardSyncPending", &pending) || !pending {
-		return false
-	}
+	link.ExtraValue("cardSyncPending", &pending)
 	var state CardSyncState
 	link.ExtraValue("cardSync", &state)
 	if state.State == "needs_review" {
-		fingerprint, err := taskLinkCardFingerprint(link, "")
-		return err == nil && supersedesUncertainCardTarget(state, fingerprint)
+		return state.ErrorCode == "outcome_unknown" && !retrypolicy.Exhausted(state.Attempts, state.FirstFailureAt, time.Now())
+	}
+	if !pending {
+		return false
 	}
 	if time.Now().Before(state.NextAttemptAt) {
 		return false
@@ -83,14 +83,12 @@ func SyncTaskLinkCard(ctx context.Context, store TaskLinkStore, patcher TaskLink
 		}
 		fingerprint := cardDigest(messageID + card)
 		if state.State == "needs_review" {
-			if !supersedesUncertainCardTarget(state, fingerprint) {
+			if state.ErrorCode != "outcome_unknown" || retrypolicy.Exhausted(state.Attempts, state.FirstFailureAt, time.Now()) {
 				cardSyncSkipped.Add(1)
 				return errors.New("card_sync_needs_review")
 			}
 			state.State = "pending"
-			state.Attempts = 0
 			state.ErrorCode = ""
-			state.FirstFailureAt = time.Time{}
 			state.NextAttemptAt = time.Time{}
 		}
 		if time.Now().Before(state.NextAttemptAt) {
@@ -118,6 +116,11 @@ func SyncTaskLinkCard(ctx context.Context, store TaskLinkStore, patcher TaskLink
 		}
 		if err != nil {
 			code, permanent := retrypolicy.Class(err)
+			// This patch port replaces a governed card; transport serializes and
+			// reauthorizes replacement attempts. Never apply this to message sends.
+			if code == "outcome_unknown" {
+				permanent = false
+			}
 			state.ErrorCode = code
 			state.Attempts++
 			if state.FirstFailureAt.IsZero() {
@@ -158,6 +161,9 @@ func SyncTaskLinkCard(ctx context.Context, store TaskLinkStore, patcher TaskLink
 			}
 			value.SetExtraValue("cardSync", state)
 			value.SetExtraValue("cardSyncPending", pending)
+			if !pending && isTerminalTaskState(value.TurnState) {
+				value.SetExtraString("lastDeliveredTurnId", value.ExtraString("latestInputTurnId"))
+			}
 		})
 		return err
 	})
@@ -180,22 +186,6 @@ func CardSyncDiagnostics() map[string]uint64 {
 	return map[string]uint64{"attempts": cardSyncAttempts.Load(), "updates": cardSyncUpdates.Load(), "skipped": cardSyncSkipped.Load()}
 }
 func cardDigest(s string) string { v := sha256.Sum256([]byte(s)); return hex.EncodeToString(v[:]) }
-func taskLinkCardFingerprint(link TaskLink, messageID string) (string, error) {
-	if messageID == "" {
-		messageID = TaskLinkCardMessageID(link)
-	}
-	if messageID == "" {
-		return "", nil
-	}
-	card, err := TaskLinkCardJSON(link)
-	if err != nil {
-		return "", err
-	}
-	return cardDigest(messageID + card), nil
-}
-func supersedesUncertainCardTarget(state CardSyncState, fingerprint string) bool {
-	return state.ErrorCode == "outcome_unknown" && state.TargetVersion != "" && fingerprint != "" && fingerprint != state.TargetVersion
-}
 func saveCardSync(store TaskLinkStore, id string, state CardSyncState, pending bool) error {
 	if id == "" {
 		return nil
