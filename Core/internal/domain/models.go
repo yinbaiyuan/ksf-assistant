@@ -448,6 +448,7 @@ type FeishuSnapshot struct {
 	TargetAliases           []string                    `json:"targetAliases"`
 	TaskLinkProtocolVersion int                         `json:"taskLinkProtocolVersion"`
 	TaskLinkReady           bool                        `json:"taskLinkReady"`
+	ConnectedTaskCount      *int                        `json:"connectedTaskCount"`
 	ReadinessBlockers       []string                    `json:"readinessBlockers"`
 	Links                   []FeishuTaskLink            `json:"links"`
 	Queues                  map[string]QueueHealth      `json:"queues,omitempty"`

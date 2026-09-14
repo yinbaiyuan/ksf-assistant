@@ -25,7 +25,7 @@ func (runtime *Runtime) CanCreateTaskLink() bool {
 	runtime.healthMu.Lock()
 	defer runtime.healthMu.Unlock()
 	for component := range runtime.healthIssues {
-		if component != "task card reconciliation failed" {
+		if component != "task card reconciliation failed" && component != "task archive reconciliation failed" {
 			return false
 		}
 	}
@@ -87,6 +87,9 @@ func (runtime *Runtime) Health() RuntimeHealth {
 }
 
 func (runtime *Runtime) runMaintenance(ctx context.Context) {
+	initialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	runtime.setHealth("task archive reconciliation failed", runtime.reconcileArchivedLinks(initialCtx))
+	cancel()
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -105,6 +108,7 @@ func (runtime *Runtime) runMaintenanceCycle(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
+	runtime.setHealth("task archive reconciliation failed", runtime.reconcileArchivedLinks(ctx))
 	recoveryErr := runtime.resumeActiveLinks(ctx)
 	runtime.setHealth("task observation recovery failed", recoveryErr)
 	runtime.ReconcileTaskLinkCards(ctx)

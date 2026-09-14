@@ -7,6 +7,11 @@ credentials or private IPC implementation.
 
 ## Host wiring
 
+Card delivery uses a coalesced wake signal per link: a new projection wakes the
+existing worker immediately, including changes observed during an in-flight send.
+The two-second tick is only a retry/recovery fallback. Wakes never bypass durable
+retry deadlines, ownership checks or the per-card send lock.
+
 - `NewRuntime(dataRoot, feishuPort, corePort)` constructs without dispatching.
 - Call `ResumeActive()` after the Feishu handshake. It resumes task observation
   and starts the event workers; `ResumeEvents()` starts only event workers.
@@ -88,6 +93,52 @@ and the Feishu `TestDelivery`, `TestInboundProcessor`, `TestNormalizeInbound`,
 `TestStageInboundMessage` tests. All new execution tests use fake ports.
 
 ## Card delivery and readiness
+
+Desktop `contextCompaction` synthetic items use `completed` rather than `status`.
+The footer projects automatic optimization and manual compaction lifecycles from
+that boolean, replacing stale progress titles and yielding to subsequent progress.
+Activity projection version 4 refreshes existing cards even at the same snapshot
+revision. Legacy status-based compaction items remain supported.
+
+When a successful fresh live catalog omits an active linked task, the dashboard
+immediately verifies the read-only archived catalog with a three-second deadline
+before publishing its task list and connection count. Local release is synchronous;
+remote card delivery is asynchronous. Startup and 30-second reconciliation remain
+as fallback. Missing live tasks, failed reads,
+and partial/error responses are never archive evidence. Matching active links
+use the shared release transition and durable card delivery worker; remote patch
+failure cannot restore local controls. Restoring a Codex task does not reconnect
+it automatically. This transition never interrupts a Codex turn.
+
+`connectedTaskCount` counts distinct effective active public links, including
+completed turns but excluding pending root-card creation, released and expired
+links. It is null if the store cannot be read. Hosts consume this shared count;
+a memory-only connection-set digest wakes the existing activity monitor without
+reacting to response text updates or adding filesystem I/O to its fast path.
+
+The card activity footer separates public progress titles (`reasoning.summary`,
+never `reasoning.content` or analysis) from currently running tool actions.
+Running actions take precedence; after they finish the latest title returns,
+ahead of generic completion labels. Titles accept leading bold/Markdown headings
+or a bounded single-line public summary. Partial snapshots retain the last title
+only within the same turn. Projection version 3 reprocesses old links even at an
+unchanged snapshot revision and persists the migration even if display is unchanged.
+Completed reads/searches retain their action meaning when no title is available.
+Raw commands remain excluded because arguments can contain secrets.
+Incomplete headings and summary bodies are not forwarded. This is a shared Core
+projection, not screen scraping; missing source events cannot be reconstructed.
+
+The card activity footer is a separate projection below the response and above
+the follow-up form. It observes typed `commandExecution.commandActions`, completed
+`fileChange` items, tool lifecycle states, explicit public visualization references
+and context-compaction items. It stores bounded per-turn path digests, not paths
+or diffs. Read/search commands and failed/in-flight patches never increment file
+counts. Identical snapshots are idempotent; partial snapshots retain observed file
+counts, and a new turn resets them. Per-file line counts are withheld after distinct
+edits to the same file because patch deltas do not prove a net turn diff. Shell/MCP
+edits without a structured file-change event cannot be counted by this projection.
+Compaction items without a status use neutral wording rather than inventing a
+running/completed lifecycle. The footer stays within the normal card sync budget.
 
 Task observation persists a latest-value card mailbox independently of network
 delivery. A per-link worker checks it every two seconds; the existing sync lock

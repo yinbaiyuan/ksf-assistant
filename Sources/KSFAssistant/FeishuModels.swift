@@ -44,6 +44,7 @@ struct FeishuServiceSnapshot: Equatable {
     let targetAliases: [String]
     let taskLinkProtocolVersion: Int
     let taskLinkReady: Bool
+    let connectedTaskCount: Int?
     let readinessBlockers: [String]
     let profile: String
     let profileValid: Bool
@@ -69,12 +70,14 @@ struct FeishuServiceSnapshot: Equatable {
         configured: Bool = false,
         processPID: Int? = nil,
         restartCount: Int = 0,
-        lastError: String? = nil
+        lastError: String? = nil,
+        connectedTaskCount: Int? = nil
     ) {
         self.availability = availability
         self.targetAliases = targetAliases
         self.taskLinkProtocolVersion = taskLinkProtocolVersion
         self.taskLinkReady = taskLinkReady
+        self.connectedTaskCount = connectedTaskCount
         self.readinessBlockers = readinessBlockers
         self.profile = profile
         self.profileValid = profileValid

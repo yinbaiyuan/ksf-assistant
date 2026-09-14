@@ -38,6 +38,7 @@ type Runtime struct {
 	closed        bool
 	watchMu       sync.Mutex
 	watchers      map[string]context.CancelFunc
+	cardWakes     map[string]chan struct{}
 	watchCtx      context.Context
 	stopWatch     context.CancelFunc
 }
@@ -679,9 +680,7 @@ func (runtime *Runtime) waitForTurn(parent context.Context, taskKey, threadID, t
 				return
 			}
 			state, final := bridgeTurnProjection(snapshot, turnID)
-			if state == "running" {
-				runtime.projectBridgeProgress(link, snapshot, turnID)
-			}
+			runtime.projectBridgeProgress(link, snapshot, turnID)
 			if state == "running" && link.TurnState == "waiting_input" {
 				link, _ = runtime.links.UpdateActiveByID(link.ID, func(value *TaskLink) {
 					value.TurnState = "running"
@@ -1303,6 +1302,7 @@ type desktopTaskProjection struct {
 	UserInput                                    string
 	TurnStartedAtMS                              int64
 	ProgressSegments                             []taskProgressSegment
+	Activity                                     taskActivity
 	PendingPlan                                  pendingPlan
 	PendingQuestions                             []map[string]any
 	PendingRequestID                             string
@@ -1324,7 +1324,7 @@ func (runtime *Runtime) applyDesktopTaskSnapshot(ctx context.Context, link TaskL
 	}
 	if revision != "" && revision == link.ExtraString("observedSnapshotRevision") &&
 		link.ExtraString("userMessageProjectionVersion") == "1" &&
-		link.ExtraString("progressProjectionVersion") == "2" {
+		link.ExtraString("progressProjectionVersion") == "2" && link.ExtraString("activityProjectionVersion") == activityProjectionVersion {
 		return nil
 	}
 	projection := projectDesktopTaskLink(snapshot)
@@ -1332,6 +1332,7 @@ func (runtime *Runtime) applyDesktopTaskSnapshot(ctx context.Context, link TaskL
 		return nil
 	}
 	projection.ProgressSegments = desktopProjectionProgressSegments(link, projection)
+	projection.Activity = mergeTaskActivity(link, projection.Activity)
 	if projection.TurnState == "running" && len(projection.ProgressSegments) > 0 {
 		projection.Detail = boundedPublicText(taskProgressText(projection.ProgressSegments), 900)
 	}
@@ -1342,7 +1343,7 @@ func (runtime *Runtime) applyDesktopTaskSnapshot(ctx context.Context, link TaskL
 	if projection.TurnState == "waiting_input" && desktopAnswerSubmissionPending(link, projection) {
 		return nil
 	}
-	if !desktopProjectionRequiresSync(link, projection) {
+	if link.ExtraString("activityProjectionVersion") == activityProjectionVersion && !desktopProjectionRequiresSync(link, projection) {
 		return nil
 	}
 	updated, err := runtime.links.UpdateActiveByID(link.ID, func(value *TaskLink) {
@@ -1351,6 +1352,8 @@ func (runtime *Runtime) applyDesktopTaskSnapshot(ctx context.Context, link TaskL
 		value.SetExtraString("latestInputTurnId", projection.TurnID)
 		value.SetExtraString("userMessageProjectionVersion", "1")
 		value.SetExtraString("progressProjectionVersion", "2")
+		value.SetExtraString("activityProjectionVersion", activityProjectionVersion)
+		value.SetExtraValue("taskActivity", projection.Activity)
 		value.SetExtraValue("desktopTurnStartedAtMs", projection.TurnStartedAtMS)
 		value.TurnState = projection.TurnState
 		value.TurnOwner = projection.TurnOwner
@@ -1418,6 +1421,7 @@ func projectDesktopTaskLink(snapshot map[string]any) desktopTaskProjection {
 	}
 	turnID := cleanString(turn["id"])
 	result := desktopTaskProjection{UserInput: desktopTurnUserInput(turn), TurnID: turnID, TurnStartedAtMS: desktopTurnTimestamp(turn), TurnState: "idle", TurnOwner: "none", ActionRequired: "none", Phase: "已连接", Detail: "任务已连接。回复本消息可继续任务。"}
+	result.Activity = projectTaskActivity(turn)
 	if pending := pendingPlanImplementation(normalized); pending.Content != "" {
 		result.TurnState, result.ActionRequired = "plan_ready", "feishu"
 		result.Phase, result.Detail, result.PendingPlan = "计划已生成", pending.Content, pending
@@ -1479,6 +1483,13 @@ func desktopAnswerSubmissionPending(link TaskLink, projection desktopTaskProject
 }
 
 func desktopProjectionRequiresSync(link TaskLink, next desktopTaskProjection) bool {
+	var currentActivity taskActivity
+	link.ExtraValue("taskActivity", &currentActivity)
+	currentJSON, _ := json.Marshal(currentActivity)
+	nextJSON, _ := json.Marshal(next.Activity)
+	if string(currentJSON) != string(nextJSON) {
+		return true
+	}
 	if link.ExtraString("latestInput") != next.UserInput || link.ExtraString("latestInputTurnId") != next.TurnID {
 		return true
 	}

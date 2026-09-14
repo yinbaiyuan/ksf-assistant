@@ -9,7 +9,30 @@ import (
 // One worker per link keeps network latency out of task observation. The shared
 // sync lock also serializes explicit actions and maintenance against this worker.
 func (runtime *Runtime) deliverTaskCard(id string) {
+	runtime.watchMu.Lock()
+	if runtime.closed {
+		runtime.watchMu.Unlock()
+		return
+	}
+	if runtime.cardWakes == nil {
+		runtime.cardWakes = map[string]chan struct{}{}
+	}
+	wake := runtime.cardWakes[id]
+	if wake == nil {
+		wake = make(chan struct{}, 1)
+		runtime.cardWakes[id] = wake
+	}
+	select {
+	case wake <- struct{}{}:
+	default:
+	}
+	runtime.watchMu.Unlock()
 	runtime.launchWatcher("card:"+id, func(ctx context.Context) {
+		defer func() {
+			runtime.watchMu.Lock()
+			delete(runtime.cardWakes, id)
+			runtime.watchMu.Unlock()
+		}()
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -31,6 +54,7 @@ func (runtime *Runtime) deliverTaskCard(id string) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+			case <-wake:
 			}
 		}
 	})

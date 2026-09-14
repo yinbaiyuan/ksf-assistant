@@ -56,6 +56,9 @@ final class UsageViewModel: ObservableObject {
     var feishuConnectionIndicatorVisible: Bool {
         feishuConfiguration.showsConnectionIndicator(transportReady: feishuService.availability == .ready, taskLinkReady: feishuService.taskLinkReady)
     }
+    var connectedFeishuTaskText: String {
+        feishuService.connectedTaskCount.map { String(max(0, $0)) } ?? "—"
+    }
     var feishuActionInProgress: Bool { feishuConfiguration.acting || feishuConfiguration.reading }
     @Published private(set) var feishuFeedback: String?
     var feishuAuthStatus: CoreServiceFeishuAuth? { feishuConfiguration.snapshot?.auth }
@@ -96,6 +99,8 @@ final class UsageViewModel: ObservableObject {
     private var shutdownStarted = false
     private var quitRequested = false
     private var refreshingCoreService = false
+    private var pendingActivityRefresh = false
+    private var activityMonitorTask: Task<Void, Never>?
     private var pendingAccountRefresh = false
     private var started = false
     private var refreshActivityDepth = 0
@@ -156,6 +161,7 @@ final class UsageViewModel: ObservableObject {
     }
 
     deinit {
+        activityMonitorTask?.cancel()
         rateTimerTask?.cancel()
         localTokenHistoryTask?.cancel()
         coreServicePollTask?.cancel()
@@ -193,7 +199,8 @@ final class UsageViewModel: ObservableObject {
         }
 
         let feishu = feishuConnectionIndicatorVisible ? "，飞书服务已连接" : ""
-        let summary = "\(quota)，\(localTokens)\(feishu)"
+        let connectedTasks = feishuService.connectedTaskCount.map { "\($0) 个任务已连接飞书" } ?? "飞书连接任务数不可用"
+        let summary = "\(quota)，\(localTokens)\(feishu)，\(connectedTasks)"
 
         switch taskActivity.availability {
         case .loading:
@@ -932,6 +939,7 @@ final class UsageViewModel: ObservableObject {
     func shutdown() async {
         guard !shutdownStarted else { return }
         shutdownStarted = true
+        activityMonitorTask?.cancel()
         feishuConfigurationSession.shutdown()
         rateTimerTask?.cancel()
         coreServicePollTask?.cancel()
@@ -961,20 +969,24 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    private func refreshSharedDashboard(forceAccountRefresh: Bool = false) async {
-        guard coreServiceEnabled, !shutdownStarted else { return }
+    @discardableResult
+    private func refreshSharedDashboard(forceAccountRefresh: Bool = false) async -> Bool {
+        guard coreServiceEnabled, !shutdownStarted else { return false }
         if refreshingCoreService {
             pendingAccountRefresh = pendingAccountRefresh || forceAccountRefresh
-            return
+            pendingActivityRefresh = true
+            return false
         }
         refreshingCoreService = true
         beginRefreshActivity()
         defer {
             refreshingCoreService = false
             endRefreshActivity()
-            if pendingAccountRefresh {
+            if pendingAccountRefresh || pendingActivityRefresh {
+                let force = pendingAccountRefresh
                 pendingAccountRefresh = false
-                Task { [weak self] in await self?.refreshSharedDashboard(forceAccountRefresh: true) }
+                pendingActivityRefresh = false
+                Task { [weak self] in await self?.refreshSharedDashboard(forceAccountRefresh: force) }
             }
         }
         do {
@@ -986,7 +998,7 @@ final class UsageViewModel: ObservableObject {
                 pricingSelection: pricingSelection,
                 forceAccountRefresh: forceAccountRefresh
             )
-            guard !pendingAccountRefresh else { return }
+            guard !pendingAccountRefresh else { return false }
             snapshot = dashboard.usage
             store.save(dashboard.usage)
             switch dashboard.usageStatus {
@@ -1039,6 +1051,7 @@ final class UsageViewModel: ObservableObject {
                 setFeishuTargetAlias(dashboard.feishu.targetAliases.count == 1 ? dashboard.feishu.targetAliases[0] : "")
             }
             feishuFeedback = nil
+            return true
         } catch {
             snapshot = snapshot?.localOnly
             status = .offline
@@ -1067,6 +1080,7 @@ final class UsageViewModel: ObservableObject {
                 )
             }
         }
+        return false
     }
 
     private func refreshPricingCatalog() async {
@@ -1133,6 +1147,23 @@ final class UsageViewModel: ObservableObject {
     }
 
     private func startCoreServiceTimers() {
+        activityMonitorTask?.cancel()
+        activityMonitorTask = Task { [weak self] in
+            var lastRevision: String?
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { break }
+                guard let self, !self.shutdownStarted else { break }
+                do {
+                    let revision = try await self.coreService.activityRevision()
+                    if revision != lastRevision {
+                        if await self.refreshSharedDashboard() { lastRevision = revision }
+                    }
+                } catch {
+                    // Existing dashboard refresh owns visible availability errors.
+                    lastRevision = nil
+                }
+            }
+        }
         rateTimerTask?.cancel()
         rateTimerTask = Task { [weak self] in
             while !Task.isCancelled {

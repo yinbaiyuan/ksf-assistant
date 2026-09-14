@@ -42,6 +42,13 @@ func (client *coreCapabilityClient) Workspace(ctx context.Context) (string, erro
 	return result.Root, nil
 }
 
+func (client *coreCapabilityClient) ArchivedThreadIDs(ctx context.Context) ([]string, error) {
+	if client.service.codex == nil {
+		return nil, fmt.Errorf("Codex App Server unavailable")
+	}
+	return client.service.codex.FetchArchivedThreadIDs(ctx)
+}
+
 func (client *coreCapabilityClient) ReadThread(ctx context.Context, runtimeOwner, threadID, turnID string) (map[string]any, error) {
 	result, err := client.service.privateProjection(ctx, corebridge.ProjectionRequest{RuntimeOwner: runtimeOwner, ThreadID: threadID, TurnID: turnID})
 	if err != nil {

@@ -187,6 +187,11 @@ func taskLinkCardElements(link TaskLink) []any {
 		}
 		elements = append(elements, markdown(detail))
 	}
+	if activity := taskActivityText(link); activity != "" {
+		footer := markdown("<font color='grey'>" + activity + "</font>")
+		footer["text_size"] = "notation"
+		elements = append(elements, withMargin(footer, "8px 20px 0px 20px"))
+	}
 	if form := taskLinkQuickReplyForm(link); form != nil {
 		elements = append(elements, map[string]any{"tag": "hr"}, form)
 	} else if link.LinkState == "active" && !permissionBlocked(link) && (link.TurnState == "queued" || link.TurnState == "desktop_action_required") {

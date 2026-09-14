@@ -290,9 +290,13 @@ func configureCodexProcessEnvironment(home string) (string, error) {
 func (service *Service) Dashboard(ctx context.Context, request DashboardRequest) domain.DashboardSnapshot {
 	now := time.Now()
 	activity := service.desktop.Snapshot(now)
-	desktopActivity := activity
 	activeHint := activity.RunningCount > 0 || activity.WaitingCount > 0
 	usage, threads, codexProjects := service.readCodexState(ctx, now, activeHint, request.ForceAccountRefresh)
+	// Account and token reads can be slow. Do not return activity captured
+	// before those reads; a turn may have started or completed meanwhile.
+	now = time.Now()
+	activity = service.desktop.Snapshot(now)
+	desktopActivity := activity
 	threads = service.applyThreadLaunchScopes(threads)
 	plan, _ := pricing.Resolve(request.PricingSelection)
 	if usage.LocalDailyUsage != nil {
@@ -1267,6 +1271,13 @@ func (service *Service) readCodexState(ctx context.Context, now time.Time, activ
 		go func() { defer wait.Done(); codexProjects, projectErr = service.codex.FetchProjects(ctx) }()
 	}
 	wait.Wait()
+	if needThreads && threadErr == nil && service.integrationRuntime != nil {
+		liveIDs := make([]string, 0, len(threads))
+		for _, thread := range threads {
+			liveIDs = append(liveIDs, thread.ID)
+		}
+		service.integrationRuntime.ReconcileFreshThreadList(ctx, liveIDs)
+	}
 	if needLocal {
 		service.mergeLocalTokens(&usage, now)
 	}

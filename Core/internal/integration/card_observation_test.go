@@ -59,6 +59,7 @@ func TestCardWorkerCoalescesWhileSendingAndDeliversTerminal(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		r.deliverTaskCard(l.ID)
 	}
 	close(p.release)
 	select {
@@ -66,7 +67,7 @@ func TestCardWorkerCoalescesWhileSendingAndDeliversTerminal(t *testing.T) {
 		if !strings.Contains(card, "finished") || strings.Contains(card, "intermediate") {
 			t.Fatal("stale queued content sent")
 		}
-	case <-time.After(4 * time.Second):
+	case <-time.After(time.Second):
 		t.Fatal("terminal card lost")
 	}
 	deadline := time.Now().Add(time.Second)

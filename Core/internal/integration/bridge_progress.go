@@ -14,11 +14,14 @@ func (runtime *Runtime) projectBridgeProgress(link TaskLink, snapshot map[string
 			continue
 		}
 		incoming := desktopTurnProgressSegments(turn)
-		if len(incoming) == 0 {
-			return
-		}
 		updated, err := runtime.links.UpdateActiveByID(link.ID, func(value *TaskLink) {
-			if value.ActiveTurnID != turnID || value.TurnState != "running" {
+			if value.ActiveTurnID != turnID || (value.TurnState != "running" && value.TurnState != "waiting_input") {
+				return
+			}
+			value.SetExtraValue("taskActivity", mergeTaskActivity(*value, projectTaskActivity(turn)))
+			value.SetExtraString("latestInputTurnId", turnID)
+			value.SetExtraValue("cardSyncPending", true)
+			if len(incoming) == 0 || value.TurnState != "running" {
 				return
 			}
 			var existing []taskProgressSegment

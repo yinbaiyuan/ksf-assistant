@@ -42,6 +42,16 @@ func init() {
 			result = map[string]any{"thread": thread}
 		} else if method == "turn/start" {
 			result = map[string]any{"turn": map[string]any{"id": "turn-test"}}
+		} else if method == "thread/list" && os.Getenv("KSFA_ARCHIVE_RPC_FIXTURE") == "1" {
+			params, _ := request["params"].(map[string]any)
+			if params["archived"] != true {
+				os.Exit(4)
+			}
+			if params["cursor"] == "next" {
+				result = map[string]any{"data": []any{map[string]any{"id": "archived-2"}}}
+			} else {
+				result = map[string]any{"data": []any{map[string]any{"id": "archived-1"}}, "nextCursor": "next"}
+			}
 		}
 		response := map[string]any{"id": request["id"], "result": result}
 		if method == "thread/inject_items" && os.Getenv("KSFA_DRAFT_RPC_REJECT") == "1" {

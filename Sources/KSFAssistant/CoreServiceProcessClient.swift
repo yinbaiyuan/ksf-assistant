@@ -134,6 +134,12 @@ actor CoreServiceProcessClient {
         ])
     }
 
+    func activityRevision() async throws -> String {
+        let value: [String: String] = try await decode(method: "activity/read", params: [:])
+        guard let revision = value["revision"] else { throw CoreServiceError.invalidResponse }
+        return revision
+    }
+
     func dashboard(
         ksfRoot: String,
         pinnedProjectIDs: Set<String>,
@@ -693,6 +699,7 @@ private struct FeishuDTO: Decodable {
     let targetAliases: [String]?
     let taskLinkProtocolVersion: Int
     let taskLinkReady: Bool
+    let connectedTaskCount: Int?
     let readinessBlockers: [String]?
     let links: [FeishuTaskLinkSnapshot]?
 
@@ -711,7 +718,8 @@ private struct FeishuDTO: Decodable {
             configured: configured ?? false,
             processPID: processPid,
             restartCount: restartCount ?? 0,
-            lastError: lastError
+            lastError: lastError,
+            connectedTaskCount: connectedTaskCount
         )
     }
 

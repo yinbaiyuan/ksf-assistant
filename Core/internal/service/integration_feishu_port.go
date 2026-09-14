@@ -134,6 +134,7 @@ func (service *Service) composeIntegrationSnapshot(snapshot domain.FeishuSnapsho
 	snapshot.Capabilities = capabilities
 	snapshot.ReadinessBlockers = append([]string{}, snapshot.ReadinessBlockers...)
 	snapshot.TaskLinkProtocolVersion = 2
+	snapshot.ConnectedTaskCount = nil
 	if service.integrationRuntime != nil {
 		file, err := service.integrationRuntime.Store().Load()
 		if err != nil {
@@ -141,9 +142,14 @@ func (service *Service) composeIntegrationSnapshot(snapshot domain.FeishuSnapsho
 			snapshot.ReadinessBlockers = append(snapshot.ReadinessBlockers, "taskLinks")
 		} else {
 			snapshot.Links = []domain.FeishuTaskLink{}
+			count := 0
 			for _, link := range integration.PublicLinks(file.Links) {
 				snapshot.Links = append(snapshot.Links, publicIntegrationLink(link))
+				if link.LinkState == "active" {
+					count++
+				}
 			}
+			snapshot.ConnectedTaskCount = &count
 			snapshot.TaskLinkReady = snapshot.Availability == "ready"
 		}
 	}

@@ -1141,6 +1141,13 @@ async function start() {
   await refreshDashboard();
 }
 
+api.onDashboard?.((snapshot) => {
+  if (state.pendingAccountRefresh || !state.staticDataLoaded) return;
+  if (state.dashboard && Date.parse(snapshot.observedAt) < Date.parse(state.dashboard.observedAt)) return;
+  state.dashboard = snapshot;
+  render();
+});
+
 start().catch((error) => {
   state.loading = false;
   state.error = error.message;

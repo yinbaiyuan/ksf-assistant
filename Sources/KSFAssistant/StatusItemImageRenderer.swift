@@ -24,7 +24,8 @@ enum StatusItemImageRenderer {
         quotaText: String,
         localTokenText: String,
         runningText: String,
-        waitingText: String
+        waitingText: String,
+        connectedText: String = "—"
     ) -> NSImage {
         let valueFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         let textAttributes: [NSAttributedString.Key: Any] = [
@@ -35,6 +36,7 @@ enum StatusItemImageRenderer {
         let localTokenWidth = textWidth(localTokenText, attributes: textAttributes)
         let runningWidth = textWidth(runningText, attributes: textAttributes)
         let waitingWidth = textWidth(waitingText, attributes: textAttributes)
+        let connectedWidth = textWidth(connectedText, attributes: textAttributes)
 
         let iconWidth: CGFloat = 16
         let runningSymbolWidth: CGFloat = 10
@@ -47,6 +49,7 @@ enum StatusItemImageRenderer {
                 + groupGap + localTokenWidth
                 + groupGap + runningSymbolWidth + symbolTextGap + runningWidth
                 + groupGap + waitingSymbolWidth + symbolTextGap + waitingWidth
+                + groupGap + 12 + symbolTextGap + connectedWidth
         )
 
         let image = NSImage(size: NSSize(width: width, height: height))
@@ -83,6 +86,11 @@ enum StatusItemImageRenderer {
         draw(waitingSymbol, in: NSRect(x: x, y: 2, width: waitingSymbolWidth, height: waitingSymbolWidth))
         x += waitingSymbolWidth + symbolTextGap
         drawText(waitingText, x: x, width: waitingWidth, attributes: textAttributes)
+        x += waitingWidth + groupGap
+        let connectedSymbol = NSImage(systemSymbolName: "paperplane.fill", accessibilityDescription: nil)
+        draw(connectedSymbol, in: NSRect(x: x, y: 3, width: 12, height: 12))
+        x += 12 + symbolTextGap
+        drawText(connectedText, x: x, width: connectedWidth, attributes: textAttributes)
 
         image.unlockFocus()
 

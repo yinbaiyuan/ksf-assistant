@@ -117,7 +117,7 @@ func (server *Server) Serve(ctx context.Context) error {
 					initialized = true
 					server.handle(ctx, line)
 				}
-			case "userApproval/poll", "userApproval/decide", "health/read":
+			case "userApproval/poll", "userApproval/decide", "health/read", "activity/read":
 				server.handle(ctx, line)
 			case "shutdown":
 				cancel()
@@ -234,6 +234,8 @@ func (server *Server) dispatch(ctx context.Context, method string, params json.R
 		return server.service.UpdateIntegrationContext(input)
 	case "health/read":
 		return map[string]any{"status": "ok", "at": time.Now()}, nil
+	case "activity/read":
+		return server.service.ActivityRevision(), nil
 	case "dashboard/read":
 		var input service.DashboardRequest
 		if err := decodeParams(params, &input); err != nil {

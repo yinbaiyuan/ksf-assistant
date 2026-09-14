@@ -138,12 +138,19 @@ func (c *ActivityClient) cachePushedObservation(key taskKey, state map[string]an
 	if source == "" || c.owners[key] != source {
 		return false
 	}
+	if c.observationCache == nil {
+		c.observationCache = map[taskKey]*observationCache{}
+	}
+	if e := c.observationCache[key]; e == nil || e.generation != c.connectionGeneration || (e.target.OwnerClientID != "" && e.target.OwnerClientID != source) {
+		c.observationCache[key] = &observationCache{generation: c.connectionGeneration}
+	}
 	if e := c.observationCache[key]; e != nil && e.generation == c.connectionGeneration && (e.target.OwnerClientID == source || e.target.OwnerClientID == "") {
 		if order, comparable := compareNumericSnapshotRevisions(revision, e.target.SnapshotRevision); comparable && order <= 0 {
 			return false
 		}
 		e.pushes++
 		e.target.OwnerClientID = source
+		e.target.ObservationEpoch = c.connectionGeneration
 		e.target.ThreadID = key.threadID
 		e.target.State = state
 		e.target.SnapshotRevision = revision

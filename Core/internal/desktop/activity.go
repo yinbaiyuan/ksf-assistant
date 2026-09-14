@@ -101,6 +101,7 @@ type ActivityClient struct {
 	candidateKeys        map[taskKey]bool
 	states               map[taskKey]map[string]any
 	snapshotWaiters      map[snapshotKey][]snapshotWaiter
+	snapshotRefreshes    map[taskKey]uint64
 }
 
 func DefaultEndpoint(home string) string {
@@ -474,6 +475,9 @@ func (client *ActivityClient) handle(payload []byte) {
 				client.states[key] = state
 			} else if owner == source && client.cachePushedObservation(key, state, source, revision) {
 				client.states[key] = state
+				if observation, ok := parseObservation(key, state); ok {
+					client.observations[key] = observation
+				}
 			}
 			matched := []snapshotWaiter{}
 			waiterKeys := []snapshotKey{{task: key}}
@@ -500,13 +504,8 @@ func (client *ActivityClient) handle(payload []byte) {
 			for _, waiter := range matched {
 				waiter.response <- snapshotResponse{state: state, source: source, revision: revision}
 			}
-			if observation, ok := parseObservation(key, state); ok {
-				client.mu.Lock()
-				client.observations[key] = observation
-				client.mu.Unlock()
-			}
 		} else if source != "" {
-			client.follow(key, source, true)
+			client.scheduleSnapshotRefresh(key, source)
 		}
 	}
 }

@@ -56,6 +56,8 @@ function buildTrayStatus(snapshot, now = new Date()) {
     `${running} 个运行中，${waiting} 个等待`,
   ];
   if (tokens) lines.push(`本机今日 ${tokens} Token`);
+  const connected = snapshot?.feishu?.connectedTaskCount;
+  lines.push(Number.isInteger(connected) && connected >= 0 ? `${connected} 个任务已连接飞书` : '飞书连接任务数不可用');
   return {
     remainingPercent,
     label: remainingPercent == null ? '--' : String(remainingPercent),

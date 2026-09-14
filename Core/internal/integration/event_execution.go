@@ -105,3 +105,12 @@ func (p eventCorePort) ObserveThread(ctx context.Context, owner, thread, turn st
 	s, e := p.ReadThread(ctx, owner, thread, turn)
 	return s, "", e
 }
+
+func (p eventCorePort) ArchivedThreadIDs(ctx context.Context) ([]string, error) {
+	if source, ok := p.CorePort.(interface {
+		ArchivedThreadIDs(context.Context) ([]string, error)
+	}); ok {
+		return source.ArchivedThreadIDs(ctx)
+	}
+	return nil, nil
+}

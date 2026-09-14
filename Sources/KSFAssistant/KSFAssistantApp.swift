@@ -117,6 +117,7 @@ private final class StatusItemController: NSObject, NSPopoverDelegate {
             localTokenText: viewModel.menuLocalTodayTokenText,
             runningText: viewModel.runningTaskText,
             waitingText: viewModel.waitingTaskText,
+            connectedText: viewModel.connectedFeishuTaskText,
             accessibilityLabel: viewModel.menuTitle,
             feishuConnected: viewModel.feishuConnectionIndicatorVisible
         )
@@ -127,7 +128,8 @@ private final class StatusItemController: NSObject, NSPopoverDelegate {
             quotaText: presentation.quotaText,
             localTokenText: presentation.localTokenText,
             runningText: presentation.runningText,
-            waitingText: presentation.waitingText
+            waitingText: presentation.waitingText,
+            connectedText: presentation.connectedText
         )
         image.isTemplate = true
         let targetLength = image.size.width + 6
@@ -146,6 +148,7 @@ private final class StatusItemController: NSObject, NSPopoverDelegate {
         let localTokenText: String
         let runningText: String
         let waitingText: String
+        let connectedText: String
         let accessibilityLabel: String
         let feishuConnected: Bool
     }

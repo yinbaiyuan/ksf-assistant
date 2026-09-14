@@ -1,5 +1,7 @@
 'use strict';
 
+const { startActivityMonitor } = require('./activity-monitor.cjs');
+
 const { app, BrowserWindow, Tray, Menu, dialog, ipcMain, nativeImage, screen, shell, powerMonitor } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -529,6 +531,16 @@ app.whenReady().then(async () => {
     powerMonitor.on(available, () => { approvalUnavailableReasons.delete(unavailable); });
   }
   userApproval.start();
+  startActivityMonitor({
+    readRevision: async () => (await core.request('activity/read')).revision,
+    stopped: () => quitting,
+    refresh: async () => {
+      // Wait for an older dashboard before taking a fresh state projection.
+      if (dashboardPromise) await dashboardPromise.catch(() => {});
+      const snapshot = await readDashboard();
+      if (!quitting && window && !window.isDestroyed()) window.webContents.send('ksfassistant:dashboard', snapshot);
+    },
+  });
   if (!app.isPackaged || process.env.KSF_ASSISTANT_SHOW_ON_START === '1') {
     showWindowWhenReady();
   }

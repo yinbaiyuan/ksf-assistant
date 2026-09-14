@@ -4,6 +4,12 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { buildTrayStatus, trayIconDataURL } = require('../src/tray-status.cjs');
 
+test('connected task count uses shared Core state and distinguishes unknown from zero', () => {
+ assert.match(buildTrayStatus({feishu:{connectedTaskCount:3}}).tooltip,/3 个任务已连接飞书/);
+ assert.match(buildTrayStatus({feishu:{connectedTaskCount:0}}).tooltip,/0 个任务已连接飞书/);
+ assert.match(buildTrayStatus({feishu:{}}).tooltip,/飞书连接任务数不可用/);
+});
+
 test('tray status exposes the general quota and live activity', () => {
   const status = buildTrayStatus({
     usage: {

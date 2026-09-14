@@ -225,11 +225,29 @@ func (client *Client) FetchAccountUsage(ctx context.Context) (domain.RateLimitsR
 }
 
 func (client *Client) FetchThreads(ctx context.Context) ([]domain.CodexThread, error) {
+	return client.fetchThreads(ctx, false)
+}
+
+func (client *Client) FetchArchivedThreadIDs(ctx context.Context) ([]string, error) {
+	threads, err := client.fetchThreads(ctx, true)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(threads))
+	for _, thread := range threads {
+		if thread.ID != "" {
+			ids = append(ids, thread.ID)
+		}
+	}
+	return ids, nil
+}
+
+func (client *Client) fetchThreads(ctx context.Context, archived bool) ([]domain.CodexThread, error) {
 	result := []domain.CodexThread{}
 	var cursor *string
 	for len(result) < 10000 {
 		params := map[string]any{
-			"limit": 100, "archived": false, "sortKey": "updated_at", "sortDirection": "desc",
+			"limit": 100, "archived": archived, "sortKey": "updated_at", "sortDirection": "desc",
 			"sourceKinds": []string{"cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"},
 		}
 		if cursor != nil {

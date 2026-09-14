@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,7 +23,10 @@ const (
 	taskLinkTerminalHistory = 500
 )
 
-type TaskLinkStore struct{ path string }
+type TaskLinkStore struct {
+	path               string
+	connectionRevision *atomic.Value
+}
 
 type TaskLinkCleanupReport struct {
 	Removed            int `json:"removed"`
@@ -235,7 +239,17 @@ func (link *TaskLink) SetExtraValue(name string, value any) {
 }
 
 func NewTaskLinkStore(dataRoot string) TaskLinkStore {
-	return TaskLinkStore{path: filepath.Join(dataRoot, "task-links-v1.json")}
+	return TaskLinkStore{path: filepath.Join(dataRoot, "task-links-v1.json"), connectionRevision: &atomic.Value{}}
+}
+
+// Memory-only signal for host refreshes. Message/turn content does not affect it.
+func (store TaskLinkStore) ConnectionRevision() string {
+	if store.connectionRevision != nil {
+		if value := store.connectionRevision.Load(); value != nil {
+			return value.(string)
+		}
+	}
+	return ""
 }
 
 func (store TaskLinkStore) Load() (TaskLinkFile, error) {
@@ -337,7 +351,21 @@ func (store TaskLinkStore) saveUnlocked(value TaskLinkFile) error {
 		return errors.New("invalid task link store")
 	}
 	value.UpdatedAt = time.Now().UTC()
-	return privatestore.WriteJSON(store.path, value)
+	if err := privatestore.WriteJSON(store.path, value); err != nil {
+		return err
+	}
+	if store.connectionRevision != nil {
+		keys := []string{}
+		for _, link := range PublicLinks(value.Links) {
+			if link.LinkState == "active" {
+				keys = append(keys, link.TaskKey)
+			}
+		}
+		sort.Strings(keys)
+		digest := sha256.Sum256([]byte(strings.Join(keys, "\n")))
+		store.connectionRevision.Store(hex.EncodeToString(digest[:]))
+	}
+	return nil
 }
 
 func taskKey(threadID string) string {
