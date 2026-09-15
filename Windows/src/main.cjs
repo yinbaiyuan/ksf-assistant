@@ -2,7 +2,9 @@
 
 const { startActivityMonitor } = require('./activity-monitor.cjs');
 
-const { app, BrowserWindow, Tray, Menu, dialog, ipcMain, nativeImage, screen, shell, powerMonitor } = require('electron');
+const { app, BrowserWindow, Tray, Menu, dialog, ipcMain, nativeImage, screen, shell, powerMonitor, powerSaveBlocker } = require('electron');
+const { SleepInhibitor } = require('./sleep-inhibitor.cjs');
+const sleepInhibitor = new SleepInhibitor(powerSaveBlocker);
 const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -218,10 +220,19 @@ function registerIPC() {
   });
   ipcMain.handle('settings:update', async (_event, patch) => {
     const allowed = {};
-    for (const key of ['ksfRoot', 'selectedFeishuTargetAlias', 'launchAtLogin', 'selectedPricingPlanId', 'customPricingPlans']) {
+    for (const key of ['ksfRoot', 'selectedFeishuTargetAlias', 'launchAtLogin', 'preventSleep', 'selectedPricingPlanId', 'customPricingPlans']) {
       if (Object.prototype.hasOwnProperty.call(patch || {}, key)) allowed[key] = patch[key];
     }
-    const settings = store.update(allowed);
+    const previousSleep = store.get().preventSleep;
+    if (Object.prototype.hasOwnProperty.call(allowed, 'preventSleep')) {
+      sleepInhibitor.setEnabled(allowed.preventSleep === true);
+    }
+    let settings;
+    try { settings = store.update(allowed); }
+    catch (error) {
+      sleepInhibitor.setEnabled(previousSleep);
+      throw error;
+    }
     if (Object.prototype.hasOwnProperty.call(allowed, 'launchAtLogin')) {
       app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin, openAsHidden: true });
     }
@@ -517,6 +528,11 @@ app.whenReady().then(async () => {
   createWindow();
   createTray();
   app.setLoginItemSettings({ openAtLogin: store.get().launchAtLogin, openAsHidden: true });
+  try { sleepInhibitor.setEnabled(store.get().preventSleep); }
+  catch (error) {
+    store.update({ preventSleep: false });
+    dialog.showErrorBox('防睡眠未启用', error.message);
+  }
   await core.start().catch((error) => window.webContents.once('did-finish-load', () => window.webContents.send('ksfassistant:core-error', error.message)));
   userApproval = new UserApprovalController({
     core,
@@ -552,6 +568,7 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   quitting = true;
   shutdownStarted = true;
+  sleepInhibitor.setEnabled(false);
   Promise.resolve(userApproval?.stop())
     .catch(() => {})
     .then(() => core?.close())

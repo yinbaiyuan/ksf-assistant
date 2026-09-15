@@ -8,6 +8,7 @@ const DEFAULTS = Object.freeze({
   pinnedProjectIds: [],
   pinnedWorkspaceIds: [],
   launchAtLogin: false,
+  preventSleep: false,
   selectedPricingPlanId: 'openai:gpt-6-astra',
   customPricingPlans: [],
 });
@@ -94,6 +95,7 @@ function sanitize(value) {
     pinnedProjectIds: [...new Set(Array.isArray(value.pinnedProjectIds) ? value.pinnedProjectIds.map(string).filter(Boolean) : [])],
     pinnedWorkspaceIds: [...new Set(Array.isArray(value.pinnedWorkspaceIds) ? value.pinnedWorkspaceIds.map(string).filter(Boolean) : [])],
     launchAtLogin: value.launchAtLogin === true,
+    preventSleep: value.preventSleep === true,
     selectedPricingPlanId,
     customPricingPlans,
   };

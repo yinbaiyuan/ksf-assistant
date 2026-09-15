@@ -72,12 +72,15 @@ final class UsageViewModel: ObservableObject {
     @Published private(set) var feishuTaskLinkErrors: [String: String] = [:]
     @Published var selectedFeishuTargetAlias: String
     @Published var launchAtLoginEnabled: Bool
+    @Published private(set) var preventSleepEnabled = false
+    @Published private(set) var preventSleepError: String?
     @Published var resetNotificationsEnabled: Bool
 
     private let store = SnapshotStore()
     private let defaults = UserDefaults.standard
     private let notifications = ResetNotificationController()
     private let loginItems = LoginItemController()
+    private let sleepInhibitor = SleepInhibitor()
     private let projectUsageStore = ProjectUsageStore()
     private let actionLauncher = TerminalActionLauncher()
     private let taskOpener: CodexTaskOpening = WorkspaceCodexTaskOpener()
@@ -271,6 +274,7 @@ final class UsageViewModel: ObservableObject {
     func start() async {
         guard !started else { return }
         started = true
+        setPreventSleep(defaults.bool(forKey: "preventSleepEnabled"))
         configureLoginItem()
         notificationPermission = await notifications.permissionState()
         let observer = WorkspaceWakeObserver { [weak self] in
@@ -757,6 +761,17 @@ final class UsageViewModel: ObservableObject {
         loginItemState = loginItems.setEnabled(enabled)
     }
 
+    func setPreventSleep(_ enabled: Bool) {
+        do {
+            try sleepInhibitor.setEnabled(enabled)
+            preventSleepEnabled = enabled
+            defaults.set(enabled, forKey: "preventSleepEnabled")
+            preventSleepError = nil
+        } catch {
+            preventSleepError = error.localizedDescription
+        }
+    }
+
     func setResetNotifications(_ enabled: Bool) {
         resetNotificationsEnabled = enabled
         defaults.set(enabled, forKey: "resetNotificationsEnabled")
@@ -939,6 +954,7 @@ final class UsageViewModel: ObservableObject {
     func shutdown() async {
         guard !shutdownStarted else { return }
         shutdownStarted = true
+        try? sleepInhibitor.setEnabled(false)
         activityMonitorTask?.cancel()
         feishuConfigurationSession.shutdown()
         rateTimerTask?.cancel()

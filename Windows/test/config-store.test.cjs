@@ -30,6 +30,7 @@ test('settings keep only bounded platform-neutral fields', () => {
     pinnedProjectIds: ['a', 'b'],
     pinnedWorkspaceIds: ['workspace://a', 'workspace://b'],
     launchAtLogin: true,
+    preventSleep: false,
     selectedPricingPlanId: 'custom:team',
     customPricingPlans: [{ id: 'custom:team', provider: '团队', model: '模型', variant: '', displayName: '', regularInputMicroUsdPerMillion: 1, cachedInputMicroUsdPerMillion: 2, outputMicroUsdPerMillion: 3, builtIn: false }],
   });

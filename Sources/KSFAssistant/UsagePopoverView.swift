@@ -1592,6 +1592,15 @@ struct UsagePopoverView: View {
                     )
                 )
                 Divider()
+                settingRow(
+                    title: "禁止电脑睡眠",
+                    status: viewModel.preventSleepError ?? "助手运行时保持唤醒，屏幕可关闭。耗电增加；不阻止合盖或手动睡眠。",
+                    isOn: Binding(
+                        get: { viewModel.preventSleepEnabled },
+                        set: { viewModel.setPreventSleep($0) }
+                    )
+                )
+                Divider()
                 Button {
                     page = .pricing
                 } label: {
@@ -1856,6 +1865,8 @@ struct UsagePopoverView: View {
     }
 
     #if FEISHU_LAYOUT_PREVIEW
+    func settingsLayoutPreview() -> some View { settingsPage.padding(12).frame(width: 336) }
+
     func feishuFocusPreview() -> some View {
         var preview = self
         preview._page = State(initialValue: .feishu)
@@ -2348,6 +2359,8 @@ struct UsagePopoverView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(.caption)
                 Text(status).font(.caption2).foregroundStyle(.tertiary)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
             Toggle("", isOn: isOn)

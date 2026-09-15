@@ -473,6 +473,7 @@ function renderSettingsPage() {
       <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">飞书</div><div class="setting-description">${escapeHTML(feishuConfigurationPresentation().title)}</div></div><button class="button" type="button" data-action="feishu-settings">配置</button></div></div>
       <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">API 估算价格</div><div class="setting-description">${escapeHTML(selectedPricingPlan()?.displayName || 'GPT-6 Astra')}</div></div><button class="button" type="button" data-action="pricing">管理价格方案</button></div></div>
       <div class="setting"><div class="setting-head"><div class="setting-copy"><label class="setting-title" for="launch-login">登录时启动</label><div class="setting-description">登录 Windows 后在系统托盘中启动。</div></div><input id="launch-login" class="switch" type="checkbox" data-field="launch-login" ${settings.launchAtLogin ? 'checked' : ''}></div></div>
+      <div class="setting"><div class="setting-head"><div class="setting-copy"><label class="setting-title" for="prevent-sleep">禁止电脑睡眠</label><div class="setting-description">助手运行时保持唤醒，屏幕可关闭。耗电增加；不阻止合盖或手动睡眠。</div></div><input id="prevent-sleep" class="switch" type="checkbox" data-field="prevent-sleep" ${settings.preventSleep ? 'checked' : ''}></div></div>
       <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">版本</div><div class="setting-description">Windows 0.11.0-preview.1 · 核心服务 ${escapeHTML(state.dashboard?.coreVersion || '—')}</div></div></div></div>
     </section>
     <div class="detail-actions"><button class="button danger" type="button" data-action="quit">退出 KSFAssistant</button></div>`;
@@ -1090,6 +1091,10 @@ root.addEventListener('change', async (event) => {
 
     if (event.target.dataset.field === 'launch-login') {
       state.settings = await api.updateSettings({ launchAtLogin: event.target.checked });
+    }
+    if (event.target.dataset.field === 'prevent-sleep') {
+      try { state.settings = await api.updateSettings({ preventSleep: event.target.checked }); }
+      catch (error) { event.target.checked = state.settings.preventSleep; throw error; }
     }
     if (event.target.dataset.field === 'pricing-plan') {
       state.settings = await api.updateSettings({ selectedPricingPlanId: event.target.value });

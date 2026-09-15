@@ -33,6 +33,8 @@ macOS Apple Silicon 已完成实机闭环验收。Intel Mac 和 Windows 的构�
 
 需要从源码构建时，请阅读[开发者构建说明](docs/CONTRIBUTING_BUILD.md)。
 
+远程使用时，可在设置中开启“禁止电脑睡眠”，让助手运行期间阻止空闲自动睡眠，屏幕仍可关闭。合盖、手动睡眠和网络故障不在保障范围内，详见[防睡眠设置与验收](docs/prevent-sleep.md)。
+
 ### 连接飞书
 
 1. 打开 KSFAssistant，进入“设置 → 飞书”。

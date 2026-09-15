@@ -17,6 +17,17 @@ struct FeishuLayoutSnapshots {
         }
         _ = NSApplication.shared
         NSApplication.shared.setActivationPolicy(.prohibited)
+        for dark in [false, true] {
+            let model = UsageViewModel(autoStart: false, cleanupLegacyWeChatData: false)
+            let host = NSHostingView(rootView: UsagePopoverView(viewModel: model, refreshOnAppear: false)
+                .settingsLayoutPreview().environment(\.colorScheme, dark ? .dark : .light))
+            host.frame = NSRect(origin: .zero, size: host.fittingSize)
+            host.layoutSubtreeIfNeeded()
+            let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])!.write(
+                to: URL(fileURLWithPath: output).appendingPathComponent("settings-\(dark ? "dark" : "light").png"))
+        }
         let toolchain = ToolchainStatus(schemaVersion: 1, version: "1.0.93", installed: true, healthy: true,
             skills: (1...28).map { .init(name: "fixture-\($0)", state: "managed") }, problemCount: 0, installationState: "installed", installationTitle: "已安装", installationAction: "", installationDetails: [])
         let fixtureRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
