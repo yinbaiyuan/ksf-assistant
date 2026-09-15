@@ -159,6 +159,10 @@ func run(arguments []string) error {
 				return deliver(callCtx, "message", message.EventID, message)
 			},
 			func(callCtx context.Context, card feishu.InboundCardAction) error {
+				probe := feishu.NewCardProbe(dataRoot, rpcServer.transport, messageClient)
+				if handled, err := probe.HandleCard(card); handled {
+					return err
+				}
 				if err := rpcServer.transport.BindCard(card); err != nil {
 					return &feishu.DeliveryError{Stage: "local_binding", Err: err}
 				}

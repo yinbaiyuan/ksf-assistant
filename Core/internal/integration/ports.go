@@ -68,3 +68,13 @@ type CreateTaskLinkRequest struct {
 type ObservationPort interface {
 	ObserveThread(context.Context, string, string, string) (map[string]any, string, error)
 }
+
+// Optional display capabilities must be forwarded explicitly by decorators;
+// embedding the base interface does not retain the concrete port's method set.
+type NativeTaskCardPort interface {
+	NativeTaskCardsEnabled() bool
+}
+
+type SnapshotSubscriptionPort interface {
+	SubscribeThreadSnapshots(string) (<-chan struct{}, func())
+}

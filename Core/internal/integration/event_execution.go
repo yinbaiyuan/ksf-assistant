@@ -63,6 +63,23 @@ func (port eventCorePort) AnswerInput(ctx context.Context, key, owner, thread, t
 
 type eventFeishuPort struct{ FeishuPort }
 
+func (port eventFeishuPort) NativeTaskCardsEnabled() bool {
+	if source, ok := port.FeishuPort.(NativeTaskCardPort); ok {
+		return source.NativeTaskCardsEnabled()
+	}
+	return false
+}
+
+func (port eventCorePort) SubscribeThreadSnapshots(threadID string) (<-chan struct{}, func()) {
+	if source, ok := port.CorePort.(SnapshotSubscriptionPort); ok {
+		return source.SubscribeThreadSnapshots(threadID)
+	}
+	return nil, func() {}
+}
+
+var _ NativeTaskCardPort = eventFeishuPort{}
+var _ SnapshotSubscriptionPort = eventCorePort{}
+
 func (port eventFeishuPort) Send(ctx context.Context, target MessageTarget, format, content, key string) (string, error) {
 	if err := beginEventEffect(ctx); err != nil {
 		return "", err

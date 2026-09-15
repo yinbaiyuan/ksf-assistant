@@ -81,27 +81,28 @@ type ActivityClient struct {
 	clientType  string
 	controlOnly bool
 
-	mu                   sync.Mutex
-	writeMu              sync.Mutex
-	connection           net.Conn
-	clientID             string
-	started              bool
-	sequence             int
-	availability         string
-	followedBy           map[taskKey]map[string]bool
-	connectionGeneration uint64
-	observationCache     map[taskKey]*observationCache
-	observationCounters  ObservationCounters
-	owners               map[taskKey]string
-	observations         map[taskKey]domain.TaskObservation
-	pendingOwners        map[string]taskKey
-	ownerWaiters         map[string]chan string
-	requestWaiters       map[string]chan error
-	responseWaiters      map[string]chan ipcCallResponse
-	candidateKeys        map[taskKey]bool
-	states               map[taskKey]map[string]any
-	snapshotWaiters      map[snapshotKey][]snapshotWaiter
-	snapshotRefreshes    map[taskKey]uint64
+	mu                     sync.Mutex
+	writeMu                sync.Mutex
+	connection             net.Conn
+	clientID               string
+	started                bool
+	sequence               int
+	availability           string
+	followedBy             map[taskKey]map[string]bool
+	connectionGeneration   uint64
+	observationCache       map[taskKey]*observationCache
+	observationSubscribers map[taskKey]map[chan struct{}]bool
+	observationCounters    ObservationCounters
+	owners                 map[taskKey]string
+	observations           map[taskKey]domain.TaskObservation
+	pendingOwners          map[string]taskKey
+	ownerWaiters           map[string]chan string
+	requestWaiters         map[string]chan error
+	responseWaiters        map[string]chan ipcCallResponse
+	candidateKeys          map[taskKey]bool
+	states                 map[taskKey]map[string]any
+	snapshotWaiters        map[snapshotKey][]snapshotWaiter
+	snapshotRefreshes      map[taskKey]uint64
 }
 
 func DefaultEndpoint(home string) string {

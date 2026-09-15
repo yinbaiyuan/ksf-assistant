@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"time"
 
 	"ksfassistant/core/internal/domain"
@@ -15,6 +16,14 @@ import (
 )
 
 type integrationFeishuPort struct{ service *Service }
+
+var _ integration.NativeTaskCardPort = integrationFeishuPort{}
+
+// The switch applies only when establishing a new task link. Existing native
+// bindings retain their transport through shutdown/restart and feature rollback.
+func (port integrationFeishuPort) NativeTaskCardsEnabled() bool {
+	return os.Getenv("KSFASSISTANT_DISABLE_CARDKIT") != "1"
+}
 
 func (port integrationFeishuPort) CleanupInbound(ctx context.Context, directory string) error {
 	var result map[string]bool

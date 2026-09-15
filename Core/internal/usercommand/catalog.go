@@ -65,6 +65,13 @@ type apiSpecification struct {
 }
 
 var apiSpecifications = []apiSpecification{
+	{"POST", "/open-apis/cardkit/v1/cards", specification{risk: "write", action: "创建隔离卡片实体", capabilities: "im.sdk.message.send", values: "data", required: "data", body: true}},
+	{"PUT", "/open-apis/cardkit/v1/cards/:card-id", specification{risk: "write", action: "切换任务卡片阶段", capabilities: "im.message.edit", values: "data", required: "data", body: true}},
+	{"POST", "/open-apis/cardkit/v1/cards/:card-id/elements", specification{risk: "write", action: "增加任务消息组件", capabilities: "im.message.edit", values: "data", required: "data", body: true}},
+	{"DELETE", "/open-apis/cardkit/v1/cards/:card-id/elements/:element-id", specification{risk: "write", action: "移除过期消息组件", capabilities: "im.message.edit", values: "data", required: "data", body: true}},
+	{"PUT", "/open-apis/cardkit/v1/cards/:card-id/elements/:element-id/content", specification{risk: "write", action: "更新卡片文本", capabilities: "im.message.edit", values: "data", required: "data", body: true}},
+	{"PATCH", "/open-apis/cardkit/v1/cards/:card-id/elements/:element-id", specification{risk: "write", action: "更新卡片文本组件", capabilities: "im.message.edit", values: "data", required: "data", body: true}},
+	{"PATCH", "/open-apis/cardkit/v1/cards/:card-id/settings", specification{risk: "write", action: "切换卡片流式状态", capabilities: "im.message.edit", values: "data", required: "data", body: true}},
 	{"POST", "/open-apis/task/v2/task_v2/task_subscription", specification{risk: "high-impact-write", action: "固定任务订阅", capabilities: "events.watch.task.add", values: "params data", body: true}},
 	{"POST", "/open-apis/board/v1/whiteboards/:target/subscribe", specification{risk: "high-impact-write", action: "固定画板订阅", capabilities: "events.watch.whiteboard.add", values: "params data", body: true}},
 	{"POST", "/open-apis/board/v1/whiteboards/:target/unsubscribe", specification{risk: "destructive", action: "取消固定画板订阅", capabilities: "events.watch.whiteboard.remove", values: "params data", body: true}},

@@ -1139,6 +1139,9 @@ func (runner CapabilityExecutor) run(parent context.Context, definition Capabili
 }
 
 func (runner CapabilityExecutor) runBusinessProcess(parent context.Context, args []string, stdin []byte, cwd string, timeout time.Duration) (map[string]any, error) {
+	if len(args) >= 3 && args[0] == "api" && strings.HasPrefix(args[2], "/open-apis/cardkit/") && parent.Value(cardKitAuthorizationKey{}) != true {
+		return nil, errors.New("cardkit_internal_transport_required")
+	}
 	full := append([]string{}, args...)
 	profile := runner.Profile
 	if profile == "" {

@@ -106,6 +106,8 @@ func SyncTaskLinkCard(ctx context.Context, store TaskLinkStore, patcher TaskLink
 			return saveCardSync(store, link.ID, state, false)
 		}
 		state.State = "pending"
+		link.ExtraValue("cardSnapshotArrivedAt", &state.SnapshotArrivedAt)
+		state.SubmittedAt = time.Now().UTC()
 		if err := saveCardSync(store, link.ID, state, true); err != nil {
 			return err
 		}
@@ -143,6 +145,7 @@ func SyncTaskLinkCard(ctx context.Context, store TaskLinkStore, patcher TaskLink
 			return err
 		}
 		cardSyncUpdates.Add(1)
+		state.AcknowledgedAt = time.Now().UTC()
 		state.State = "synced"
 		state.LinkState = effectiveTaskLinkState(link, time.Now())
 		state.SyncedVersion = fingerprint
@@ -170,14 +173,17 @@ func SyncTaskLinkCard(ctx context.Context, store TaskLinkStore, patcher TaskLink
 }
 
 type CardSyncState struct {
-	LinkState      string    `json:"linkState,omitempty"`
-	State          string    `json:"state"`
-	TargetVersion  string    `json:"targetVersion,omitempty"`
-	SyncedVersion  string    `json:"syncedVersion,omitempty"`
-	Attempts       int       `json:"attempts"`
-	ErrorCode      string    `json:"errorCode,omitempty"`
-	FirstFailureAt time.Time `json:"firstFailureAt,omitempty"`
-	NextAttemptAt  time.Time `json:"nextAttemptAt,omitempty"`
+	SnapshotArrivedAt time.Time `json:"snapshotArrivedAt,omitempty"`
+	SubmittedAt       time.Time `json:"submittedAt,omitempty"`
+	AcknowledgedAt    time.Time `json:"acknowledgedAt,omitempty"`
+	LinkState         string    `json:"linkState,omitempty"`
+	State             string    `json:"state"`
+	TargetVersion     string    `json:"targetVersion,omitempty"`
+	SyncedVersion     string    `json:"syncedVersion,omitempty"`
+	Attempts          int       `json:"attempts"`
+	ErrorCode         string    `json:"errorCode,omitempty"`
+	FirstFailureAt    time.Time `json:"firstFailureAt,omitempty"`
+	NextAttemptAt     time.Time `json:"nextAttemptAt,omitempty"`
 }
 
 var cardSyncAttempts, cardSyncUpdates, cardSyncSkipped atomic.Uint64

@@ -10,6 +10,16 @@ import (
 )
 
 func TryExecutionLease(root string) (func(), error) {
+	return tryExecutionLease(root, false)
+}
+
+// Shared leases are restricted to independently authorized CardKit writes.
+// Authentication, identity changes and ordinary commands retain exclusive locks.
+func TrySharedExecutionLease(root string) (func(), error) {
+	return tryExecutionLease(root, true)
+}
+
+func tryExecutionLease(root string, shared bool) (func(), error) {
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root {
 		return nil, errors.New("approval_authorization_root_invalid")
 	}
@@ -38,7 +48,7 @@ func TryExecutionLease(root string) (func(), error) {
 		file.Close()
 		return nil, errors.New("approval_authorization_unavailable")
 	}
-	unlock, err := tryLockFile(file)
+	unlock, err := tryLockFileMode(file, shared)
 	if err != nil {
 		file.Close()
 		return nil, errors.New("approval_authorization_busy")

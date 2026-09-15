@@ -214,12 +214,15 @@ func (inbound *OfficialInbound) HandleCLIEvent(ctx context.Context, key string, 
 		if len(value) == 0 && raw["action_tag"] == "overflow" {
 			value = jsonObject(raw["option"])
 		}
-		if len(value) == 0 {
-			return rejectCLIEvent("cli_card_action_value_missing")
-		}
 		form := map[string]any{}
 		if text := stringValue(raw["form_value"]); text != "" && (json.Unmarshal([]byte(text), &form) != nil || form == nil) {
 			return rejectCLIEvent("cli_card_form_invalid")
+		}
+		// Form-submit callbacks identify the action by name and carry form
+		// values; a separate button value is optional. Downstream authorization
+		// still validates the operator, message binding and action owner.
+		if len(value) == 0 && !(raw["action_tag"] == "button" && stringValue(raw["action_name"]) != "" && len(form) > 0) {
+			return rejectCLIEvent("cli_card_action_value_missing")
 		}
 		action := map[string]any{"tag": raw["action_tag"], "name": raw["action_name"], "value": value, "form_value": form, "input_value": raw["input_value"], "option": raw["option"], "checked": raw["checked"]}
 		if options := stringValue(raw["options"]); options != "" {

@@ -40,6 +40,9 @@ func (runtime *Runtime) CreateTaskLink(ctx context.Context, request CreateTaskLi
 		}
 		if value.RootMessageID == "" {
 			value.Target = target
+			if port, ok := runtime.messages.(NativeTaskCardPort); ok {
+				value.SetExtraValue("nativeTaskCard", port.NativeTaskCardsEnabled())
+			}
 		}
 	})
 	if err != nil {
@@ -99,6 +102,7 @@ func (runtime *Runtime) Release(ctx context.Context, taskKey string) (PublicTask
 	if effectiveTaskLinkState(link, time.Now()) != "active" {
 		return PublicTaskLink{}, ErrInactiveTaskLink
 	}
+	runtime.cancelTaskCardSend(link.ID)
 	link, err = runtime.links.ReleaseByID(link.ID)
 	if err != nil {
 		return PublicTaskLink{}, err
@@ -136,6 +140,7 @@ func (runtime *Runtime) Interrupt(ctx context.Context, taskKey string) (PublicTa
 			return PublicTaskLink{}, err
 		}
 	}
+	runtime.cancelTaskCardSend(link.ID)
 	link, err = runtime.links.UpdateActiveByID(link.ID, func(value *TaskLink) {
 		value.TurnState, value.TurnOwner, value.ActionRequired = "interrupted", "none", "none"
 		value.Phase, value.Detail = "已停止", "当前任务已标记为中断。"

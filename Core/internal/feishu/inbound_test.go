@@ -6,6 +6,38 @@ import (
 	"testing"
 )
 
+func TestCLIInboundNamedFormWithoutValue(t *testing.T) {
+	var got []byte
+	inbound, _ := NewOfficialInbound(CapabilityExecutor{Binary: "fixture"}, nil, func(_ context.Context, _ string, body []byte) error { got = body; return nil }, nil)
+	err := inbound.HandleCLIEvent(context.Background(), "card.action.trigger", []byte(`{"type":"card.action.trigger","event_id":"evt_form","message_id":"om_fixture","operator_id":"ou_fixture","action_tag":"button","action_name":"probe_submit_fixture","form_value":"{\"probe_input\":\"中文测试\"}"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(got, &raw); err != nil {
+		t.Fatal(err)
+	}
+	card, err := normalizeInboundCard(raw)
+	if err != nil || card.FormValue["probe_input"] != "中文测试" || jsonObject(card.Raw["action"])["name"] != "probe_submit_fixture" {
+		t.Fatal("form identity or content lost", err)
+	}
+}
+
+func TestCLIInboundStillRejectsUnidentifiedForms(t *testing.T) {
+	for _, extra := range []string{
+		`"action_tag":"button","form_value":"{\"field\":\"text\"}"`,
+		`"action_tag":"button","action_name":"submit","form_value":"{}"`,
+		`"action_tag":"button","action_name":"submit","form_value":"bad"`,
+	} {
+		called := false
+		inbound, _ := NewOfficialInbound(CapabilityExecutor{Binary: "fixture"}, nil, func(context.Context, string, []byte) error { called = true; return nil }, nil)
+		err := inbound.HandleCLIEvent(context.Background(), "card.action.trigger", []byte(`{"type":"card.action.trigger","event_id":"evt_bad","message_id":"om_fixture","operator_id":"ou_fixture",`+extra+`}`))
+		if err == nil || called {
+			t.Fatal("malformed or unidentified form accepted")
+		}
+	}
+}
+
 func TestFixedEventCatalogMatchesFrozenContract(t *testing.T) {
 	if len(FixedEventKeys) != 26 {
 		t.Fatalf("event count = %d, want 26", len(FixedEventKeys))

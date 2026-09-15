@@ -20,20 +20,34 @@ type MessageCLI interface {
 }
 
 type OfficialMessageClient struct {
-	client MessageCLI
-	appID  string
+	client     MessageCLI
+	appID      string
+	nativeRoot string
 }
 
 func NewOfficialMessageClient(appID string, runner MessageCLI) (*OfficialMessageClient, error) {
 	if strings.TrimSpace(appID) == "" || runner == nil {
 		return nil, errors.New("official CLI application identity and runner are required")
 	}
-	return &OfficialMessageClient{client: runner, appID: strings.TrimSpace(appID)}, nil
+	client := &OfficialMessageClient{client: runner, appID: strings.TrimSpace(appID)}
+	if executor, ok := runner.(CapabilityExecutor); ok {
+		client.nativeRoot = executor.DataRoot
+	}
+	return client, nil
 }
 
 func (client *OfficialMessageClient) Send(ctx context.Context, target MessageTarget, format, value, idempotencyKey string) (string, error) {
 	if target.Type != "chat_id" && target.Type != "open_id" {
 		return "", errors.New("unsupported_target_type")
+	}
+	if format == "card" {
+		p, native, err := parseNativeProjection(value)
+		if err != nil {
+			return "", err
+		}
+		if native {
+			return client.sendNative(ctx, target, p, idempotencyKey)
+		}
 	}
 	msgType, content, err := client.prepareMessageContent(ctx, format, value)
 	if err != nil {
@@ -87,6 +101,9 @@ func messageResultID(result map[string]any, err error) (string, error) {
 }
 
 func (client *OfficialMessageClient) PatchCard(ctx context.Context, messageID, cardJSON string) error {
+	if handled, err := client.patchNative(ctx, messageID, cardJSON); handled {
+		return err
+	}
 	var card map[string]any
 	if json.Unmarshal([]byte(cardJSON), &card) != nil || card == nil {
 		return errors.New("invalid_card_json")

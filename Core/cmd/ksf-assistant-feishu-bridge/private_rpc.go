@@ -142,6 +142,15 @@ func (server *bridgeRPCServer) HandlePrivateRPC(ctx context.Context, method stri
 		if err != nil {
 			return nil, err
 		}
+		if request.Command == "card-probe" {
+			if request.Options["as"] != "bot" {
+				return nil, errors.New("probe_requires_bot_identity")
+			}
+			server.mu.RLock()
+			probe := feishu.NewCardProbe(server.dataRoot, server.transport, server.messages)
+			server.mu.RUnlock()
+			return probe.Command(ctx, request.Action, request.Options["id"], request.Options["target-name"], request.Options["mode"])
+		}
 		result, err := feishucommands.Execute(ctx, server.dataRoot, server.capability, request)
 		if settings, readErr := feishu.NewSettingsStore(server.dataRoot).Load(); readErr == nil {
 			server.mu.Lock()

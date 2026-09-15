@@ -39,6 +39,7 @@ type Runtime struct {
 	watchMu       sync.Mutex
 	watchers      map[string]context.CancelFunc
 	cardWakes     map[string]chan struct{}
+	cardSends     map[string]context.CancelFunc
 	watchCtx      context.Context
 	stopWatch     context.CancelFunc
 }
@@ -345,6 +346,7 @@ func (runtime *Runtime) HandleCard(ctx context.Context, action InboundCardAction
 				return err
 			}
 		}
+		runtime.cancelTaskCardSend(link.ID)
 		link, err := runtime.links.UpdateActiveByID(link.ID, func(value *TaskLink) {
 			value.TurnState = "interrupted"
 			value.TurnOwner = "none"
@@ -356,6 +358,7 @@ func (runtime *Runtime) HandleCard(ctx context.Context, action InboundCardAction
 		}
 		return runtime.patchTaskLinkCard(ctx, action.MessageID, link)
 	case "task_link_release":
+		runtime.cancelTaskCardSend(link.ID)
 		link, err := runtime.links.ReleaseByID(link.ID)
 		if err != nil {
 			return err
@@ -1270,6 +1273,14 @@ func (runtime *Runtime) observeTurn(taskKey, threadID, turnID, replyTo, cardMess
 func (runtime *Runtime) runDesktopTaskObserver(ctx context.Context, taskKey string) {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
+	var wake <-chan struct{}
+	if subscriber, ok := runtime.core.(SnapshotSubscriptionPort); ok {
+		if link, found, err := runtime.links.FindByTaskKey(taskKey); err == nil && found {
+			var unsubscribe func()
+			wake, unsubscribe = subscriber.SubscribeThreadSnapshots(link.ThreadID)
+			defer unsubscribe()
+		}
+	}
 	reportedFailure := false
 	for {
 		if ctx.Err() != nil {
@@ -1292,6 +1303,7 @@ func (runtime *Runtime) runDesktopTaskObserver(ctx context.Context, taskKey stri
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		case <-wake:
 		}
 	}
 }
@@ -1348,6 +1360,7 @@ func (runtime *Runtime) applyDesktopTaskSnapshot(ctx context.Context, link TaskL
 	}
 	updated, err := runtime.links.UpdateActiveByID(link.ID, func(value *TaskLink) {
 		value.SetExtraString("observedSnapshotRevision", revision)
+		value.SetExtraValue("cardSnapshotArrivedAt", time.Now().UTC())
 		value.SetExtraString("latestInput", projection.UserInput)
 		value.SetExtraString("latestInputTurnId", projection.TurnID)
 		value.SetExtraString("userMessageProjectionVersion", "1")

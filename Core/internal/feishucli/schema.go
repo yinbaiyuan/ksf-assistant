@@ -95,6 +95,8 @@ var compatibilityCommands = map[string]compatibilitySpec{
 
 func needsAction(command string) bool {
 	switch command {
+	case "card-probe":
+		return true
 	case "profile", "auth", "targets", "capability", "operation", "policy", "events", "message", "knowledge", "calendar", "task", "sheets", "base", "meeting", "note", "minutes", "workflow", "task-link":
 		return true
 	}
@@ -156,6 +158,10 @@ func baseCommandSchema(request Request) (commandSpec, error) {
 		return spec(0, "device-code", "", "", ""), nil
 	case "auth/ensure-current-user":
 		return spec(0, "", "", "", ""), nil
+	case "card-probe/start":
+		return spec(0, "id target-name mode as", "", "", "id target-name mode as"), nil
+	case "card-probe/status", "card-probe/step", "card-probe/progress", "card-probe/finish":
+		return spec(0, "id as", "", "", "id as"), nil
 	case "events/review", "task-link/sync-review", "task-link/diagnostics":
 		return spec(0, "", "", "", ""), nil
 	case "events/retry", "task-link/sync-retry":

@@ -20,6 +20,30 @@ type observationCache struct {
 }
 type ObservationCounters struct{ CacheHits, FullReads atomic.Uint64 }
 
+// SubscribeConversation wakes only after an accepted full snapshot enters the
+// cache. The bounded notification is an invalidation, never a history queue.
+func (c *ActivityClient) SubscribeConversation(id string) (<-chan struct{}, func()) {
+	key := taskKey{"local", id}
+	wake := make(chan struct{}, 1)
+	c.mu.Lock()
+	if c.observationSubscribers == nil {
+		c.observationSubscribers = map[taskKey]map[chan struct{}]bool{}
+	}
+	if c.observationSubscribers[key] == nil {
+		c.observationSubscribers[key] = map[chan struct{}]bool{}
+	}
+	c.observationSubscribers[key][wake] = true
+	c.mu.Unlock()
+	return wake, func() {
+		c.mu.Lock()
+		delete(c.observationSubscribers[key], wake)
+		if len(c.observationSubscribers[key]) == 0 {
+			delete(c.observationSubscribers, key)
+		}
+		c.mu.Unlock()
+	}
+}
+
 // Trusted pushes keep this deadline moving; silence triggers a bounded refresh
 // even when the previously observed turn was terminal (a new turn may start).
 const observationMaxSilence = 5 * time.Second
@@ -156,6 +180,12 @@ func (c *ActivityClient) cachePushedObservation(key taskKey, state map[string]an
 		e.target.SnapshotRevision = revision
 		e.target.SnapshotSourceClientID = source
 		e.nextRead = time.Now().Add(observationMaxSilence)
+	}
+	for wake := range c.observationSubscribers[key] {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
 	}
 	return true
 }

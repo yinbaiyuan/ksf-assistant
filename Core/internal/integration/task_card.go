@@ -86,6 +86,11 @@ func marshalTaskLinkCard(link TaskLink) (string, error) {
 			"elements": cardBodyElements(taskLinkCardElements(link)),
 		},
 	}
+	if nativeTaskCard(link) {
+		streaming := link.LinkState == "active" && (link.TurnState == "running" || link.TurnState == "waiting_input")
+		card["config"].(map[string]any)["streaming_mode"] = streaming
+		card["ksf_cardkit"] = map[string]any{"phase": link.LinkState + ":" + link.TurnState + ":" + link.ExtraString("latestInputTurnId") + ":" + link.ExtraString("pendingQuestionRevision"), "streaming": streaming}
+	}
 	data, err := json.Marshal(card)
 	return string(data), err
 }
@@ -168,7 +173,11 @@ func taskLinkCardElements(link TaskLink) []any {
 		if plan == "" {
 			plan = taskLinkCardDetail(link)
 		}
-		elements = append(elements, markdown("**计划**\n"+plan))
+		planElement := markdown("**计划**\n" + plan)
+		if nativeTaskCard(link) {
+			planElement["element_id"] = "message_detail"
+		}
+		elements = append(elements, planElement)
 		if link.PendingPlanRevision != "" {
 			elements = append(elements, centeredCardControl(taskCardButton("implement_task_link_plan", "开始执行", "task_link_implement_plan", "primary_filled", false, link, map[string]any{"planRevision": link.PendingPlanRevision})))
 		}
@@ -185,10 +194,36 @@ func taskLinkCardElements(link TaskLink) []any {
 		if link.ExtraString("latestInput") != "" {
 			detail = "**Codex**\n" + detail
 		}
-		elements = append(elements, markdown(detail))
+		if nativeTaskCard(link) && len(taskLinkProgressSegments(link)) > 0 {
+			for i, segment := range taskLinkProgressSegments(link) {
+				text := segment.Text
+				if i == 0 && link.ExtraString("latestInput") != "" {
+					text = "**Codex**\n" + text
+				}
+				element := markdown(text)
+				id := segment.ID
+				if id == "" {
+					id = fmt.Sprintf("anonymous-%d", i)
+				}
+				element["element_id"] = "m" + cardDigest(id)[:18]
+				elements = append(elements, element)
+			}
+		} else {
+			element := markdown(detail)
+			if nativeTaskCard(link) {
+				element["element_id"] = "message_detail"
+			}
+			elements = append(elements, element)
+		}
 	}
-	if activity := taskActivityText(link); activity != "" {
+	if activity := taskActivityText(link); activity != "" || nativeTaskCard(link) {
 		footer := markdown("<font color='grey'>" + activity + "</font>")
+		if nativeTaskCard(link) {
+			footer["element_id"] = "activity"
+			if activity == "" {
+				footer["content"] = " "
+			}
+		}
 		footer["text_size"] = "notation"
 		elements = append(elements, withMargin(footer, "8px 20px 0px 20px"))
 	}
@@ -198,6 +233,12 @@ func taskLinkCardElements(link TaskLink) []any {
 		elements = append(elements, map[string]any{"tag": "hr"}, taskCardButton("interrupt_task_link", "停止", "task_link_interrupt", "danger", false, link, nil))
 	}
 	return elements
+}
+
+func nativeTaskCard(link TaskLink) bool {
+	var enabled bool
+	link.ExtraValue("nativeTaskCard", &enabled)
+	return enabled
 }
 
 func taskLinkQuickReplyForm(link TaskLink) any {

@@ -23,6 +23,8 @@ type coreCapabilityClient struct {
 	owners  map[string]string
 }
 
+var _ integration.SnapshotSubscriptionPort = (*coreCapabilityClient)(nil)
+
 func newCoreCapabilityClient(service *Service) *coreCapabilityClient {
 	return &coreCapabilityClient{service: service, pending: map[string]corebridge.PendingUserInput{}, owners: map[string]string{}}
 }
@@ -163,6 +165,13 @@ func (c *coreCapabilityClient) ObserveThread(ctx context.Context, owner, thread,
 	c.owners[thread] = t.OwnerClientID
 	c.mu.Unlock()
 	return t.State, desktop.ObservationVersion(t), nil
+}
+
+func (c *coreCapabilityClient) SubscribeThreadSnapshots(thread string) (<-chan struct{}, func()) {
+	if c.service.desktop == nil {
+		return nil, func() {}
+	}
+	return c.service.desktop.SubscribeConversation(thread)
 }
 
 func (c *coreCapabilityClient) ObserveDesktopThread(ctx context.Context, threadID string) (map[string]any, string, string, bool, error) {

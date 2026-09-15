@@ -43,6 +43,7 @@ func (runner CapabilityExecutor) CallMessage(ctx context.Context, request Messag
 	key := request.Resource + "." + request.Method
 	switch key {
 	case "messages.create", "messages.reply", "messages.patch", "messages.get", "images.create", "files.create":
+	case "cardkit.create", "cardkit.content", "cardkit.patch", "cardkit.settings", "cardkit.replace", "cardkit.insert", "cardkit.remove":
 	default:
 		return nil, errors.New("unsupported_message_cli_command")
 	}
@@ -59,6 +60,19 @@ func (runner CapabilityExecutor) CallMessage(ctx context.Context, request Messag
 	}
 	args := []string{"im", request.Resource, request.Method, "--as", "bot"}
 	paramsValue := request.Params
+	if request.Resource == "cardkit" {
+		var err error
+		args, err = cardKitCommand(request)
+		if err != nil {
+			return nil, err
+		}
+		paramsValue = nil
+		definition.ID = "im.message.edit"
+		if request.Method == "create" {
+			definition.ID = "im.sdk.message.send"
+		}
+		ctx = internalCardKitContext(ctx)
+	}
 	if key == "messages.create" {
 		args = []string{"api", "POST", "/open-apis/im/v1/messages", "--as", "bot"}
 	}

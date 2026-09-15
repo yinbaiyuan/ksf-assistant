@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"ksfassistant/core/internal/feishucli"
+	"ksfassistant/core/internal/localipc"
 	"ksfassistant/core/internal/usercommand"
 )
 
@@ -41,6 +43,9 @@ func launchEnvironment(environment []string, config Config) []string {
 func launchArguments(arguments []string, profile string) ([]string, error) {
 	if len(arguments) == 0 {
 		return nil, errors.New("command_required")
+	}
+	if len(arguments) >= 3 && arguments[0] == "api" && strings.HasPrefix(arguments[2], "/open-apis/cardkit/") {
+		return nil, errors.New("cardkit_internal_transport_required")
 	}
 	descriptor, _ := usercommand.Resolve(arguments)
 	valueFlags := map[string]bool{}
@@ -106,6 +111,24 @@ func Launch(ctx context.Context, executable string, arguments []string, stdin io
 			return 1, err
 		}
 		_, err = stdout.Write(append(data, '\n'))
+		if err != nil {
+			return 1, err
+		}
+		return 0, nil
+	}
+	if len(arguments) >= 2 && arguments[0] == "managed" && arguments[1] == "card-probe" {
+		request, err := feishucli.Parse(arguments[1:], nil)
+		if err != nil {
+			return 1, err
+		}
+		if request.Options["as"] != "bot" {
+			return 1, errors.New("probe_requires_bot_identity")
+		}
+		var result json.RawMessage
+		if err := localipc.Call(ctx, settings.DataRoot, feishucli.MethodExecute, request, &result); err != nil {
+			return 1, err
+		}
+		_, err = stdout.Write(append(result, '\n'))
 		if err != nil {
 			return 1, err
 		}

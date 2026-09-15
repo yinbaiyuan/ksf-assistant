@@ -57,6 +57,9 @@ func (executor UnifiedCapabilityExecutor) DesktopApprovalEnabled() bool {
 }
 
 func (runner CapabilityExecutor) runBusinessCommand(ctx context.Context, definition CapabilityDefinition, args []string, stdin []byte, cwd string, timeout time.Duration) (map[string]any, error) {
+	if len(args) >= 3 && args[0] == "api" && strings.HasPrefix(args[2], "/open-apis/cardkit/") && ctx.Value(cardKitAuthorizationKey{}) != true {
+		return nil, errors.New("cardkit_internal_transport_required")
+	}
 	args = capabilityOutputArguments(args)
 	var caller usercommand.CallerFunc
 	if gate := runner.UserApproval; gate != nil {
@@ -169,7 +172,11 @@ func (runner CapabilityExecutor) runBusinessCommand(ctx context.Context, definit
 		}
 	}
 	if !review.NeedsApproval && ctx.Value(businessAuthorizationKey{}) != runner.DataRoot {
-		releaseAuthorization, err = userapproval.TryExecutionLease(runner.DataRoot)
+		if ctx.Value(cardKitAuthorizationKey{}) == true {
+			releaseAuthorization, err = cardKitExecutionLease(ctx, runner.DataRoot)
+		} else {
+			releaseAuthorization, err = userapproval.TryExecutionLease(runner.DataRoot)
+		}
 		if err != nil {
 			return nil, approvalCommandError(err)
 		}
