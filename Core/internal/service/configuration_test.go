@@ -11,7 +11,6 @@ import (
 
 	"ksfassistant/core/internal/domain"
 	managedfeishu "ksfassistant/core/internal/feishu"
-	"ksfassistant/core/internal/feishucli"
 	"ksfassistant/core/internal/feishuprotocol"
 )
 
@@ -99,34 +98,14 @@ func TestConfigurationMissingApplicationOffersCleanupBeforeReconnectWhenOldBindi
 	}
 }
 
-func TestConfigurationExposesOnlyCoreGeneratedAuthorizationRequestID(t *testing.T) {
+func TestConfigurationIgnoresRetiredBusinessAuthorization(t *testing.T) {
 	state := configurationReadyState()
 	state.data.evidence.OperatorState = "present"
 	state.data.evidence.AuthorizationRequest = &feishuprotocol.AuthorizationRequest{ID: "0123456789abcdef0123456789abcdef", Purpose: "docs.fixture.read", Scopes: []string{"docx:document:readonly"}}
 	snapshot := configurationTestSnapshot(&state)
 	action, ok := configurationActionByID(snapshot, "start_auth")
-	if !ok || !action.Enabled || action.AuthorizationRequestID != state.data.evidence.AuthorizationRequest.ID || len(action.Scopes) != 1 || !strings.Contains(action.Confirmation, "不会自动重放") {
-		t.Fatalf("progressive authorization affordance invalid: %#v", action)
-	}
-	request := configurationRequest(snapshot, "start_auth")
-	request.AuthorizationRequestID = "desktop-invented"
-	if request.AuthorizationRequestID == action.AuthorizationRequestID {
-		t.Fatal("invalid fixture")
-	}
-}
-
-func TestConfigurationWaitsForApplicationScopeBeforeProgressiveOAuth(t *testing.T) {
-	state := configurationReadyState()
-	state.data.evidence.OperatorState = "present"
-	state.data.evidence.AuthorizationRequest = &feishuprotocol.AuthorizationRequest{ID: "0123456789abcdef0123456789abcdef", Purpose: "docs.fixture.read", Scopes: []string{"docx:document:readonly"}}
-	state.data.evidence.MissingApplicationScopes = []string{"docx:document:readonly"}
-	snapshot := configurationTestSnapshot(&state)
-	action, ok := configurationActionByID(snapshot, "start_auth")
-	if !ok || action.Enabled || !strings.Contains(action.Reason, "开放平台") {
-		t.Fatalf("progressive OAuth was offered before the application scope existed: %#v", action)
-	}
-	if len(snapshot.Issues) == 0 || snapshot.Issues[len(snapshot.Issues)-1].Code != "application_permissions_missing" {
-		t.Fatalf("missing application scope was not explained: %#v", snapshot.Issues)
+	if !ok || action.Enabled || action.AuthorizationRequestID != "" || len(action.Scopes) != 0 {
+		t.Fatalf("retired authorization exposed: %#v", action)
 	}
 }
 
@@ -371,22 +350,6 @@ func TestConfigurationUnknownMessageIsNotReplayed(t *testing.T) {
 	}
 	if strings.Contains(trace, feishuprotocol.SettingsWrite) {
 		t.Fatal("test message changed mode")
-	}
-}
-
-func TestConfigurationGatewayDoesNotExposeDesktopActions(t *testing.T) {
-	service := &Service{}
-	for _, method := range []string{"feishu/configuration/read", "feishu/configuration/action", "feishu/auth/ensureCurrentUser"} {
-		if _, err := service.handleLocalRPC(context.Background(), method, json.RawMessage(`{"confirm":true}`)); err == nil {
-			t.Fatalf("CLI accessed host control: %s", method)
-		}
-	}
-	params, err := json.Marshal(feishucli.Request{Command: "auth", Action: "ensure-current-user"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.handleLocalRPC(context.Background(), feishucli.MethodExecute, params); err == nil || !strings.Contains(err.Error(), "configuration_desktop_required") {
-		t.Fatalf("compat auth bypass: %v", err)
 	}
 }
 

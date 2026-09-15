@@ -155,7 +155,7 @@ public struct FeishuConfigurationSnapshot: Decodable {
         public let selfTarget: String?
         public let recentOperations: [Operation]?
         public var versionSummary: String {
-            "KSFAssistant \(serviceVersion.isEmpty ? "未知" : "v" + serviceVersion) · lark-cli \(cliVersion.isEmpty ? "未知" : "v" + cliVersion)"
+            "KSFAssistant \(serviceVersion.isEmpty ? "未知" : "v" + serviceVersion)"
         }
     }
     public let diagnostics: Diagnostics?

@@ -17,8 +17,6 @@ import (
 	"time"
 
 	"ksfassistant/core/internal/feishu"
-	"ksfassistant/core/internal/feishucli"
-	"ksfassistant/core/internal/feishucommands"
 	"ksfassistant/core/internal/feishuprotocol"
 	"ksfassistant/core/internal/privateipc"
 )
@@ -137,29 +135,6 @@ func (server *bridgeRPCServer) HandlePrivateRPC(ctx context.Context, method stri
 			return nil, errors.New("unsupported integration audit event")
 		}
 		return map[string]bool{"recorded": true}, feishu.NewAuditLog(server.dataRoot).Record(request.Event, request.Fields)
-	case feishuprotocol.ClientExecute:
-		request, err := feishucli.DecodeRequest(params)
-		if err != nil {
-			return nil, err
-		}
-		if request.Command == "card-probe" {
-			if request.Options["as"] != "bot" {
-				return nil, errors.New("probe_requires_bot_identity")
-			}
-			server.mu.RLock()
-			probe := feishu.NewCardProbe(server.dataRoot, server.transport, server.messages)
-			server.mu.RUnlock()
-			return probe.Command(ctx, request.Action, request.Options["id"], request.Options["target-name"], request.Options["mode"])
-		}
-		result, err := feishucommands.Execute(ctx, server.dataRoot, server.capability, request)
-		if settings, readErr := feishu.NewSettingsStore(server.dataRoot).Load(); readErr == nil {
-			server.mu.Lock()
-			server.settings = settings
-			server.mu.Unlock()
-		} else {
-			server.degrade(readErr)
-		}
-		return result, err
 	case feishuprotocol.MethodBridgeInitialize:
 		var request feishuprotocol.InitializeRequest
 		if err := decodeBridgeParams(params, &request); err != nil {
@@ -457,24 +432,6 @@ func (server *bridgeRPCServer) HandlePrivateRPC(ctx context.Context, method stri
 		server.settings = settings
 		server.mu.Unlock()
 		return settings, nil
-	case feishuprotocol.MethodOperationPrepare:
-		var request struct {
-			CapabilityID string         `json:"capabilityId"`
-			Input        map[string]any `json:"input"`
-			Source       string         `json:"source"`
-		}
-		if err := decodeBridgeParams(params, &request); err != nil {
-			return nil, err
-		}
-		if request.Source == "" {
-			request.Source = "core"
-		}
-		result, err := server.capability.Prepare(ctx, request.CapabilityID, request.Input, request.Source)
-		if err != nil {
-			advice := feishu.CapabilityServiceErrorAdvice(err)
-			return feishu.PreparedOperation{ErrorCode: advice.ErrorCode, NextAction: advice.NextAction}, nil
-		}
-		return result, err
 	case feishuprotocol.MethodOperationConfirm:
 		var request struct {
 			OperationID string `json:"operationId"`
@@ -483,7 +440,7 @@ func (server *bridgeRPCServer) HandlePrivateRPC(ctx context.Context, method stri
 		if err := decodeBridgeParams(params, &request); err != nil {
 			return nil, err
 		}
-		result, err := server.capability.Confirm(ctx, request.OperationID, request.Challenge)
+		result, err := server.capability.ConfirmServiceMessage(ctx, request.OperationID, request.Challenge)
 		if err != nil && result.Operation.ID != "" && operationTerminal(result.Operation.Status) {
 			result.ErrorCode = result.Operation.ErrorCode
 			result.NextAction = result.Operation.NextAction

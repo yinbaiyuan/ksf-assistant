@@ -95,18 +95,18 @@ test('official CLI and Skills share a pinned tag, SHA256 hashes and license', ()
   }
 });
 
-test('both platform packages include task and toolchain executables plus full Skills', () => {
+test('both platform packages retain migration and task binaries without Agent Skills', () => {
   const config = JSON.parse(fs.readFileSync(path.join(repoRoot, 'Windows/package.json')));
   assert.equal(config.build.afterSign, 'scripts/seal-runtime.cjs');
   for (const component of ['toolchain', 'task']) {
     assert.ok(config.build.extraResources.some(item => item.from === `../dist/runtime/${component}/windows-\${arch}` && item.filter.includes(`ksf-assistant-${component}.exe`)));
   }
-  assert.ok(config.build.extraResources.some(item => item.to === 'runtime/lark-skills'));
+  assert.ok(!config.build.extraResources.some(item => item.to === 'runtime/lark-skills'));
   assert.ok(config.build.extraResources.some(item => item.to === 'runtime/lark-cli-runtime.json'));
   const mac = fs.readFileSync(path.join(repoRoot, 'scripts/build-app.sh'), 'utf8');
   assert.match(mac, /for component in toolchain task/);
   assert.match(mac, /lipo -create/);
-  assert.match(mac, /cp -R.*dist\/runtime\/lark-skills/);
+  assert.doesNotMatch(mac, /cp -R.*dist\/runtime\/lark-skills/);
   const build = fs.readFileSync(path.join(repoRoot, 'scripts/build-core.sh'), 'utf8');
   assert.match(build, /darwin-arm64 darwin-x64 windows-x64 windows-arm64/);
   assert.match(build, /for component in toolchain task/);

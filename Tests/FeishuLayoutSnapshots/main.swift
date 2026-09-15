@@ -54,7 +54,7 @@ struct FeishuLayoutSnapshots {
                 if !["create", "blocked", "app_pending"].contains(state) {
                     let signedOut = ["signed_out", "auth_pending", "expired"].contains(state)
                     var facts = object["facts"] as! [[String: Any]]
-                    let labels = ["robot": signedOut ? "登录后显示" : "示例机器人", "authorizedUser": signedOut ? "按需授权（不影响消息和卡片）" : "示例用户 · 已授权", "taskConnection": signedOut ? "等待飞书登录" : "正常", "application": "cli_visual_fixture"]
+                    let labels = ["robot": signedOut ? "登录后显示" : "示例机器人", "authorizedUser": signedOut ? "尚未绑定" : "示例用户 · 已绑定", "taskConnection": signedOut ? "等待飞书登录" : "正常", "application": "cli_visual_fixture"]
                     for i in facts.indices {
                         if let value = labels[facts[i]["id"] as! String] {
                             facts[i]["value"] = value

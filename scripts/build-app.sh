@@ -67,7 +67,6 @@ cp "$repo_root/dist/runtime/feishu-bridge/darwin-x64/ksf-assistant-feishu-bridge
 cp "$repo_root/dist/runtime/lark-cli/darwin-arm64/lark-cli" "$app_path/Contents/Resources/runtime/lark-cli/darwin-arm64/lark-cli"
 cp "$repo_root/dist/runtime/lark-cli/darwin-x64/lark-cli" "$app_path/Contents/Resources/runtime/lark-cli/darwin-x64/lark-cli"
 cp "$repo_root/dist/runtime/lark-cli-runtime.json" "$app_path/Contents/Resources/runtime/lark-cli-runtime.json"
-cp -R "$repo_root/dist/runtime/lark-skills" "$app_path/Contents/Resources/runtime/lark-skills"
 for component in toolchain task; do
     for target in darwin-arm64 darwin-x64; do
         mkdir -p "$app_path/Contents/Resources/runtime/$component/$target"

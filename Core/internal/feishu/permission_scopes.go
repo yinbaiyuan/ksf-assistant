@@ -19,8 +19,9 @@ type PermissionScopes struct {
 }
 
 func BaseConnectionPermissionScopes() []string {
+	// Task-card transport uses these specific grants. The broad im:message
+	// business permission is not an additional prerequisite for this path.
 	return []string{
-		"im:message",
 		"im:message:readonly",
 		"im:message:send_as_bot",
 		"im:message:update",

@@ -118,7 +118,7 @@ test('pending Feishu task links expose a safe release path', () => {
 
 test('explicit app exit waits for the KSFAssistant Core to stop the full server tree', () => {
   assert.match(main, /event\.preventDefault\(\)/);
-  assert.match(main, /Promise\.resolve\(userApproval\?\.stop\(\)\)/);
+  assert.doesNotMatch(main, /userApproval/);
   assert.match(main, /then\(\(\) => core\?\.close\(\)\)/);
   assert.match(main, /finally\(\(\) => app\.exit\(0\)\)/);
   assert.match(fs.readFileSync(path.join(root, 'src', 'core-client.cjs'), 'utf8'), /taskkill\.exe/);
@@ -148,7 +148,7 @@ test('Feishu settings use the packaged service and keep secrets out of persisted
 });
 
 test('Feishu configuration exposes diagnostics without duplicate product features', () => {
- assert.match(app,/missingApplicationScopes/);assert.match(app,/missingUserScopes/);assert.match(app,/诊断详情/);assert.match(app,/lark-cli/);assert.doesNotMatch(app,/data-field="feishu-feature"|高级功能|测试目标/);
+ assert.match(app,/missingApplicationScopes/);assert.match(app,/missingUserScopes/);assert.match(app,/诊断详情/);assert.doesNotMatch(app,/ · lark-cli /);assert.doesNotMatch(app,/data-field="feishu-feature"|高级功能|测试目标/);
  assert.match(preload,/readFeishuConfiguration/);assert.match(preload,/actFeishuConfiguration/);assert.match(main,/feishu\/configuration\/result/);
 });
 

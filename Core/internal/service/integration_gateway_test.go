@@ -164,11 +164,7 @@ func gatewayTaskCommand(t *testing.T, service *Service, action, taskKey string) 
 	if taskKey != "" {
 		request.Options = map[string]string{"task-key": taskKey}
 	}
-	params, err := json.Marshal(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	value, err := service.handleLocalRPC(context.Background(), feishucli.MethodExecute, params)
+	value, err := service.taskLinkCommand(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +263,7 @@ func TestIntegrationGatewayStoppedFeishuKeepsLocalReadsAndRejectsRemoteCalls(t *
 			gatewayTaskCommand(t, service, action, map[string]string{"status": link.TaskKey}[action])
 		})
 	}
-	value, err := service.handleLocalRPC(context.Background(), feishucli.MethodExecute, json.RawMessage(`{"command":"profile","action":"show"}`))
+	value, err := service.taskLinkCommand(context.Background(), feishucli.Request{Command: "profile", Action: "show"})
 	if err == nil {
 		t.Fatalf("stopped daemon reported success: %#v", value)
 	}
@@ -293,8 +289,8 @@ func TestIntegrationGatewayCloseRemovesLocalEndpoint(t *testing.T) {
 	defer cancel()
 	var result json.RawMessage
 	request := feishucli.Request{Command: "task-link", Action: "list"}
-	if err := localipc.Call(ctx, root, feishucli.MethodExecute, request, &result); err != nil {
-		t.Fatal(err)
+	if err := localipc.Call(ctx, root, feishucli.MethodExecute, request, &result); err == nil {
+		t.Fatal("retired CLI endpoint was created")
 	}
 	service.Close()
 	if err := localipc.Call(ctx, root, feishucli.MethodExecute, request, &result); err == nil {
@@ -459,7 +455,7 @@ func TestIntegrationGatewayEventPersistenceFailureIsNotACKed(t *testing.T) {
 	}
 }
 
-func TestIntegrationGatewayCorruptInboxDoesNotBlockGenericCLI(t *testing.T) {
+func TestIntegrationGatewayCorruptInboxDoesNotExposeGenericCLI(t *testing.T) {
 	service := gatewayBridgeFixture(t, func(service *Service) {
 		if err := os.WriteFile(filepath.Join(service.feishuDataRoot, "integration-events-v1.json"), []byte(`{"broken"`), 0o600); err != nil {
 			t.Fatal(err)
@@ -467,7 +463,7 @@ func TestIntegrationGatewayCorruptInboxDoesNotBlockGenericCLI(t *testing.T) {
 		if err := service.initializeBusinessIntegration(); err == nil {
 			t.Fatal("corrupt inbox unexpectedly initialized")
 		}
-		if service.localGateway == nil || service.integrationRuntime != nil {
+		if service.integrationRuntime != nil {
 			t.Fatal("gateway was coupled to corrupt integration startup")
 		}
 	})
@@ -475,11 +471,8 @@ func TestIntegrationGatewayCorruptInboxDoesNotBlockGenericCLI(t *testing.T) {
 	defer cancel()
 	var result json.RawMessage
 	request := feishucli.Request{Command: "profile", Action: "show"}
-	if err := localipc.Call(ctx, service.feishuDataRoot, feishucli.MethodExecute, request, &result); err != nil {
-		t.Fatal(err)
-	}
-	if string(result) != `{"action":"show","command":"profile","fixture":true,"status":"ok"}` {
-		t.Fatalf("generic CLI result changed: %s", result)
+	if err := localipc.Call(ctx, service.feishuDataRoot, feishucli.MethodExecute, request, &result); err == nil {
+		t.Fatal("retired generic CLI remained available")
 	}
 	if _, err := service.taskLinkCommand(ctx, feishucli.Request{Command: "task-link", Action: "list"}); err == nil {
 		t.Fatal("unavailable integration reported task-link success")
@@ -500,9 +493,9 @@ func TestIntegrationGatewayCorruptTaskStoreDoesNotBreakHandshakeOrHideHealth(t *
 	if service.integrationRuntime.Health().State != "degraded" {
 		t.Fatal("ResumeActive storage failure was not retained in Health")
 	}
-	result, err := service.handleLocalRPC(context.Background(), feishucli.MethodExecute, json.RawMessage(`{"command":"profile","action":"show"}`))
-	if err != nil || result == nil {
-		t.Fatalf("task store corruption blocked generic CLI: %v", err)
+	result, err := service.taskLinkCommand(context.Background(), feishucli.Request{Command: "profile", Action: "show"})
+	if err == nil || result != nil {
+		t.Fatal("retired generic command unexpectedly succeeded")
 	}
 	snapshot := service.composeIntegrationSnapshot(domain.FeishuSnapshot{Availability: "ready"})
 	health, present := snapshot.Capabilities["businessIntegration"]

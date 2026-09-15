@@ -9,6 +9,32 @@ import (
 
 const nativeFixture = `{"schema":"2.0","config":{"streaming_mode":true},"ksf_cardkit":{"phase":"running:turn1","streaming":true},"body":{"elements":[{"tag":"markdown","element_id":"m1","content":"hello"},{"tag":"markdown","element_id":"activity","content":"reading"},{"tag":"form","name":"input","elements":[]}]}}`
 
+func TestNativeLateUserInputPrecedesReplyWithoutReplacingForm(t *testing.T) {
+	f := &probeCLIFixture{}
+	c, _ := NewOfficialMessageClient("app", f)
+	c.nativeRoot = t.TempDir()
+	ctx := context.Background()
+	if _, err := c.Send(ctx, MessageTarget{Type: "open_id", ID: "ou_test"}, "card", nativeFixture, "unique"); err != nil {
+		t.Fatal(err)
+	}
+	updated := strings.Replace(nativeFixture, `"elements":[`, `"elements":[{"tag":"markdown","element_id":"message_user","content":"**你**\n问题"},`, 1)
+	if err := c.PatchCard(ctx, "om_probe", updated); err != nil {
+		t.Fatal(err)
+	}
+	requests := f.requests[2:]
+	if len(requests) != 1 || requests[0].Method != "insert" || requests[0].Body["target_element_id"] != "m1" {
+		t.Fatal(requests)
+	}
+	updated = strings.Replace(updated, "问题", "修正后的问题", 1)
+	if err := c.PatchCard(ctx, "om_probe", updated); err != nil {
+		t.Fatal(err)
+	}
+	last := f.requests[len(f.requests)-1]
+	if last.Method != "content" || last.Params["element_id"] != "message_user" {
+		t.Fatal(last)
+	}
+}
+
 func TestNativeTaskCardCreatesEntityAndDoesNotRecreate(t *testing.T) {
 	f := &probeCLIFixture{}
 	c, _ := NewOfficialMessageClient("app", f)

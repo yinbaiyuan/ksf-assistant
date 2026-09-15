@@ -26,9 +26,6 @@ func (service *Service) HandlePrivateRPC(ctx context.Context, method string, par
 	if service.managedFeishuSupervisor == nil || !service.managedFeishuSupervisor.IsCurrentGeneration(generation) {
 		return nil, managedfeishu.ErrStaleGeneration
 	}
-	if strings.HasPrefix(method, "userApproval/") {
-		return service.handleUserApproval(ctx, method, params)
-	}
 	switch method {
 	case feishuprotocol.EventDeliver:
 		var event feishuprotocol.Event

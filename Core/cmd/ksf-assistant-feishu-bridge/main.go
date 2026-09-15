@@ -86,8 +86,7 @@ func run(arguments []string) error {
 	capabilityService := feishu.NewCapabilityService(dataRoot, serviceExecutor, nil)
 	rpcServer := newBridgeRPCServer(dataRoot, settings, capabilityService)
 	rpcServer.degrade(err)
-	peer := privateipc.NewPeer(os.Stdin, os.Stdout, feishucli.NewUploadHandler(rpcServer, feishuprotocol.ClientExecute))
-	approvalGate.SetCaller(peer.Call)
+	peer := privateipc.NewPeer(os.Stdin, os.Stdout, rpcServer)
 	rpcServer.setRuntime(messageClient)
 	defer peer.Close()
 	parentClosed := make(chan error, 1)
@@ -98,7 +97,6 @@ func run(arguments []string) error {
 	if err := capabilityService.RecoverInterrupted(1000); err != nil {
 		return err
 	}
-	go runOperationReconciliation(ctx, capabilityService)
 	if messageClient != nil {
 		outbox = feishu.NewOutbox(dataRoot)
 	}
@@ -106,7 +104,6 @@ func run(arguments []string) error {
 	rpcServer.mu.Lock()
 	rpcServer.scheduler = scheduler
 	rpcServer.mu.Unlock()
-	scheduler.RegisterCapabilityService(capabilityService)
 	if outbox != nil {
 		scheduler.RegisterOutbox(outbox, rpcServer.transport, false)
 	}

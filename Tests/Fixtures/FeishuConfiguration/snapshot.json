@@ -94,7 +94,7 @@
     },
     {
       "id": "authorizedUser",
-      "title": "用户能力授权",
+      "title": "远程操作者",
       "state": "present",
       "value": "已授权，权限待核验",
       "source": "官方 CLI · user",

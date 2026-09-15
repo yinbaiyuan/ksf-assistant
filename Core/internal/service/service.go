@@ -20,7 +20,6 @@ import (
 	managedfeishu "ksfassistant/core/internal/feishu"
 	"ksfassistant/core/internal/feishuprotocol"
 	"ksfassistant/core/internal/integration"
-	"ksfassistant/core/internal/localipc"
 	"ksfassistant/core/internal/pricing"
 	"ksfassistant/core/internal/productversion"
 	"ksfassistant/core/internal/tokens"
@@ -129,10 +128,7 @@ type PricingCatalogRequest struct {
 
 type Service struct {
 	configuration           configurationRuntime
-	approvalMu              sync.Mutex
-	userApprovals           *approvalState
 	integrationRuntime      *integration.Runtime
-	localGateway            *localipc.Server
 	feishuGeneration        uint64
 	home                    string
 	codex                   *codex.Client
@@ -1201,10 +1197,6 @@ func (service *Service) PrepareProjectLaunch(ctx context.Context, request Prepar
 
 func (service *Service) Close() {
 	service.closeConfiguration()
-	service.approvals().broker.Close()
-	if service.localGateway != nil {
-		_ = service.localGateway.Close()
-	}
 	if service.integrationRuntime != nil {
 		service.integrationRuntime.Close()
 	}

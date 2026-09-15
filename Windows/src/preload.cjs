@@ -29,8 +29,6 @@ contextBridge.exposeInMainWorld('ksfAssistant', Object.freeze({
   interruptTaskLink: (payload) => ipcRenderer.invoke('feishu:task-link-interrupt', payload),
   readFeishuConfiguration: (options = { refresh: false }) => ipcRenderer.invoke('feishu:configuration-read', options),
   actFeishuConfiguration: (payload) => ipcRenderer.invoke('feishu:configuration-action', payload),
-  toolchainStatus: () => ipcRenderer.invoke('toolchain:status'),
-  installToolchain: (confirm) => ipcRenderer.invoke('toolchain:install', confirm),
   openFeishuFlow: (payload) => ipcRenderer.invoke('feishu:flow-open', payload),
   resize: (height) => ipcRenderer.send('window:resize', height),
   hide: () => ipcRenderer.send('window:hide'),

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"time"
 
 	"ksfassistant/core/internal/domain"
@@ -12,20 +11,12 @@ import (
 	"ksfassistant/core/internal/feishucli"
 	"ksfassistant/core/internal/feishuprotocol"
 	"ksfassistant/core/internal/integration"
-	"ksfassistant/core/internal/localipc"
 	"ksfassistant/core/internal/privateipc"
 )
 
 func (service *Service) initializeBusinessIntegration() error {
 	if service.integrationRuntime != nil {
 		return nil
-	}
-	if service.localGateway == nil {
-		gateway, err := localipc.Listen(service.feishuDataRoot, feishucli.NewUploadHandler(privateipc.HandlerFunc(service.handleLocalRPC), feishucli.MethodExecute))
-		if err != nil {
-			return err
-		}
-		service.localGateway = gateway
 	}
 	runtime, err := integration.NewRuntime(service.feishuDataRoot, integrationFeishuPort{service}, newCoreCapabilityClient(service))
 	if err != nil {
@@ -70,63 +61,6 @@ func (service *Service) connectManagedBridge(ctx context.Context, generation uin
 		_ = service.integrationRuntime.ResumeActive()
 	}
 	return nil
-}
-
-func (service *Service) handleLocalRPC(ctx context.Context, method string, params json.RawMessage) (any, error) {
-	if strings.HasPrefix(method, "userApproval/") {
-		return service.handleUserApproval(ctx, method, params)
-	}
-	if method != feishucli.MethodExecute {
-		return nil, privateipc.ErrMethodNotFound
-	}
-	request, err := feishucli.DecodeRequest(params)
-	if err != nil {
-		return nil, err
-	}
-	if request.Command == "auth" || request.Command == "profile" && request.Action == "set" {
-		return nil, errors.New("configuration_desktop_required: 请在 KSFAssistant 桌面管理应用、授权与远程操作者")
-	}
-	if request.Command == "events" && (request.Action == "review" || request.Action == "retry") {
-		box := feishu.NewInboundWorkbox(service.feishuDataRoot)
-		if request.Action == "review" {
-			items, err := box.Review()
-			return map[string]any{"items": items}, err
-		}
-		if service.integrationRuntime == nil {
-			return nil, errors.New("integration unavailable")
-		}
-		id := request.Options["id"]
-		event, err := box.ReviewEvent(id)
-		if err != nil {
-			return nil, err
-		}
-		state, err := service.integrationRuntime.EventReceiptState(event)
-		if err != nil {
-			return nil, err
-		}
-		switch state {
-		case "accepted":
-			err = box.Complete(id)
-		case "not_received":
-			err = box.RetryReviewed(id)
-		default:
-			return nil, errors.New("event outcome unknown; automatic replay prohibited")
-		}
-		return map[string]any{"state": state}, err
-	}
-	if request.Command == "task-link" {
-		return service.taskLinkCommand(ctx, request)
-	}
-	if request.Command == "snapshot" {
-		return service.readFeishu(ctx, time.Now()), nil
-	}
-	var result json.RawMessage
-	if service.managedFeishuSupervisor == nil {
-		return nil, errors.New("KSFAssistant Feishu service unavailable")
-	}
-	ctx = feishu.WithEpoch(ctx, service.managedFeishuSupervisor.Generation())
-	err = feishucli.CallRequest(ctx, service.managedFeishuSupervisor.Call, feishuprotocol.ClientExecute, request, &result)
-	return result, err
 }
 
 func (service *Service) taskLinkCommand(ctx context.Context, request feishucli.Request) (any, error) {

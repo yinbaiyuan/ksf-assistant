@@ -73,7 +73,7 @@ esac`)
 	}
 }
 
-func TestConfigurationEvidenceSeparatesRequestedApplicationScopeFromUserGrant(t *testing.T) {
+func TestConfigurationEvidenceIgnoresRetiredBusinessRequest(t *testing.T) {
 	contract, err := RequiredPermissionScopes()
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +101,7 @@ esac`)
 		t.Fatal(err)
 	}
 	evidence, err := ReadConfigurationEvidence(context.Background(), runner, runner.DataRoot)
-	if err != nil || evidence.AuthorizationRequest == nil || !contains(evidence.MissingApplicationScopes, "docx:document:readonly") {
+	if err != nil || evidence.AuthorizationRequest != nil || contains(evidence.MissingApplicationScopes, "docx:document:readonly") {
 		t.Fatalf("requested application scope was not separated: %+v %v", evidence, err)
 	}
 	if evidence.ApplicationPermissions != "present" {

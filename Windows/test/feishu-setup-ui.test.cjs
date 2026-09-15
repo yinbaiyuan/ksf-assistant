@@ -98,7 +98,8 @@ test('normal configuration has one diagnostics section and bottom logout', () =>
  const {context}=harness(snapshot({auth:{identityValid:true},actions:[action('logout'),action('start_auth',false)]}));
  const html=context.renderFeishuPage(); assert.doesNotMatch(html,/feishu-step"|feishu-config-start_auth|feishu-primary|authorization|feishu-feature/);
  assert.ok(html.indexOf('feishu-logout')>html.indexOf('data-feishu-section="diagnostics"'));
- assert.match(html,/KSFAssistant v0.11.0-preview.16 · lark-cli v1.0.93-ksfassistant.1/);
+ assert.match(html,/KSFAssistant v0.11.0-preview.16/);
+ assert.doesNotMatch(html,/lark-cli v/);
 });
 
 test('optional user authorization does not appear as a required setup action', () => {

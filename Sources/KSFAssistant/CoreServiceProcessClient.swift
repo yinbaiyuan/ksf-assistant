@@ -253,16 +253,6 @@ actor CoreServiceProcessClient {
         stopProcess()
     }
 
-    func pollUserApproval(interactive: Bool) async throws -> UserApprovalPoll {
-        let data = try await requestData(method: "userApproval/poll", params: ["interactive": interactive], timeout: 2)
-        return try UserApprovalPoll.decode(data)
-    }
-
-    func decideUserApproval(id: String, approve: Bool) async throws -> Bool {
-        let data = try await requestData(method: "userApproval/decide", params: ["id": id, "approve": approve], timeout: 2)
-        return try UserApprovalDecision.decode(data).accepted
-    }
-
     private func decode<T: Decodable>(method: String, params: [String: Any]) async throws -> T {
         let data = try await requestData(method: method, params: params)
         return try Self.decoder().decode(T.self, from: data)
@@ -317,14 +307,6 @@ actor CoreServiceProcessClient {
               let params = try JSONSerialization.jsonObject(with: payload) as? [String: Any]
         else { throw CoreServiceError.invalidResponse }
         return try await requestData(method: method, params: params, timeout: 125)
-    }
-
-    func toolchainStatus() async throws -> ToolchainStatus {
-        try await decode(method: "toolchain/status", params: [:])
-    }
-
-    func installToolchain() async throws -> ToolchainStatus {
-        try await decode(method: "toolchain/install", params: ["confirm": true])
     }
 
 

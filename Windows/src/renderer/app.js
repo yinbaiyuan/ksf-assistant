@@ -37,9 +37,6 @@ const state = {
   feishuSetupBusy: false,
   feishuSetupError: '',
   feishuSections: {},
-  toolchain: null,
-  toolchainBusy: false,
-  toolchainError: '',
   staticDataLoaded: false,
   timer: null,
 };
@@ -586,7 +583,7 @@ function renderFeishuDiagnostics() {
 
 function renderFeishuVersions() {
   const d = state.feishuConfiguration?.diagnostics || {};
-  const summary = 'KSFAssistant ' + (d.serviceVersion ? 'v' + d.serviceVersion : '未知') + ' · lark-cli ' + (d.cliVersion ? 'v' + d.cliVersion : '未知');
+  const summary = 'KSFAssistant ' + (d.serviceVersion ? 'v' + d.serviceVersion : '未知');
   return '<p class="feishu-versions setting-description">' + escapeHTML(summary) + '</p>';
 }
 
@@ -627,35 +624,8 @@ function renderFeishuPage() {
   const error = state.feishuReadError || (state.feishuLastAction !== 'test_message' ? state.feishuSetupError : '') || snapshot?.issues?.find((issue) => !(issue.component === 'operation' && issue.code === 'test_message'))?.message;
   if (error) step += '<p class="feishu-step-error" role="alert">' + escapeHTML(error) + '</p>';
   return header('飞书配置', buttonIcon('feishu-configuration-check', 'refresh', state.feishuManualRefresh ? '正在刷新接入状态' : '刷新接入状态', state.feishuManualRefresh ? 'feishu-refreshing' : '', Boolean(disabled || state.feishuManualRefresh)))
-    + '<div class="feishu-page">' + renderFeishuOverview(step) + renderToolchainSettings() + renderFeishuDiagnostics() + renderFeishuVersions()
+    + '<div class="feishu-page">' + renderFeishuOverview(step) + renderFeishuDiagnostics() + renderFeishuVersions()
     + (feishuAction('logout')?.enabled && !applicationSetup ? '<div class="feishu-logout">' + renderFeishuAction('logout') + '</div>' : '') + '</div>';
-}
-
-function renderToolchainSettings() {
-  const toolchain = state.toolchain;
-  const title = toolchain?.installationTitle || (state.toolchainError ? '检查失败' : '正在检查安装状态…');
-  const action = toolchain?.installationAction;
-  const details = toolchain?.installationDetails || [];
-  return `<section class="feishu-toolchain feishu-overview" aria-busy="${Boolean(state.toolchainBusy)}"><h3 class="setting-title">Codex 飞书技能</h3><p class="setting-description">让 Codex 使用当前飞书接入的消息、文档、日历等能力。</p><p role="status">${escapeHTML(title)}${toolchain?.healthy ? ` · ${toolchain.skills.length} 项 · ksf-lark-*` : ''}</p><div class="feishu-self-test">${action ? `<button class="button" data-action="toolchain-install" ${state.toolchainBusy ? 'disabled' : ''}>${escapeHTML(action)}</button>` : !toolchain ? `<button class="button" data-action="toolchain-status" ${state.toolchainBusy ? 'disabled' : ''}>检查安装</button>` : ''}</div>${details.length ? `<details><summary>查看具体文件</summary>${details.map(d => `<p class="setting-description">${escapeHTML(d)}</p>`).join('')}</details>` : ''}${state.toolchainError ? `<p role="alert">${escapeHTML(state.toolchainError)}</p>` : ''}</section>`;
-
-}
-
-async function updateToolchain(install = false) {
-  if (state.toolchainBusy) return;
-  if (install && !window.confirm('安装当前应用内置的 ksf-lark-* 技能及必要执行入口？迁移本应用管理且未修改的旧版，不覆盖自行修改的文件，不自动授权或发送消息。')) return;
-  state.toolchainBusy = true;
-  state.toolchainError = '';
-  render();
-  try {
-    state.toolchain = install ? await api.installToolchain(true) : await api.toolchainStatus();
-    if (state.toolchain?.schemaVersion !== 1) throw new Error('unsupported schema');
-  } catch {
-    state.toolchain = null;
-    state.toolchainError = install ? '工具链未安装完成；请检查现有文件冲突后重试。' : '无法检查官方工具链，请重试。';
-  } finally {
-    state.toolchainBusy = false;
-    render();
-  }
 }
 
 function applyFeishuConfiguration(snapshot, generation) {
@@ -864,7 +834,6 @@ async function refreshStaticData({ page = state.page, force = false } = {}) {
   if (!state.staticDataLoaded || page === 'pricing' || force) {
     reads.push(api.pricingCatalog().then((value) => { state.pricingCatalog = value; }));
   }
-  if (page === 'feishu') reads.push(updateToolchain());
   await Promise.all(reads);
   state.staticDataLoaded = true;
 }
@@ -908,7 +877,7 @@ function scheduleRefresh() {
 }
 
 async function handleAction(action, element) {
-  if (action === 'feishu-configuration-check') return Promise.all([readFeishuConfiguration(true), updateToolchain()]);
+  if (action === 'feishu-configuration-check') return readFeishuConfiguration(true);
   if (action.startsWith('feishu-config-')) return performFeishuConfigurationAction(action.slice('feishu-config-'.length));
   if (action === 'feishu-flow-open') {
     const flow = activeFeishuFlow();
@@ -918,8 +887,6 @@ async function handleAction(action, element) {
     }
     return;
   }
-  if (action === 'toolchain-status') return updateToolchain();
-  if (action === 'toolchain-install') return updateToolchain(true);
   if (action === 'back') state.page = state.page === 'project' ? 'projects' : ['pricing', 'feishu'].includes(state.page) ? 'settings' : 'home';
   else if (action === 'projects') state.page = 'projects';
   else if (action === 'settings') state.page = 'settings';

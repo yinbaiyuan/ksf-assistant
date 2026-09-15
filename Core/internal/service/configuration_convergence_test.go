@@ -26,7 +26,7 @@ func TestConfigurationPermissionCompletenessAndIdentityAreIndependent(t *testing
 		state.data.evidence.ServiceVersion = "actual-service"
 		state.data.evidence.CLIVersion = "actual-cli"
 		snapshot := configurationTestSnapshot(&state)
-		if !strings.Contains(configurationFact(snapshot, "authorizedUser").Value, test.want) || !snapshot.Auth.IdentityValid {
+		if !strings.Contains(configurationFact(snapshot, "authorizedUser").Value, "fixture · 已绑定") || !snapshot.Auth.IdentityValid {
 			t.Fatal("identity and completeness conflated")
 		}
 		a, _ := configurationActionByID(snapshot, "start_auth")
@@ -96,7 +96,7 @@ func TestMissingUserOAuthDoesNotDisableBotConnection(t *testing.T) {
 	if configurationFact(snapshot, "robot").Value != state.data.evidence.BotName {
 		t.Fatal("missing user OAuth hid the verified bot")
 	}
-	if user.Title != "用户能力授权" || user.Value != "按需授权（不影响消息和卡片）" {
+	if user.Title != "远程操作者" || user.Value != "我 · 已绑定" {
 		t.Fatal("optional user OAuth presented as a connection fault", user)
 	}
 	if action.Enabled || configurationFact(snapshot, "taskConnection").Value != "正常" {

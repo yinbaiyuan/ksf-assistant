@@ -20,18 +20,17 @@ func main() { os.Exit(run(os.Args, os.Stdout)) }
 
 func run(arguments []string, output io.Writer) int {
 	name := strings.TrimSuffix(filepath.Base(arguments[0]), ".exe")
-	if name == "ksfas-lark" || name == "lark-cli" || name == "ksf-assistant-task" {
+	if name == "ksfas-lark" || name == "lark-cli" {
+		return failure(output, "agent_feishu_middleware_removed_use_independent_cli")
+	}
+	if name == "ksf-assistant-task" {
 		executable, err := os.Executable()
 		if err != nil {
 			return failure(output, "launcher_unavailable")
 		}
-		launch := toolchain.Launch
-		if name == "ksf-assistant-task" {
-			launch = toolchain.LaunchTask
-		}
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
-		code, err := launch(ctx, executable, arguments[1:], os.Stdin, output, os.Stderr)
+		code, err := toolchain.LaunchTask(ctx, executable, arguments[1:], os.Stdin, output, os.Stderr)
 		if err != nil {
 			var execution *toolchain.ExecutionError
 			if errors.As(err, &execution) {
@@ -46,7 +45,7 @@ func run(arguments []string, output io.Writer) int {
 		return code
 	}
 	if len(arguments) < 2 {
-		return failure(output, "usage_status_install_uninstall")
+		return failure(output, "usage_status_retire_uninstall")
 	}
 	flags := flag.NewFlagSet("toolchain", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -70,9 +69,11 @@ func run(arguments []string, output io.Writer) int {
 	case "status":
 		status, err = manager.Status()
 	case "install":
-		status, err = manager.Install()
+		return failure(output, "agent_feishu_middleware_removed_use_independent_cli")
 	case "uninstall":
 		status, err = manager.Uninstall()
+	case "retire":
+		status, err = manager.Retire()
 	default:
 		return failure(output, "unknown_action")
 	}

@@ -37,24 +37,13 @@ func (state *configurationRuntime) convergePresentation(result *ConfigurationSna
 	if robot.Value == "" {
 		robot.Value = "名称暂不可用"
 	}
-	user := fact("user")
+	user := fact("operator")
 	user.ID = "authorizedUser"
-	user.Title = "用户能力授权"
-	if user.State == "missing" {
-		user.Value = "按需授权（不影响消息和卡片）"
-	}
-	if user.State == "present" {
-		switch {
-		case e.UserPermissions == "missing":
-			user.Value = "本次功能尚缺权限"
-		case e.UserPermissions != "present":
-			user.Value = "已授权，权限待核验"
-		default:
-			user.Value = "已授权"
-		}
-		if e.UserName != "" {
-			user.Value = e.UserName + " · " + user.Value
-		}
+	user.Title = "远程操作者"
+	if e.OperatorState == "present" {
+		user.Value = e.OperatorAlias + " · 已绑定"
+	} else {
+		user.Value = "尚未绑定"
 	}
 	connection := ConfigurationFact{ID: "taskConnection", Title: "任务连接", State: "present", Value: "正常", Source: "Core 接入条件汇总", CheckedAt: now.UTC().Format(time.RFC3339Nano)}
 	var problems []string
@@ -79,11 +68,6 @@ func (state *configurationRuntime) convergePresentation(result *ConfigurationSna
 	if result.Flow != nil && result.Flow.Kind == "user" && result.Flow.State == "completed" && e.Auth != nil && e.Auth.IdentityValid {
 		result.Flow = nil
 	}
-	if e.AuthorizationRequest != nil && len(e.MissingApplicationScopes) > 0 {
-		result.Issues = append(result.Issues, ConfigurationIssue{"application", "application_permissions_missing", "应用尚未开通所需权限，请在飞书开放平台完善应用权限后刷新。"})
-	} else if e.AuthorizationRequest != nil {
-		result.Issues = append(result.Issues, ConfigurationIssue{"authorization", "user_permissions_missing", "本次用户能力需要补充授权；授权成功后请重新执行原操作。"})
-	}
 	if e.CLIState != "" && e.CLIState != "ready" {
 		result.Issues = append(result.Issues, ConfigurationIssue{"runtime", "cli_unavailable", "lark-cli 不可用或版本不兼容，请修复运行组件。"})
 	}
@@ -93,7 +77,7 @@ func (state *configurationRuntime) convergePresentation(result *ConfigurationSna
 			continue
 		}
 		if a.ID == "start_auth" {
-			a.Enabled = a.Enabled && (e.OperatorState == "missing" || e.AuthorizationRequest != nil)
+			a.Enabled = a.Enabled && e.OperatorState == "missing"
 		}
 		if a.ID == "restart" {
 			a.Enabled = a.Enabled && (fact("connection").State == "missing")

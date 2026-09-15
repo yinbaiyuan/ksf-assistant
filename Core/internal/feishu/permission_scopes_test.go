@@ -2,6 +2,16 @@ package feishu
 
 import "testing"
 
+func TestCardConnectionDoesNotRequireBroadMessagingScope(t *testing.T) {
+	granted := []string{"im:message:readonly", "im:message:send_as_bot", "im:message:update", "im:message.p2p_msg:readonly", "im:resource"}
+	if result := comparePermissionScopes(BaseConnectionPermissionScopes(), granted); !result.Complete {
+		t.Fatalf("specific card permissions require unnecessary broad scope: %v", result.Missing)
+	}
+	if result := comparePermissionScopes(BaseConnectionPermissionScopes(), granted[:4]); result.Complete {
+		t.Fatal("missing attachment permission accepted")
+	}
+}
+
 func TestRequiredPermissionScopeContract(t *testing.T) {
 	contract, err := RequiredPermissionScopes()
 	if err != nil {

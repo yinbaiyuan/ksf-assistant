@@ -141,7 +141,7 @@ func TestServerRejectsUnknownMethods(t *testing.T) {
 
 func TestServerPublishesFeishuGovernanceMethodsWithoutRawPassthrough(t *testing.T) {
 	methods := []string{
-		"feishu/operation/prepare", "feishu/operation/confirm", "feishu/operation/cancel",
+		"feishu/operation/confirm", "feishu/operation/cancel",
 		"feishu/operation/status", "feishu/policy/read", "feishu/policy/update",
 	}
 	for index, method := range methods {

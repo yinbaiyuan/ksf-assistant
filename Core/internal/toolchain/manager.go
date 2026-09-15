@@ -328,6 +328,20 @@ func copyFile(source, destination string, mode fs.FileMode) error {
 }
 
 func (manager *Manager) change(install bool) error {
+	return manager.changeMode(install, false)
+}
+
+// Retire removes only checksummed owned Skills, replaces business launchers with
+// the refusal-only entrypoint, and preserves the independent task launcher.
+// Existing transaction backups and edit/collision checks remain mandatory.
+func (manager *Manager) Retire() (Status, error) {
+	if err := manager.changeMode(true, true); err != nil {
+		return Status{}, err
+	}
+	return Status{Version: Version, InstallationState: "retired", InstallationTitle: "Agent 飞书中间件已移除", Skills: []SkillStatus{}, Problems: []string{}}, nil
+}
+
+func (manager *Manager) changeMode(install, retire bool) error {
 	if err := noSymlinks(manager.config.StateDir); err != nil {
 		return err
 	}
@@ -351,14 +365,17 @@ func (manager *Manager) change(install bool) error {
 	if err != nil {
 		return err
 	}
+	if retire && owned == nil {
+		return nil
+	}
 	if owned != nil {
 		state, _ := manager.inspectState(owned)
-		if state != "managed" && !(install && state == "missing") {
+		if state != "managed" && !(install && !retire && state == "missing") {
 			return errors.New("launcher_" + state)
 		}
 		for _, skill := range owned.Skills {
 			state, _ := inspectOwned(filepath.Join(manager.skillRoot(), skill.Name), skill.Files)
-			if state != "managed" && !(install && state == "missing") {
+			if state != "managed" && !(install && !retire && state == "missing") {
 				return errors.New("owned_skill_edited")
 			}
 		}
@@ -368,9 +385,16 @@ func (manager *Manager) change(install bool) error {
 	}
 	var manifest Manifest
 	if install {
-		manifest, err = manager.manifest()
-		if err != nil {
-			return err
+		if !retire {
+			manifest, err = manager.manifest()
+			if err != nil {
+				return err
+			}
+		} else {
+			manifest.Skills = []Skill{}
+			if len(owned.Skills) == 0 && manager.currentLauncher(owned) == nil {
+				return nil
+			}
 		}
 		if _, err := manager.binary(); err != nil {
 			return err
@@ -555,7 +579,7 @@ func (manager *Manager) change(install bool) error {
 			} else {
 				state, _ = inspectOwned(change.Target, oldSkills[filepath.Base(change.Target)].Files)
 			}
-			if state != "managed" && !(install && state == "missing") {
+			if state != "managed" && !(install && !retire && state == "missing") {
 				return fail()
 			}
 			if !sameTreeSnapshot(change.Target, change.OldFiles, change.OldDirectories) {

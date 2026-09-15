@@ -82,15 +82,6 @@ func ReadConfigurationEvidence(ctx context.Context, runner CapabilityExecutor, d
 	}
 	result.ApplicationState = "present"
 	result.ApplicationID = appID
-	if request, requestErr := readProgressiveAuthorizationRequest(dataRoot); requestErr != nil {
-		result.Problems = append(result.Problems, "authorization_request_unreadable")
-	} else if request != nil {
-		if request.ApplicationID == appID {
-			result.AuthorizationRequest = &feishuprotocol.AuthorizationRequest{ID: request.ID, Purpose: request.Purpose, Scopes: append([]string{}, request.Scopes...)}
-		} else {
-			result.Problems = append(result.Problems, "authorization_request_application_mismatch")
-		}
-	}
 	result.BotState = configurationIdentityState(bot)
 	status := emptyAuthStatus("unknown")
 	status.ProfileValid = true

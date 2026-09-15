@@ -10,6 +10,7 @@ func TestNativeTaskCardStableMessageRegions(t *testing.T) {
 	l.SetExtraValue("nativeTaskCard", true)
 	l.SetExtraString("progressTurnId", "turn")
 	l.SetExtraString("latestInputTurnId", "turn")
+	l.SetExtraString("latestInput", "请检查")
 	l.SetExtraValue("progressSegments", []taskProgressSegment{{ID: "message-one", Text: "hello"}, {ID: "message-two", Text: "world"}})
 	raw, err := TaskLinkCardJSON(l)
 	if err != nil {
@@ -27,7 +28,7 @@ func TestNativeTaskCardStableMessageRegions(t *testing.T) {
 			ids[id] = true
 		}
 	}
-	if !ids["activity"] || !ids["m"+cardDigest("message-one")[:18]] || !ids["m"+cardDigest("message-two")[:18]] {
+	if !ids["message_user"] || !ids["activity"] || !ids["m"+cardDigest("message-one")[:18]] || !ids["m"+cardDigest("message-two")[:18]] {
 		t.Fatal(ids)
 	}
 	l.SetExtraValue("nativeTaskCard", false)

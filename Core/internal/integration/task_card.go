@@ -166,7 +166,11 @@ func taskLinkCardElements(link TaskLink) []any {
 		elements = append(elements, map[string]any{"tag": "hr"})
 	}
 	if latest := strings.TrimSpace(link.ExtraString("latestInput")); latest != "" {
-		elements = append(elements, markdown("**你**\n"+boundedCardText(latest, 480)), map[string]any{"tag": "hr"})
+		input := markdown("**你**\n" + boundedCardText(latest, 480))
+		if nativeTaskCard(link) {
+			input["element_id"] = "message_user"
+		}
+		elements = append(elements, input, map[string]any{"tag": "hr"})
 	}
 	if link.TurnState == "plan_ready" {
 		plan := strings.TrimSpace(link.Detail)

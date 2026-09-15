@@ -494,20 +494,12 @@ func (state *configurationRuntime) snapshot(now time.Time) ConfigurationSnapshot
 	startAuthTitle := "补充本人授权"
 	startAuthEnabled := app && evidence.OperatorState == "missing" && len(evidence.MissingApplicationScopes) == 0 && !flowPending
 	startAuthConfirmation := "仅在首次扫码未返回本人身份时，补充申请 contact:user.base:readonly；绑定后立即清除临时用户令牌。"
-	if evidence.AuthorizationRequest != nil {
-		startAuthTitle = "授权本次飞书功能"
-		startAuthEnabled = app && len(evidence.MissingApplicationScopes) == 0 && !flowPending
-		startAuthConfirmation = "将为“" + evidence.AuthorizationRequest.Purpose + "”申请以下缺少权限：" + strings.Join(evidence.AuthorizationRequest.Scopes, "、") + "。授权成功后不会自动重放原操作。"
-	}
+
 	addAction("start_auth", startAuthTitle, startAuthEnabled, startAuthConfirmation)
 	if len(evidence.MissingApplicationScopes) > 0 {
 		result.Actions[len(result.Actions)-1].Reason = "请先在飞书开放平台为当前应用开通所需权限。"
 	}
-	if evidence.AuthorizationRequest != nil {
-		result.Actions[len(result.Actions)-1].AuthorizationRequestID = evidence.AuthorizationRequest.ID
-		result.Actions[len(result.Actions)-1].Purpose = evidence.AuthorizationRequest.Purpose
-		result.Actions[len(result.Actions)-1].Scopes = append([]string{}, evidence.AuthorizationRequest.Scopes...)
-	}
+
 	residualConnection := ready && evidence.ApplicationState == "missing" && evidence.CreationBlocked
 	logoutTitle := "注销并清除飞书"
 	if evidence.CleanupPending {
@@ -552,7 +544,7 @@ func validateConfigurationAction(request ConfigurationActionRequest) error {
 	if request.RequestID == "" || len(request.RequestID) > 128 || strings.ContainsAny(request.RequestID, "\x00\r\n") || len(request.AppSecret) > 4096 || len(request.AppID) > 128 || len(request.TargetAlias) > 200 || len(request.AuthorizationRequestID) > 128 {
 		return errors.New("configuration_invalid_request")
 	}
-	if request.Action != "connect_app" && (request.AppID != "" || request.AppSecret != "") || request.Action != "test_message" && request.TargetAlias != "" || request.Action != "set_feature" && (request.Feature != "" || request.Mode != "") || request.Action != "start_auth" && request.AuthorizationRequestID != "" {
+	if request.Action != "connect_app" && (request.AppID != "" || request.AppSecret != "") || request.Action != "test_message" && request.TargetAlias != "" || request.Action != "set_feature" && (request.Feature != "" || request.Mode != "") || request.AuthorizationRequestID != "" {
 		return errors.New("configuration_unexpected_parameters")
 	}
 	if request.Action == "connect_app" && (strings.TrimSpace(request.AppID) == "" || request.AppSecret == "") {

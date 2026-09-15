@@ -94,7 +94,7 @@ test('foreign renderer, subframes, hidden and unavailable desktop fail closed', 
   setup.context.approvalUnavailableReasons.add('lock-screen');
   await assert.rejects(setup.act());
   setup.context.approvalUnavailableReasons.clear();
-  setup.context.userApproval = { active: {} };
+  setup.context.approvalUnavailableReasons.add("lock-screen");
   await assert.rejects(setup.act());
   assert.equal(setup.calls.length, 0);
   assert.equal(setup.dialogs.length, 0);

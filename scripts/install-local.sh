@@ -49,8 +49,6 @@ validate_artifact() {
             test -x "$app/Contents/Resources/runtime/$component/$target/ksf-assistant-$component" || return 1
         done
     done
-    test -s "$app/Contents/Resources/runtime/lark-skills/manifest.json" || return 1
-    test -s "$app/Contents/Resources/runtime/lark-skills/LICENSE" || return 1
     test -s "$app/Contents/Resources/runtime/lark-cli-runtime.json" || return 1
 }
 
@@ -132,5 +130,5 @@ else
 fi
 echo "Installed $target_app"
 [[ ! -d "$previous_app" ]] || echo "Previous app preserved: $previous_app"
-echo "Skills and PATH are unchanged; toolchain installation requires a separate user action."
+echo "Independent CLI credentials and PATH are unchanged. Legacy Agent middleware retirement is a separate ownership-checked action."
 echo "Artifact health only: signature, architecture and required resources verified. Runtime/business health is not tested; launch and verify it separately."

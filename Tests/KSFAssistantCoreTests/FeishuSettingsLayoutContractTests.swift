@@ -11,7 +11,7 @@ final class FeishuSettingsLayoutContractTests: XCTestCase {
     func testConfigurationUsesOnlyCoordinatorAndNoRetiredMutationEndpoints() throws {
         let client = try source("CoreServiceProcessClient")
         let model = try source("UsageViewModel")
-        for method in ["feishu/configuration/read", "feishu/configuration/action", "toolchain/status", "toolchain/install"] {
+        for method in ["feishu/configuration/read", "feishu/configuration/action"] {
             XCTAssertTrue(client.contains(method), method)
         }
         for retired in ["feishu/setup/", "feishu/auth/", "feishu/features/update", "feishu/service/control", "feishu/test\""] {
@@ -51,7 +51,7 @@ final class FeishuSettingsLayoutContractTests: XCTestCase {
         let start = try XCTUnwrap(view.range(of: "private var feishuPage:"))
         let end = try XCTUnwrap(view.range(of: "private func feishuPageLayout"))
         let page = view[start.lowerBound..<end.lowerBound]
-        XCTAssertTrue(page.contains(".onAppear"))
+        XCTAssertFalse(page.contains("refreshToolchainStatus"))
         XCTAssertFalse(page.contains("startFeishuConfigurationPolling()"))
         XCTAssertTrue(model.contains("feishuConfigurationSession.startPolling()"))
         XCTAssertFalse(page.contains(".onDisappear"))
@@ -105,11 +105,12 @@ final class FeishuSettingsLayoutContractTests: XCTestCase {
         XCTAssertTrue(model.contains("url.scheme?.lowercased() == \"https\""))
     }
 
-    func testToolchainInstallationStillRequiresNativeConfirmation() throws {
+    func testAgentToolchainInstallationIsRemoved() throws {
         let view = try source("UsagePopoverView")
         let client = try source("CoreServiceProcessClient")
-        XCTAssertTrue(view.contains(".confirmationDialog(\"安装 Codex 飞书技能？\""))
-        XCTAssertTrue(client.contains("params: [\"confirm\": true]"))
+        XCTAssertFalse(view.contains("Codex 飞书技能"))
+        XCTAssertFalse(view.contains(" · lark-cli "))
+        XCTAssertFalse(client.contains("toolchain/install"))
         XCTAssertFalse(client.contains("deviceCode"))
         for retired in ["主设备", "仅手动能力", "feishuProfileText", "setFeishuProfile"] {
             XCTAssertFalse(view.contains(retired), retired)
@@ -117,13 +118,13 @@ final class FeishuSettingsLayoutContractTests: XCTestCase {
     }
 
     func testConfigurationSubmissionReusesExistingDesktopApprovalAvailability() throws {
-        let controller = try source("UserApprovalController")
+        let controller = try source("DesktopInteractionGuard")
         let model = try source("UsageViewModel")
         let view = try source("UsagePopoverView")
-        XCTAssertTrue(controller.contains("interactive && panel == nil && active == nil"))
+        XCTAssertTrue(controller.contains("NSApp.modalWindow == nil"))
         XCTAssertTrue(controller.contains("CGSSessionScreenIsLocked"))
         XCTAssertTrue(model.contains("!self.quitRequested && !self.shutdownStarted && self.popoverIsOpen"))
-        XCTAssertTrue(model.contains("self.userApprovalController.allowsConfigurationSubmission"))
+        XCTAssertTrue(model.contains("DesktopInteractionGuard.allowsConfigurationSubmission"))
         XCTAssertTrue(model.contains("FeishuConfigurationSession(canSubmit:"))
         XCTAssertTrue(view.contains(".help(fact.evidenceHelp)"))
         XCTAssertTrue(view.contains("configuration.priorityAction"))

@@ -45,10 +45,6 @@
         ]
       },
       {
-        "from": "../dist/runtime/lark-skills",
-        "to": "runtime/lark-skills"
-      },
-      {
         "from": "../dist/runtime/lark-cli-runtime.json",
         "to": "runtime/lark-cli-runtime.json"
       },

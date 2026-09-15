@@ -11,7 +11,6 @@ const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { CoreClient } = require('./core-client.cjs');
-const { UserApprovalController } = require('./user-approval.cjs');
 const { ConfigStore } = require('./config-store.cjs');
 const { migrateLegacySettings: migrateSettings } = require('./identity-migration.cjs');
 const { taskURL, clamp, isPathInside } = require('./security.cjs');
@@ -26,7 +25,6 @@ let quitting = false;
 let shutdownStarted = false;
 let dashboardPromise = null;
 let authorizedWorkspacePaths = new Map();
-let userApproval = null;
 const approvalUnavailableReasons = new Set();
 
 app.setAppUserModelId('com.ksfassistant.desktop');
@@ -318,13 +316,13 @@ function registerIPC() {
   });
   ipcMain.handle('feishu:task-link-create', async (event, payload) => {
     assertFeishuDesktopSender(event);
-    if (feishuConfigurationActionBusy || approvalUnavailableReasons.size || userApproval?.active) throw new Error('请在桌面完成当前对话框后重试');
+    if (feishuConfigurationActionBusy || approvalUnavailableReasons.size) throw new Error('请在桌面完成当前对话框后重试');
     feishuConfigurationActionBusy = true;
     approvalUnavailableReasons.add('task-card');
     try {
       return await require('./task-card-authorization.cjs').createTaskCard(core, payload, async () => {
         assertFeishuDesktopSender(event);
-        if (quitting || !window.isVisible() || userApproval?.active) throw new Error('请在桌面重试');
+        if (quitting || !window.isVisible()) throw new Error('请在桌面重试');
         const result = await dialog.showMessageBox(window, {
           type: 'question', title: '发送任务卡片到飞书', message: '确认本次发送',
           detail: `接收人：${payload.targetAlias}\n任务：${payload.title}\n项目：${payload.projectName}\n\n以机器人身份发送包含任务状态和交互按钮的卡片。确认仅限本次发送。`,
@@ -346,11 +344,6 @@ function registerIPC() {
     return core.request('feishu/configuration/read', { refresh: options?.refresh === true });
   });
   ipcMain.handle('feishu:configuration-action', (event, payload) => performFeishuConfigurationAction(event, payload));
-  ipcMain.handle('toolchain:status', () => core.request('toolchain/status'));
-  ipcMain.handle('toolchain:install', async (_event, confirm) => {
-    if (confirm !== true) throw new Error('安装官方工具链需要明确确认');
-    return core.request('toolchain/install', { confirm: true });
-  });
   ipcMain.handle('feishu:flow-open', async (event, payload) => {
     assertFeishuDesktopSender(event);
     if (!window.isVisible() || feishuConfigurationActionBusy || approvalUnavailableReasons.size) throw new Error('请在桌面打开当前会话');
@@ -392,7 +385,7 @@ let feishuConfigurationActionBusy = false;
 
 async function performFeishuConfigurationAction(event, payload) {
   assertFeishuDesktopSender(event);
-  if (feishuConfigurationActionBusy || !window.isVisible() || approvalUnavailableReasons.size || userApproval?.active) throw new Error('请在桌面完成当前对话框后重试');
+  if (feishuConfigurationActionBusy || !window.isVisible() || approvalUnavailableReasons.size) throw new Error('请在桌面完成当前对话框后重试');
   const fields = ['action', 'requestId', 'epoch', 'revision', 'contextRevision', 'confirm', 'appId', 'appSecret', 'targetAlias', 'feature', 'mode', 'flowId', 'authorizationRequestId'];
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)
     || Object.keys(payload).some((key) => !fields.includes(key))
@@ -426,7 +419,7 @@ async function performFeishuConfigurationAction(event, payload) {
     if (!confirmation.trim() && !checksFlow) throw new Error('缺少核心确认文案，请重新检查');
     let confirmed = false;
     assertFeishuDesktopSender(event);
-    if (!window.isVisible() || userApproval?.active) throw new Error('请在桌面重试');
+    if (!window.isVisible()) throw new Error('请在桌面重试');
     if (confirmation.trim()) {
       const detail = [confirmation,
         request.targetAlias ? `目标别名：${request.targetAlias}` : '',
@@ -534,19 +527,12 @@ app.whenReady().then(async () => {
     dialog.showErrorBox('防睡眠未启用', error.message);
   }
   await core.start().catch((error) => window.webContents.once('did-finish-load', () => window.webContents.send('ksfassistant:core-error', error.message)));
-  userApproval = new UserApprovalController({
-    core,
-    dialog,
-    isInteractive: () => !quitting && approvalUnavailableReasons.size === 0 && screen.getAllDisplays().length > 0 && ['active', 'idle'].includes(powerMonitor.getSystemIdleState(1)),
-  });
   for (const [unavailable, available] of [['lock-screen', 'unlock-screen'], ['suspend', 'resume']]) {
     powerMonitor.on(unavailable, () => {
       approvalUnavailableReasons.add(unavailable);
-      void userApproval.unavailable();
     });
     powerMonitor.on(available, () => { approvalUnavailableReasons.delete(unavailable); });
   }
-  userApproval.start();
   startActivityMonitor({
     readRevision: async () => (await core.request('activity/read')).revision,
     stopped: () => quitting,
@@ -569,9 +555,7 @@ app.on('before-quit', (event) => {
   quitting = true;
   shutdownStarted = true;
   sleepInhibitor.setEnabled(false);
-  Promise.resolve(userApproval?.stop())
-    .catch(() => {})
-    .then(() => core?.close())
+  Promise.resolve().then(() => core?.close())
     .catch(() => {})
     .finally(() => app.exit(0));
 });

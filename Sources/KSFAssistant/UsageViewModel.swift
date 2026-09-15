@@ -63,9 +63,6 @@ final class UsageViewModel: ObservableObject {
     @Published private(set) var feishuFeedback: String?
     var feishuAuthStatus: CoreServiceFeishuAuth? { feishuConfiguration.snapshot?.auth }
     var feishuSettingsOverview: FeishuSettingsOverview? { feishuConfiguration.snapshot?.overview }
-    @Published private(set) var toolchainStatus: ToolchainStatus?
-    @Published private(set) var toolchainActionInProgress = false
-    @Published private(set) var toolchainFeedback: String?
     var feishuSetup: FeishuSetupState { feishuConfiguration.snapshot?.setup ?? .unknown }
     @Published private(set) var feishuTaskLinks: [String: FeishuTaskLinkSnapshot] = [:]
     @Published private(set) var feishuTaskLinkActions: Set<String> = []
@@ -90,14 +87,13 @@ final class UsageViewModel: ObservableObject {
         let session = FeishuConfigurationSession(canSubmit: { [weak self] in
             guard let self else { return false }
             return !self.quitRequested && !self.shutdownStarted && self.popoverIsOpen
-                && self.userApprovalController.allowsConfigurationSubmission
+                && DesktopInteractionGuard.allowsConfigurationSubmission
         }) { method, payload in
             try await client.feishuConfigurationRequest(method: method, payload: payload)
         }
         session.onChange = { [weak self] state in self?.feishuConfiguration = state }
         return session
     }()
-    private lazy var userApprovalController = UserApprovalController(core: coreService)
     private var coreServiceEnabled = false
     private var shutdownStarted = false
     private var quitRequested = false
@@ -178,7 +174,6 @@ final class UsageViewModel: ObservableObject {
         precondition(!started && !coreServiceEnabled)
         if let snapshot { try feishuConfigurationSession.restore(snapshot) }
         if failed { feishuConfiguration.phase = .unknown }
-        toolchainStatus = toolchain
     }
     #endif
 
@@ -292,7 +287,6 @@ final class UsageViewModel: ObservableObject {
             let activeKSFRoot = isOnboardingComplete ? ksfRootPath : ""
             try await coreService.start(ksfRoot: activeKSFRoot)
             coreServiceEnabled = true
-            userApprovalController.start()
             await refreshPricingCatalog()
             await refreshSharedDashboard()
             await refreshFeishuConfiguration()
@@ -816,40 +810,6 @@ final class UsageViewModel: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
-    func refreshToolchainStatus() async {
-        guard coreServiceEnabled, !toolchainActionInProgress else { return }
-        toolchainActionInProgress = true
-        defer { toolchainActionInProgress = false }
-        do {
-            toolchainStatus = try await coreService.toolchainStatus()
-            toolchainFeedback = nil
-        } catch {
-            toolchainStatus = nil
-            toolchainFeedback = "无法检查官方工具链，请重试。"
-        }
-    }
-
-    func installToolchain() {
-        guard coreServiceEnabled, !toolchainActionInProgress else { return }
-        toolchainActionInProgress = true
-        toolchainFeedback = nil
-        Task { [weak self] in
-            guard let self else { return }
-            defer { self.toolchainActionInProgress = false }
-            do {
-                self.toolchainStatus = try await self.coreService.installToolchain()
-                self.toolchainFeedback = self.toolchainStatus?.healthy == true
-                    ? "技能已安装并校验完成；Codex 中的可用状态需在下一轮确认。"
-                    : "安装后校验未通过，请重新检查。"
-            } catch {
-                self.toolchainStatus = try? await self.coreService.toolchainStatus()
-                self.toolchainFeedback = "安装未完成，请查看具体文件或重新检查。"
-            }
-        }
-    }
-
-
-
     func feishuTaskLink(for task: ProjectTaskItem) -> FeishuTaskLinkSnapshot? {
         guard let link = feishuTaskLinks[FeishuTaskLinkSnapshot.taskKey(for: task.threadID)],
               link.linkState == "active" || link.linkState == "pending" else { return nil }
@@ -910,7 +870,7 @@ final class UsageViewModel: ObservableObject {
                         link = try await self.coreService.createTaskLink(threadID: task.threadID, title: title, projectName: projectName, targetAlias: target)
                     } catch {
                         guard let authorization = FeishuTaskCardAuthorization.from(error) else { throw error }
-                        guard self.userApprovalController.allowsConfigurationSubmission else {
+                        guard DesktopInteractionGuard.allowsConfigurationSubmission else {
                             throw CoreServiceError.remote("请在桌面完成当前对话框后，再次点击连接飞书。")
                         }
                         let alert = NSAlert()
@@ -922,7 +882,7 @@ final class UsageViewModel: ObservableObject {
                             try await self.coreService.cancelTaskCard(authorization, threadID: task.threadID)
                             throw CoreServiceError.remote("已取消发送任务卡片。")
                         }
-                        guard self.userApprovalController.allowsConfigurationSubmission else {
+                        guard DesktopInteractionGuard.allowsConfigurationSubmission else {
                             throw CoreServiceError.remote("桌面暂不可交互，请重新检查本次发送。")
                         }
                         try await self.coreService.confirmTaskCard(authorization)
@@ -959,7 +919,6 @@ final class UsageViewModel: ObservableObject {
         feishuConfigurationSession.shutdown()
         rateTimerTask?.cancel()
         coreServicePollTask?.cancel()
-        await userApprovalController.stop()
         await coreService.stop()
     }
 

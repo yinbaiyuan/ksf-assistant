@@ -20,6 +20,7 @@ type nativeProjection struct {
 	Card      map[string]any `json:"card"`
 }
 type nativeCardState struct {
+	StandardTextUpdates  bool              `json:"standardTextUpdates,omitempty"`
 	AppID                string            `json:"appId"`
 	Target               MessageTarget     `json:"target"`
 	Key                  string            `json:"key"`
@@ -36,12 +37,13 @@ type nativeCardState struct {
 	ActivityAcknowledged time.Time         `json:"activityAcknowledged,omitempty"`
 }
 type nativeCardWrite struct {
-	Request     MessageCLIRequest `json:"request"`
-	ID          string            `json:"id,omitempty"`
-	Text        string            `json:"text,omitempty"`
-	Remove      bool              `json:"remove,omitempty"`
-	Replacement *nativeProjection `json:"replacement,omitempty"`
-	Streaming   *bool             `json:"streaming,omitempty"`
+	SequenceRebased bool              `json:"sequenceRebased,omitempty"`
+	Request         MessageCLIRequest `json:"request"`
+	ID              string            `json:"id,omitempty"`
+	Text            string            `json:"text,omitempty"`
+	Remove          bool              `json:"remove,omitempty"`
+	Replacement     *nativeProjection `json:"replacement,omitempty"`
+	Streaming       *bool             `json:"streaming,omitempty"`
 }
 
 func parseNativeProjection(raw string) (nativeProjection, bool, error) {
@@ -251,7 +253,8 @@ func (c *OfficialMessageClient) patchNative(ctx context.Context, id, raw string)
 
 func (c *OfficialMessageClient) syncNativeTexts(ctx context.Context, path string, state *nativeCardState, p nativeProjection) error {
 	desired := nativeTexts(p)
-	for _, e := range nativeElements(p) {
+	elements := nativeElements(p)
+	for index, e := range elements {
 		id := e["element_id"].(string)
 		text := desired[id]
 		old, exists := state.Texts[id]
@@ -271,8 +274,18 @@ func (c *OfficialMessageClient) syncNativeTexts(ctx context.Context, path string
 		}
 		w := nativeCardWrite{ID: id, Text: text, Request: MessageCLIRequest{Method: "content", Params: map[string]string{"element_id": id}, Body: map[string]any{"content": text}}}
 		if !exists {
+			// Insert before the next acknowledged content region, not always at
+			// the footer: late user input belongs before the existing reply.
+			target := "activity"
+			for _, next := range elements[index+1:] {
+				nextID := next["element_id"].(string)
+				if _, present := state.Texts[nextID]; present {
+					target = nextID
+					break
+				}
+			}
 			data, _ := json.Marshal([]any{e})
-			w.Request = MessageCLIRequest{Method: "insert", Body: map[string]any{"type": "insert_before", "target_element_id": "activity", "elements": string(data)}}
+			w.Request = MessageCLIRequest{Method: "insert", Body: map[string]any{"type": "insert_before", "target_element_id": target, "elements": string(data)}}
 		}
 		if err := c.nativeWrite(ctx, path, state, w); err != nil {
 			return err
@@ -293,8 +306,36 @@ func (c *OfficialMessageClient) syncNativeTexts(ctx context.Context, path string
 	return nil
 }
 func (c *OfficialMessageClient) nativeWrite(ctx context.Context, path string, state *nativeCardState, w nativeCardWrite) error {
+	// A new operation must not mutate the previous request's identity maps.
+	body := make(map[string]any, len(w.Request.Body)+2)
+	for key, value := range w.Request.Body {
+		body[key] = value
+	}
+	w.Request.Body = body
+	params := make(map[string]string, len(w.Request.Params)+1)
+	for key, value := range w.Request.Params {
+		params[key] = value
+	}
+	w.Request.Params = params
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if state.StandardTextUpdates {
+		if w.Request.Method == "content" {
+			data, _ := json.Marshal(map[string]any{"content": w.Text})
+			w.Request.Method = "patch"
+			w.Request.Body = map[string]any{"partial_element": string(data)}
+		}
+		if w.Replacement != nil {
+			// The projection is desired task state; the durable transport mode
+			// overrides animation only, including on subsequent turn transitions.
+			data, _ := json.Marshal(w.Replacement.Card)
+			var card map[string]any
+			_ = json.Unmarshal(data, &card)
+			card["config"].(map[string]any)["streaming_mode"] = false
+			data, _ = json.Marshal(card)
+			w.Request.Body = map[string]any{"card": map[string]any{"type": "card_json", "data": string(data)}}
+		}
 	}
 	state.Sequence++
 	w.Request.Resource = "cardkit"
@@ -316,6 +357,27 @@ func (c *OfficialMessageClient) applyNativeWrite(ctx context.Context, path strin
 	if _, err := c.client.CallMessage(ctx, w.Request); err != nil {
 		var rejection *UserApprovalError
 		var failure *CLIExecutionError
+		if w.Request.Resource == "cardkit" && (w.Request.Method == "content" || w.Request.Method == "patch") && !w.SequenceRebased && errors.As(err, &failure) && failure.Started && failure.Structured["type"] == "api" {
+			code, _ := json.Marshal(failure.Structured["code"])
+			if string(code) == "300317" {
+				// A rejected replay does not prove the original request succeeded.
+				// Reassert only idempotent full-text setters with a fresh durable
+				// sequence. Never replay structural mutations under a new identity.
+				// One rebase per operation bounds recovery across process restarts.
+				w.SequenceRebased = true
+				return c.nativeWrite(ctx, path, state, *w)
+			}
+		}
+		if w.Request.Resource == "cardkit" && w.Request.Method == "content" && errors.As(err, &failure) && failure.Started && failure.Structured["type"] == "api" {
+			code, _ := json.Marshal(failure.Structured["code"])
+			if string(code) == "300309" {
+				// Explicit remote rejection: no text was applied. Persist a new
+				// operation identity for ordinary component PATCH, never a whole
+				// card replacement. Unknown/network failures keep exact replay.
+				state.StandardTextUpdates = true
+				return c.nativeWrite(ctx, path, state, *w)
+			}
+		}
 		if errors.As(err, &rejection) || errors.As(err, &failure) && !failure.Started {
 			state.Pending = nil
 			_ = writePrivateJSON(path, state)

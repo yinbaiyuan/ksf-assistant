@@ -13,7 +13,6 @@ import (
 	managedfeishu "ksfassistant/core/internal/feishu"
 	"ksfassistant/core/internal/privateipc"
 	"ksfassistant/core/internal/service"
-	"ksfassistant/core/internal/userapproval"
 )
 
 type request struct {
@@ -203,23 +202,6 @@ func (server *Server) dispatch(ctx context.Context, method string, params json.R
 			return nil, err
 		}
 		return server.service.ApplyFeishuConfiguration(ctx, input)
-	case "userApproval/poll":
-		var input struct {
-			Interactive *bool `json:"interactive"`
-		}
-		if err := userapproval.DecodeParams(params, &input, "interactive"); err != nil || input.Interactive == nil {
-			return nil, errors.New("approval_invalid_request")
-		}
-		return server.service.UserApprovalPoll(*input.Interactive), nil
-	case "userApproval/decide":
-		var input struct {
-			ID      string `json:"id"`
-			Approve *bool  `json:"approve"`
-		}
-		if err := userapproval.DecodeParams(params, &input, "id", "approve"); err != nil || input.ID == "" || input.Approve == nil {
-			return nil, errors.New("approval_invalid_request")
-		}
-		return server.service.UserApprovalDecide(input.ID, *input.Approve), nil
 	case "initialize":
 		var input service.InitializeRequest
 		if err := decodeParams(params, &input); err != nil {
@@ -316,12 +298,6 @@ func (server *Server) dispatch(ctx context.Context, method string, params json.R
 			return nil, err
 		}
 		return map[string]bool{"sent": true}, nil
-	case "feishu/operation/prepare":
-		var input service.FeishuOperationPrepareRequest
-		if err := decodeParams(params, &input); err != nil {
-			return nil, err
-		}
-		return server.service.PrepareFeishuOperation(ctx, input)
 	case "feishu/operation/confirm":
 		var input service.FeishuOperationConfirmRequest
 		if err := decodeParams(params, &input); err != nil {
@@ -366,8 +342,6 @@ func (server *Server) dispatch(ctx context.Context, method string, params json.R
 		return server.dispatchAuth(ctx, method, params)
 	case "feishu/permissions/read":
 		return server.service.FeishuPermissions(ctx)
-	case "toolchain/status", "toolchain/install":
-		return server.dispatchToolchain(method, params)
 	case "feishu/settings/overview/read":
 		return server.service.FeishuSettingsOverview(ctx)
 	case "feishu/setup/read":

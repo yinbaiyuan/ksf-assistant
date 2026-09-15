@@ -21,7 +21,6 @@ struct UsagePopoverView: View {
     @State private var pricingFormError: String?
     @State private var feishuExpandedSection: String?
     @State private var pendingFeishuAction: FeishuActionIntent?
-    @State private var confirmToolchainInstall = false
 
     var body: some View {
         Group {
@@ -1883,11 +1882,6 @@ struct UsagePopoverView: View {
     private var feishuPage: some View {
         let availableHeight = max(320, min(720, (NSScreen.main?.visibleFrame.height ?? 800) - 96))
         return feishuPageLayout(maximumHeight: availableHeight)
-            .onAppear {
-                #if !FEISHU_LAYOUT_PREVIEW
-                Task { await viewModel.refreshToolchainStatus() }
-                #endif
-            }
     }
 
     private func feishuPageLayout(maximumHeight: CGFloat) -> some View {
@@ -1906,15 +1900,14 @@ struct UsagePopoverView: View {
                 ZStack {
                     headerIconButton(systemName: "arrow.clockwise", label: "刷新接入状态",
                         disabled: viewModel.feishuConfiguration.acting || viewModel.feishuConfiguration.reading) {
-                        Task { await viewModel.refreshFeishuConfiguration(refresh: true); await viewModel.refreshToolchainStatus() }
+                        Task { await viewModel.refreshFeishuConfiguration(refresh: true) }
                     }.opacity(viewModel.feishuConfiguration.reading ? 0 : 1)
                     if viewModel.feishuConfiguration.reading { ProgressView().controlSize(.small).accessibilityLabel("正在刷新接入状态") }
                 }.frame(width: 28, height: 28)
             }
             feishuConfigurationOverview
-            feishuSurface { toolchainSettings }
             feishuDiagnostics
-            Text(viewModel.feishuConfiguration.snapshot?.diagnostics?.versionSummary ?? "KSFAssistant 未知 · lark-cli 未知")
+            Text(viewModel.feishuConfiguration.snapshot?.diagnostics?.versionSummary ?? "KSFAssistant 未知")
                 .font(.caption2).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center).frame(maxWidth: .infinity)
             if viewModel.feishuConfiguration.snapshot?.action("logout")?.enabled == true && !feishuNeedsApplicationSetup {
@@ -2018,41 +2011,6 @@ struct UsagePopoverView: View {
             } label: {
                 Text("诊断详情").font(.caption.weight(.semibold))
             }
-        }
-    }
-
-    private var toolchainSettings: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Codex 飞书技能").font(.system(size: 13, weight: .semibold))
-            Text("让 Codex 使用当前飞书接入的消息、文档、日历等能力。")
-                .font(.caption2).foregroundStyle(.secondary)
-            Text(viewModel.toolchainStatus?.installationTitle ?? (viewModel.toolchainFeedback == nil ? "正在检查安装状态…" : "检查失败"))
-                .font(.caption).foregroundStyle(.secondary)
-            if let status = viewModel.toolchainStatus, status.isHealthy {
-                Text("\(status.skills.count) 项 · ksf-lark-*").font(.caption2).foregroundStyle(.secondary)
-            }
-            HStack {
-                Spacer()
-                if let action = viewModel.toolchainStatus?.installationAction, !action.isEmpty {
-                    Button(action) { confirmToolchainInstall = true }
-                } else if viewModel.toolchainStatus == nil {
-                    Button("检查安装") { Task { await viewModel.refreshToolchainStatus() } }
-                }
-                if viewModel.toolchainActionInProgress { ProgressView().controlSize(.small) }
-                Spacer()
-            }.controlSize(.small).disabled(viewModel.toolchainActionInProgress)
-            if let details = viewModel.toolchainStatus?.installationDetails, !details.isEmpty {
-                DisclosureGroup("查看具体文件") {
-                    ForEach(details, id: \.self) { Text($0).font(.caption2).textSelection(.enabled) }
-                }
-            }
-            if let feedback = viewModel.toolchainFeedback { Text(feedback).font(.caption2).foregroundStyle(.secondary) }
-        }
-        .confirmationDialog("安装 Codex 飞书技能？", isPresented: $confirmToolchainInstall, titleVisibility: .visible) {
-            Button("确认安装") { viewModel.installToolchain() }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("安装当前应用内置的 ksf-lark-* 技能及必要执行入口；迁移本应用管理且未修改的旧版。不会覆盖自行修改的文件，也不会自动授权或发送消息。")
         }
     }
 

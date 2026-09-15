@@ -6,6 +6,15 @@ import (
 	"testing"
 )
 
+func TestRetiredAliasesNeverLaunchCLI(t *testing.T) {
+	for _, name := range []string{"ksfas-lark", "lark-cli", "ksfas-lark.exe", "lark-cli.exe"} {
+		var output bytes.Buffer
+		if run([]string{name, "auth", "login"}, &output) == 0 || !bytes.Contains(output.Bytes(), []byte("agent_feishu_middleware_removed_use_independent_cli")) {
+			t.Fatalf("retired alias accepted: %s: %s", name, output.String())
+		}
+	}
+}
+
 func TestErrorsAreJSONAndNeverEchoArguments(t *testing.T) {
 	for _, args := range [][]string{{"manager"}, {"manager", "install", "--secret=do-not-echo"}, {"manager", "status", "--resources", "secret-relative"}} {
 		var output bytes.Buffer

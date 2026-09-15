@@ -137,6 +137,19 @@ func (service *CapabilityService) Confirm(ctx context.Context, id, challenge str
 	return service.confirm(ctx, id, challenge, false)
 }
 
+// The desktop confirmation channel is only for bridge-owned messages/cards.
+// It must never resume an old Agent business operation after middleware removal.
+func (service *CapabilityService) ConfirmServiceMessage(ctx context.Context, id, challenge string) (PreparedOperation, error) {
+	record, err := service.operations.Request(id)
+	if err != nil {
+		return PreparedOperation{}, err
+	}
+	if record.InputProfile != serviceMessageInputProfile {
+		return PreparedOperation{}, errors.New("agent_feishu_middleware_removed")
+	}
+	return service.confirm(ctx, id, challenge, false)
+}
+
 func (service *CapabilityService) confirm(ctx context.Context, id, challenge string, desktopPending bool) (PreparedOperation, error) {
 	record, err := service.operations.Request(id)
 	if err != nil {

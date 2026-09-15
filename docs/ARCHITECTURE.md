@@ -43,7 +43,7 @@ macOS：SwiftUI / AppKit                 Windows：Electron
 | [Core/internal/bridge](../Core/internal/bridge/) | 调用外部 KSF 桥，消费版本化项目目录和任务投影，不直接解析 KSF Markdown。 |
 | [Core/internal/integration](../Core/internal/integration/) | Core 内部业务模块：任务链接唯一存储、Codex 动作、Plan/输入选择、观察器、卡片内容与持久事件接收。 |
 | [Core/internal/taskruntime](../Core/internal/taskruntime/) / [ksf-assistant-task](../Core/cmd/ksf-assistant-task/) | Core 关闭时仍可读写的中立任务记录；任务级锁、CAS、幂等及快照/历史原子提交。仅消费当前 KSF v6，不编排执行。 |
-| [Core/internal/toolchain](../Core/internal/toolchain/) / [ksf-assistant-toolchain](../Core/cmd/ksf-assistant-toolchain/) | 随包 CLI、官方 Skills 与用户受管入口的校验、所有权、冲突检测和回退。 |
+| [Core/internal/toolchain](../Core/internal/toolchain/) / [ksf-assistant-toolchain](../Core/cmd/ksf-assistant-toolchain/) | 旧受管入口退役、所有权校验与备份；保留 KSF 任务上报入口。 |
 | [Core/internal/feishuprotocol](../Core/internal/feishuprotocol/) / [privateipc](../Core/internal/privateipc/) | 飞书 v2 通用契约与有界私有通信；corebridge 仅保留 Core 内部控制 DTO，不再暴露跨进程控制方法。 |
 | [Core/internal/feishucli](../Core/internal/feishucli/) / [localipc](../Core/internal/localipc/) | 原生 CLI 解析、静态目录和当前用户本机网关；feishucommands 只在受管飞书进程执行命令。 |
 | [Core/cmd/ksf-assistant-feishu-bridge](../Core/cmd/ksf-assistant-feishu-bridge/) / [Core/internal/feishu](../Core/internal/feishu/) | 飞书可执行入口及传输、授权、能力策略、通用卡片操作、工作队列、审计和子进程监管实现。 |
@@ -78,7 +78,7 @@ Desktop 增量事件只作为快照失效信号，按任务合并到固定 100ms
 
 ### 飞书事件与任务控制
 
-`0.11.0-preview.2` 增加独立[用户身份写操作批准](architecture/user-write-approval.md)：受管 CLI 与飞书执行器共用 Go Core 状态机，宿主通过专属控制管道显示原生批准窗口。user 纯读取默认不弹框，user 写先经原有策略再逐次批准，bot 保持原权限；无法确定语义的命令拒绝。它不属于 integration 的任务卡片批准，也不属于 KSF 任务运行态或治理 Skill。等待 UI 不占业务锁，授权切换与实际执行通过短生命周期跨进程锁互斥。
+Agent 飞书业务中间件已退役：不启动通用本机命令网关，不公开 ClientExecute / OperationPrepare，不启动业务工作箱调度或桌面批准窗口。卡片发送仍经内部绑定、幂等和策略门禁；桌面确认只接受服务消息，不接受遗留 Agent 业务操作。独立 CLI 自行管理独立应用与授权。
 
 0.11 只由固定版官方 CLI 承担生产授权、传输和事件消费，不直接链接飞书 SDK。官方总线 ACK 先于应用工作队列持久化；它不是业务执行确认，也不是零丢失承诺。CLI 转换后的消息/卡片按固定 schema 归一化；附件读取原消息核对绑定，延迟卡片 Token 不进入应用持久化队列。具体边界见 [本机预览改造](architecture/preview-0.11.md)。
 
@@ -112,7 +112,7 @@ Core 事件执行分为 `preparing` 与 `executing`：只有可证明尚未开�
 
 飞书服务快照只描述自身运行状态；Core 合成业务链接与 Codex/Desktop/KSF 状态。Feishu inbound/outbound、Codex App Server、Desktop IPC、KSF context、固定 `lark-cli` 能力及三个工作箱分别报告 `ready / degraded / unavailable / disabled`；单项能力不可用不终止服务。只有重复实例、父级管道关闭或私有数据安全无法保证时退出。
 
-飞书守护进程只创建一个 `CapabilityService`，私有 RPC、调度、目录解析和结果核对均使用同一实例；native one-shot client 不再创建执行器、读取凭据或修改队列；它只发送类型化本机请求。应用未运行时业务命令明确失败，不自动启动或离线排队。`lark-cli` 只有在路径安全、可执行、`--version` 精确为 `1.0.93` 且本地 schema 探针成功后才标记为 ready；探针结果按文件身份缓存，不随 Dashboard 刷新访问远端 API。
+飞书守护进程只创建一个 `CapabilityService`，供内部任务卡片传输使用。Agent 不再通过助手执行通用业务命令；旧别名明确拒绝执行。固定版 CLI 仍经路径、版本和 schema 校验后用于卡片通信，不开放任意 API 转发。
 
 飞书服务维护带 revision 的运行快照并在变化时推送给核心服务。Core 为每次连接生成新代次，只在同代次内比较 revision；自动重启与手动重启共用握手和缓存初始化，拒绝旧连接迟到数据。Dashboard 读取核心服务内存，不再组合 `status`、`targets list`、`task-link protocol` 和 `task-link list` 四次子进程调用。macOS 与 Windows 桌面应用都合并并发 Dashboard 请求；面板活跃状态 3 秒、空闲 15 秒、后台额度 5 分钟。设置、价格、飞书向导和权限只在进入对应页面或修改后读取。
 
@@ -126,7 +126,7 @@ Go 入口把 `client.json` 升级为 schema v5，以 `appId + openId` 保存只�
 
 能力策略使用 `disabled / confirm_each / allowed` 三态。读取与普通写入默认允许，立即发送、高影响写入和远程操作默认逐次确认，删除、清空、覆盖、移动与历史回退默认禁用。101 项破坏性能力不能按风险级整体放开，也不能设为免确认，只能逐项设为 `confirm_each`。每项都有版本化守卫：`strong` 使用权威预读和后置核验，`bounded` 至少生成脱敏影响摘要；远端结果无法证明时只能进入 `outcome_unknown`。五分钟确认凭证绑定能力、目标参数指纹、预读证据和策略 revision；执行前队列再次复核总开关、策略与预读证据。
 
-审批域开放 14 项固定业务能力和 4 项事件订阅能力。审批定义、实例和任务查询默认允许；发起、同意、拒绝、抄送、催办、加签、转交及订阅变更默认逐次确认；撤回实例和退回任务属于破坏性动作，默认关闭，并带固定实例预读与复读门禁。审批表单、意见、用户标识和实例标识继续按私有正文处理，不进入命令行、普通日志或事件历史。
+历史业务能力模型仅保留为既有记录与内部传输兼容代码，不作为公开可执行功能；旧业务工作箱不自动消费。
 
 已提交操作超时不会被当成失败，也不会自动重放副作用。具备复读能力的操作最多后台核对三次；无法安全复读或三次后仍不明确时进入 `outcome_unknown + manual_review`。等待确认过期则进入 `expired + reprepare_on_user_request`，可以确定本次没有执行。
 
