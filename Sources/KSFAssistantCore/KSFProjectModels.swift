@@ -571,9 +571,9 @@ public struct ProjectDashboardSnapshot: Equatable, Sendable {
 }
 
 public enum KSFProjectWorkset {
-    public static func select(from items: [ProjectDashboardItem]) -> [ProjectDashboardItem] {
+    public static func select(from items: [ProjectDashboardItem], connectedTaskKeys: Set<String> = []) -> [ProjectDashboardItem] {
         items.filter { item in
-            item.isPinned || item.activeTaskCount > 0
+            item.isPinned || item.activeTaskCount > 0 || item.tasks.contains { connectedTaskKeys.contains(TaskLinkIdentity.taskKey(for: $0.threadID)) }
         }
     }
 }

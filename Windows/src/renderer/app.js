@@ -109,9 +109,9 @@ function renderHome() {
   const bucket = dashboard.usage.buckets.find((item) => item.limitId === 'codex') || dashboard.usage.buckets[0];
   const remaining = headlineRemaining(bucket);
   const window = shortestWindow(bucket);
-  const projects = selectHomeProjects(dashboard.projects.projects);
+  const projects = selectHomeProjects(dashboard.projects.projects, dashboard.feishu.links);
   const workspaceLibrary = dashboard.workspaces?.workspaces || [];
-  const workspaces = selectHomeWorkspaces(workspaceLibrary);
+  const workspaces = selectHomeWorkspaces(workspaceLibrary, dashboard.feishu.links);
   return `${header('Codex 用量')}
     ${renderQuota(bucket, remaining, window)}
     <div class="section-header"><h2 class="section-title">Token 活动</h2><span class="section-action">${buttonIcon('history', 'chart', '查看每日 Token 历史')}</span></div>
@@ -727,12 +727,14 @@ function scheduleFeishuConfigurationPoll() {
   }, 2500);
 }
 
-function selectHomeProjects(items = []) {
-  return items.filter((item) => item.isPinned || item.tasks.some((task) => ['running', 'waiting'].includes(task.classification)));
+function selectHomeProjects(items = [], links = []) {
+  const connected = new Set(links.filter((link) => link.linkState === 'active').map((link) => link.taskKey));
+  return items.filter((item) => item.isPinned || item.tasks.some((task) => ['running', 'waiting'].includes(task.classification) || connected.has(task.taskKey)));
 }
 
-function selectHomeWorkspaces(items = []) {
-  return items.filter((item) => item.isPinned || item.runningCount > 0 || item.waitingCount > 0);
+function selectHomeWorkspaces(items = [], links = []) {
+  const connected = new Set(links.filter((link) => link.linkState === 'active').map((link) => link.taskKey));
+  return items.filter((item) => item.isPinned || item.runningCount > 0 || item.waitingCount > 0 || item.tasks.some((task) => connected.has(task.taskKey)));
 }
 
 function headlineRemaining(bucket) {

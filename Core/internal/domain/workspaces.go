@@ -22,7 +22,8 @@ type workspaceAggregate struct {
 	latestActivity *time.Time
 }
 
-func BuildCodexWorkspaceDashboard(platform, ksfRoot string, threads []CodexThread, codexProjects []CodexProject, observations []TaskObservation, projects ProjectDashboardSnapshot, pinnedWorkspaceIDs []string, now time.Time) CodexWorkspaceSnapshot {
+func BuildCodexWorkspaceDashboard(platform, ksfRoot string, threads []CodexThread, codexProjects []CodexProject, observations []TaskObservation, projects ProjectDashboardSnapshot, pinnedWorkspaceIDs []string, now time.Time, connectedOptions ...map[string]bool) CodexWorkspaceSnapshot {
+	connected := connectedTaskKeys(connectedOptions)
 	workspaceNames := codexWorkspaceNames(platform, codexProjects)
 	_, normalizedKSFRoot := normalizedWorkspacePath(ksfRoot, platform)
 	pinned := map[string]bool{}
@@ -129,7 +130,7 @@ func BuildCodexWorkspaceDashboard(platform, ksfRoot string, threads []CodexThrea
 
 	items := make([]CodexWorkspaceItem, 0, len(aggregates))
 	for _, aggregate := range aggregates {
-		tasks, running, waiting := selectWorkspaceTasks(aggregate.tasks)
+		tasks, running, waiting := selectWorkspaceTasks(aggregate.tasks, connected)
 		items = append(items, CodexWorkspaceItem{ID: aggregate.id, Kind: aggregate.kind, Name: aggregate.name, Path: aggregate.path, IsPinned: pinned[aggregate.id], Tasks: tasks, RunningCount: running, WaitingCount: waiting, TotalTaskCount: aggregate.totalTaskCount, HiddenTaskCount: aggregate.totalTaskCount - len(tasks), LatestActivity: aggregate.latestActivity})
 	}
 	sort.SliceStable(items, func(i, j int) bool {
@@ -260,7 +261,8 @@ func workspaceBaseName(value, platform string) string {
 	return filepath.Base(value)
 }
 
-func selectWorkspaceTasks(values []CodexWorkspaceTask) ([]CodexWorkspaceTask, int, int) {
+func selectWorkspaceTasks(values []CodexWorkspaceTask, connectedOptions ...map[string]bool) ([]CodexWorkspaceTask, int, int) {
+	connected := connectedTaskKeys(connectedOptions)
 	active := make([]CodexWorkspaceTask, 0, len(values))
 	completed := make([]CodexWorkspaceTask, 0, len(values))
 	running, waiting := 0, 0
@@ -273,12 +275,17 @@ func selectWorkspaceTasks(values []CodexWorkspaceTask) ([]CodexWorkspaceTask, in
 			running++
 			active = append(active, value)
 		case "completed":
-			completed = append(completed, value)
+			if connected[value.TaskKey] {
+				active = append(active, value)
+			} else {
+				completed = append(completed, value)
+			}
 		}
 	}
 	sort.SliceStable(active, func(i, j int) bool {
 		if active[i].Classification != active[j].Classification {
-			return active[i].Classification == "waiting"
+			rank := map[string]int{"waiting": 0, "running": 1, "completed": 2}
+			return rank[active[i].Classification] < rank[active[j].Classification]
 		}
 		if !active[i].UpdatedAt.Equal(active[j].UpdatedAt) {
 			return active[i].UpdatedAt.After(active[j].UpdatedAt)

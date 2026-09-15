@@ -509,11 +509,15 @@ final class UsageViewModel: ObservableObject {
     }
 
     var homeProjectItems: [ProjectDashboardItem] {
-        KSFProjectWorkset.select(from: projectDashboard.projects)
+        KSFProjectWorkset.select(from: projectDashboard.projects, connectedTaskKeys: connectedTaskKeys)
     }
 
     var homeWorkspaceItems: [CodexWorkspaceItem] {
-        CodexWorkspaceWorkset.select(from: workspaceDashboard.workspaces)
+        CodexWorkspaceWorkset.select(from: workspaceDashboard.workspaces, connectedTaskKeys: connectedTaskKeys)
+    }
+
+    private var connectedTaskKeys: Set<String> {
+        Set(feishuTaskLinks.values.filter { $0.linkState == "active" }.map(\.taskKey))
     }
 
     var workspaceLibraryItems: [CodexWorkspaceItem] {

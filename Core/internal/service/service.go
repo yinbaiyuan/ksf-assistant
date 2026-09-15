@@ -308,9 +308,19 @@ func (service *Service) Dashboard(ctx context.Context, request DashboardRequest)
 			activity.Availability = "offline"
 		}
 	}
-	projects := service.readProjects(ctx, request, threads, observations, now)
+	feishu := normalizedFeishuSnapshot(domain.FeishuSnapshot{Availability: "notConfigured"})
+	if service.hasFeishuRuntime() {
+		feishu = service.readFeishu(ctx, now)
+	}
+	connected := map[string]bool{}
+	for _, link := range feishu.Links {
+		if link.LinkState == "active" {
+			connected[link.TaskKey] = true
+		}
+	}
+	projects := service.readProjects(ctx, request, threads, observations, now, connected)
 	service.enrichTaskRuntime(ctx, request.KSFRoot, &projects, desktopActivity, now)
-	workspaces := domain.BuildCodexWorkspaceDashboard(runtime.GOOS, request.KSFRoot, threads, codexProjects, observations, projects, request.PinnedWorkspaceIDs, now)
+	workspaces := domain.BuildCodexWorkspaceDashboard(runtime.GOOS, request.KSFRoot, threads, codexProjects, observations, projects, request.PinnedWorkspaceIDs, now, connected)
 	workspaceUsage := service.readWorkspaceUsage(workspaces.Workspaces, threads, projects, now)
 	for index := range workspaces.Workspaces {
 		if usage, ok := workspaceUsage[workspaces.Workspaces[index].ID]; ok {
@@ -318,10 +328,6 @@ func (service *Service) Dashboard(ctx context.Context, request DashboardRequest)
 		}
 	}
 	projects = domain.RemoveWorkspaceTasksFromUnassignedProjects(projects, workspaces)
-	feishu := normalizedFeishuSnapshot(domain.FeishuSnapshot{Availability: "notConfigured"})
-	if service.hasFeishuRuntime() {
-		feishu = service.readFeishu(ctx, now)
-	}
 	return domain.DashboardSnapshot{Protocol: domain.Protocol, CoreVersion: Version, Platform: runtime.GOOS, ObservedAt: now, Usage: usage, Activity: activity, Projects: projects, Workspaces: workspaces, Feishu: feishu}
 }
 
@@ -1469,7 +1475,7 @@ func (service *Service) applyFeishuSupervisorStatus(snapshot *domain.FeishuSnaps
 	snapshot.ProcessRunning = snapshot.ProcessState == managedfeishu.StateRunning || snapshot.ProcessState == managedfeishu.StateIdleUnconfigured || snapshot.ProcessState == managedfeishu.StateStarting
 }
 
-func (service *Service) readProjects(ctx context.Context, request DashboardRequest, threads []domain.CodexThread, observations []domain.TaskObservation, now time.Time) domain.ProjectDashboardSnapshot {
+func (service *Service) readProjects(ctx context.Context, request DashboardRequest, threads []domain.CodexThread, observations []domain.TaskObservation, now time.Time, connected ...map[string]bool) domain.ProjectDashboardSnapshot {
 	result := domain.ProjectDashboardSnapshot{Availability: "unavailable", Projects: []domain.ProjectDashboardItem{}, Catalog: []domain.Project{}, ObservedAt: now}
 	if strings.TrimSpace(request.KSFRoot) == "" {
 		result.Message = "请在设置中选择 KSF 根目录。"
@@ -1541,7 +1547,7 @@ func (service *Service) readProjects(ctx context.Context, request DashboardReque
 	}
 	result.Availability = "available"
 	result.Catalog = source.catalog
-	result.Projects = domain.BuildProjectDashboard(source.catalog, threads, source.projections, observations, pinned, source.usage, source.launchActions, now)
+	result.Projects = domain.BuildProjectDashboard(source.catalog, threads, source.projections, observations, pinned, source.usage, source.launchActions, now, connected...)
 	result.Message = source.message
 	return result
 }

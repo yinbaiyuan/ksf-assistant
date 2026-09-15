@@ -173,7 +173,8 @@ func SummarizeActivity(observations []TaskObservation, observedAt time.Time) Tas
 	return TaskActivitySnapshot{RunningCount: running, WaitingCount: waiting, ObservedAt: observedAt, Availability: "available", Observations: observations}
 }
 
-func BuildProjectDashboard(catalog []Project, threads []CodexThread, projections map[string]TaskProjection, observations []TaskObservation, pinned map[string]bool, usage map[string]ProjectUsageSummary, launchActions map[string]ProjectLaunchAction, now time.Time) []ProjectDashboardItem {
+func BuildProjectDashboard(catalog []Project, threads []CodexThread, projections map[string]TaskProjection, observations []TaskObservation, pinned map[string]bool, usage map[string]ProjectUsageSummary, launchActions map[string]ProjectLaunchAction, now time.Time, connectedOptions ...map[string]bool) []ProjectDashboardItem {
+	connected := connectedTaskKeys(connectedOptions)
 	projectsByID := map[string]Project{}
 	for _, project := range catalog {
 		projectsByID[project.ID] = project
@@ -243,12 +244,18 @@ func BuildProjectDashboard(catalog []Project, threads []CodexThread, projections
 		}
 		projectID, engineeringID := assignedProject(thread, true, catalog, projections)
 		if _, ok := projectsByID[projectID]; !ok {
-			continue
+			if !connected[PublicTaskKey(thread.ID)] {
+				continue
+			}
+			projectID, engineeringID = UnassignedProjectID, nil
 		}
-		if aggregates[projectID] == nil {
-			aggregates[projectID] = &aggregate{}
+		target := unassigned
+		if projectID != UnassignedProjectID {
+			if aggregates[projectID] == nil {
+				aggregates[projectID] = &aggregate{}
+			}
+			target = aggregates[projectID]
 		}
-		target := aggregates[projectID]
 		var route *RouteSummary
 		if projection, found := projections[thread.ID]; found {
 			if binding := projection.CurrentBinding(); binding != nil {
@@ -313,12 +320,13 @@ func BuildProjectDashboard(catalog []Project, threads []CodexThread, projections
 	return result
 }
 
-func SelectHomeProjects(items []ProjectDashboardItem) []ProjectDashboardItem {
+func SelectHomeProjects(items []ProjectDashboardItem, connectedOptions ...map[string]bool) []ProjectDashboardItem {
+	connected := connectedTaskKeys(connectedOptions)
 	result := []ProjectDashboardItem{}
 	for _, item := range items {
 		running := 0
 		for _, task := range item.Tasks {
-			if task.Classification == "running" || task.Classification == "waiting" {
+			if task.Classification == "running" || task.Classification == "waiting" || connected[task.TaskKey] {
 				running++
 			}
 		}
@@ -327,6 +335,13 @@ func SelectHomeProjects(items []ProjectDashboardItem) []ProjectDashboardItem {
 		}
 	}
 	return result
+}
+
+func connectedTaskKeys(options []map[string]bool) map[string]bool {
+	if len(options) > 0 {
+		return options[0]
+	}
+	return nil
 }
 
 func isInternalTask(observation TaskObservation) bool {

@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import KSFAssistantCore
 
 struct ToolchainStatus: Decodable {
     struct Skill: Decodable, Identifiable {
@@ -133,6 +134,6 @@ struct FeishuTaskLinkSnapshot: Codable, Equatable {
     }
 
     static func taskKey(for threadID: String) -> String {
-        SHA256.hash(data: Data(threadID.utf8)).prefix(10).map { String(format: "%02x", $0) }.joined()
+        TaskLinkIdentity.taskKey(for: threadID)
     }
 }

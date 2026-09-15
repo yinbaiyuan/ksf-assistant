@@ -12,6 +12,22 @@ const preload = fs.readFileSync(path.join(root, 'src', 'preload.cjs'), 'utf8');
 const main = fs.readFileSync(path.join(root, 'src', 'main.cjs'), 'utf8');
 const coreClient = fs.readFileSync(path.join(root, 'src', 'core-client.cjs'), 'utf8');
 
+test('connected completed tasks retain unpinned home containers until disconnected', () => {
+  const vm = require('node:vm');
+  const selectors = app.slice(app.indexOf('function selectHomeProjects('), app.indexOf('function headlineRemaining('));
+  const context = {};
+  vm.runInNewContext(selectors, context);
+  const item = { isPinned: false, runningCount: 0, waitingCount: 0, tasks: [{ taskKey: 'linked', classification: 'completed' }] };
+  for (const select of [context.selectHomeProjects, context.selectHomeWorkspaces]) {
+    assert.equal(select([item], [{ taskKey: 'linked', linkState: 'active' }]).length, 1);
+    for (const linkState of ['released', 'expired', 'pending']) {
+      assert.equal(select([item], [{ taskKey: 'linked', linkState }]).length, 0);
+    }
+    assert.equal(select([item], []).length, 0);
+    assert.equal(select([{ ...item, isPinned: true }], []).length, 1);
+  }
+});
+
 test('formal product identity is KSFAssistant on both desktop hosts', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   const macInfo = fs.readFileSync(path.join(root, '..', 'Resources', 'Info.plist'), 'utf8');
@@ -60,7 +76,7 @@ test('ordinary Codex workspaces are independent, conditional and KSF-free', () =
   assert.match(app, /function selectHomeWorkspaces/);
   assert.match(app, /workspaceLibrary\.length \? `<div class="section-header"><h2 class="section-title">Codex 工作区/);
   assert.match(app, /workspaces\.map\(\(item\) => renderWorkspaceCard\(item\)\)/);
-  assert.match(app, /return items\.filter\(\(item\) => item\.isPinned \|\| item\.runningCount > 0 \|\| item\.waitingCount > 0\)/);
+  assert.match(app, /return items\.filter\(\(item\) => item\.isPinned \|\| item\.runningCount > 0 \|\| item\.waitingCount > 0 \|\| item\.tasks\.some/);
   assert.match(app, /data-action="workspace-pin"/);
   assert.match(preload, /setWorkspacePinned/);
   assert.match(main, /workspace:set-pinned/);

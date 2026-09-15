@@ -2,6 +2,16 @@ import XCTest
 @testable import KSFAssistantCore
 
 final class ProjectWorkbenchTests: XCTestCase {
+    func testConnectedCompletedTaskKeepsUnpinnedContainersVisible() {
+        let task = ProjectTaskItem(threadID: "linked", hostID: "local", name: "已完成", classification: .completed, route: nil, createdAt: Date(), projectID: "group")
+        let keys: Set<String> = [TaskLinkIdentity.taskKey(for: "linked")]
+        let group = ProjectDashboardItem(id: "group", project: nil, kind: .unassigned, isPinned: false, tasks: [task])
+        XCTAssertEqual(KSFProjectWorkset.select(from: [group], connectedTaskKeys: keys).count, 1)
+        XCTAssertTrue(KSFProjectWorkset.select(from: [group]).isEmpty)
+        let workspace = CodexWorkspaceItem(id: "group", kind: "other", name: "其他任务", tasks: [task])
+        XCTAssertEqual(CodexWorkspaceWorkset.select(from: [workspace], connectedTaskKeys: keys).count, 1)
+        XCTAssertTrue(CodexWorkspaceWorkset.select(from: [workspace]).isEmpty)
+    }
     func testPinnedUnassignedHasNoDuplicateUnavailableProject() {
         let id = KSFProjectDashboardBuilder.unassignedProjectID
         let items = KSFProjectDashboardBuilder.build(

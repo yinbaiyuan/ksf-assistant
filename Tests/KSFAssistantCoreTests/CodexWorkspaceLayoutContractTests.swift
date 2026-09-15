@@ -23,7 +23,7 @@ final class CodexWorkspaceLayoutContractTests: XCTestCase {
         XCTAssertTrue(source.contains("if !viewModel.workspaceLibraryItems.isEmpty"))
         XCTAssertTrue(source.contains("if !viewModel.homeWorkspaceItems.isEmpty"))
         XCTAssertTrue(viewModel.contains("var homeWorkspaceItems: [CodexWorkspaceItem]"))
-        XCTAssertTrue(viewModel.contains("CodexWorkspaceWorkset.select(from: workspaceDashboard.workspaces)"))
+        XCTAssertTrue(viewModel.contains("CodexWorkspaceWorkset.select(from: workspaceDashboard.workspaces, connectedTaskKeys: connectedTaskKeys)"))
         XCTAssertTrue(viewModel.contains("func toggleWorkspacePinned"))
         XCTAssertTrue(source.contains("Text(\"Codex 工作区\")"))
         XCTAssertTrue(source.contains("projectTaskRow(task, showsKSFRoute: false)"))

@@ -52,8 +52,8 @@ public struct CodexWorkspaceItem: Equatable, Sendable, Identifiable {
 }
 
 public enum CodexWorkspaceWorkset {
-    public static func select(from items: [CodexWorkspaceItem]) -> [CodexWorkspaceItem] {
-        items.filter { $0.isPinned || $0.activeTaskCount > 0 }
+    public static func select(from items: [CodexWorkspaceItem], connectedTaskKeys: Set<String> = []) -> [CodexWorkspaceItem] {
+        items.filter { $0.isPinned || $0.activeTaskCount > 0 || $0.tasks.contains { connectedTaskKeys.contains(TaskLinkIdentity.taskKey(for: $0.threadID)) } }
     }
 }
 
