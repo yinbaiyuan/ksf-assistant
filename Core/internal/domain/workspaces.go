@@ -176,7 +176,7 @@ func RemoveWorkspaceTasksFromUnassignedProjects(snapshot ProjectDashboardSnapsho
 				remaining = append(remaining, task)
 			}
 		}
-		if len(remaining) > 0 {
+		if len(remaining) > 0 || item.IsPinned {
 			item.Tasks = remaining
 			items = append(items, item)
 		}

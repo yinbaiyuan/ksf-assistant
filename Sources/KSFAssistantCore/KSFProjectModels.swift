@@ -824,7 +824,7 @@ public enum KSFProjectDashboardBuilder {
             aggregates[projectID] = aggregate
         }
 
-        let includedIDs = Set(aggregates.keys).union(pinnedProjectIDs)
+        let includedIDs = Set(aggregates.keys).union(pinnedProjectIDs).subtracting([unassignedProjectID])
         let catalogOrder = catalog.map(\.id).filter { includedIDs.contains($0) }
         let missingOrder = includedIDs.subtracting(Set(catalogOrder)).sorted()
         let stableOrder = KSFProjectListOrdering.reconcile(
@@ -848,12 +848,12 @@ public enum KSFProjectDashboardBuilder {
             )
         }
         var result = KSFProjectListOrdering.sort(items, stableOrder: stableOrder)
-        if !unassignedAggregate.tasks.isEmpty {
+        if !unassignedAggregate.tasks.isEmpty || pinnedProjectIDs.contains(unassignedProjectID) {
             result.insert(ProjectDashboardItem(
                 id: unassignedProjectID,
                 project: nil,
                 kind: .unassigned,
-                isPinned: false,
+                isPinned: pinnedProjectIDs.contains(unassignedProjectID),
                 tasks: unassignedAggregate.tasks.sorted {
                     if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
                     return $0.id < $1.id

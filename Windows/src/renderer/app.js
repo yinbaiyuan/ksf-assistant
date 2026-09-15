@@ -328,7 +328,7 @@ function renderProjectCard(item) {
     <div class="project-card-head">
       ${item.kind === 'project' ? `<button class="project-name icon-button-text" type="button" data-action="project-detail" data-id="${escapeHTML(item.id)}">${escapeHTML(title)}</button>` : `<span class="project-name">${escapeHTML(title)}</span>`}
       ${activeCount ? `<span class="activity-count" title="活跃任务">${playIcon()} ${activeCount}</span>` : ''}
-      ${item.kind === 'project' ? `<button class="icon-button" type="button" data-action="pin" data-id="${escapeHTML(item.id)}" data-pinned="${item.isPinned}" title="${item.isPinned ? '取消固定' : '固定项目'}" aria-label="${item.isPinned ? '取消固定' : '固定项目'}">${icon('pin')}</button>` : ''}
+      ${item.kind === 'project' || item.kind === 'unassigned' ? `<button class="icon-button" type="button" data-action="pin" data-id="${escapeHTML(item.id)}" data-pinned="${item.isPinned}" title="${item.isPinned ? '取消固定' : '固定项目'}" aria-label="${item.isPinned ? '取消固定' : '固定项目'}">${icon('pin')}</button>` : ''}
     </div>
     <div class="task-list">${item.tasks.length ? item.tasks.map((task) => renderTask(task, project, null, title)).join('') : '<div class="empty">暂无任务</div>'}</div>
     ${item.kind === 'project' ? `<footer class="project-footer">

@@ -62,7 +62,12 @@ func validateTaskCard(action InboundCardAction) error {
 		}
 	case "task_link_answer":
 		answer := cardString(action.Value["answer"])
-		if !taskCardRevision.MatchString(action.QuestionRevision) || !taskCardQuestionID.MatchString(cardString(action.Value["questionId"])) || strings.TrimSpace(answer) == "" || len([]rune(answer)) > 160 {
+		maximum := 160
+		if action.Value["answerFromInput"] == true {
+			answer = cardString(action.FormValue["followup"])
+			maximum = 1000
+		}
+		if !taskCardRevision.MatchString(action.QuestionRevision) || !taskCardQuestionID.MatchString(cardString(action.Value["questionId"])) || strings.TrimSpace(answer) == "" || len([]rune(answer)) > maximum {
 			return ErrInvalidTaskCard
 		}
 	default:

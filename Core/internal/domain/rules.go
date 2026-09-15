@@ -272,6 +272,9 @@ func BuildProjectDashboard(catalog []Project, threads []CodexThread, projections
 		}
 	}
 	for id := range pinned {
+		if id == UnassignedProjectID {
+			continue
+		}
 		if !seen[id] {
 			ids = append(ids, id)
 		}
@@ -300,9 +303,12 @@ func BuildProjectDashboard(catalog []Project, threads []CodexThread, projections
 		}
 		result = append(result, item)
 	}
-	if len(unassigned.tasks) > 0 {
+	if len(unassigned.tasks) > 0 || pinned[UnassignedProjectID] {
+		if unassigned.tasks == nil {
+			unassigned.tasks = []ProjectTask{}
+		}
 		sortTasks(unassigned.tasks)
-		result = append([]ProjectDashboardItem{{ID: UnassignedProjectID, Kind: "unassigned", Tasks: unassigned.tasks, LatestActivity: unassigned.latestActivity}}, result...)
+		result = append([]ProjectDashboardItem{{ID: UnassignedProjectID, Kind: "unassigned", IsPinned: pinned[UnassignedProjectID], Tasks: unassigned.tasks, LatestActivity: unassigned.latestActivity}}, result...)
 	}
 	return result
 }

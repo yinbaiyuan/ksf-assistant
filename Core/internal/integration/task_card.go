@@ -288,12 +288,18 @@ func taskLinkQuickReplyForm(link TaskLink) any {
 		columns = append(columns, map[string]any{"tag": "column", "width": "auto", "vertical_align": "bottom", "elements": []any{taskCardButton("interrupt_task_link", "停止", "task_link_interrupt", "danger", false, link, nil)}})
 	}
 	intent := map[string]any{}
+	submitAction := "task_link_followup"
+	var pending []map[string]any
+	if link.TurnState == "waiting_input" && link.ExtraValue("pendingQuestions", &pending) && len(pending) == 1 && pending[0]["asyncQuestionItemId"] != nil {
+		submitAction = "task_link_answer"
+		intent["questionId"], intent["questionRevision"], intent["answerFromInput"] = pending[0]["id"], link.ExtraString("pendingQuestionRevision"), true
+	}
 	if terminal {
 		intent["intent"] = "new_turn"
 	}
 	columns = append(columns,
 		map[string]any{"tag": "column", "width": "weighted", "weight": 1, "elements": []any{input}},
-		map[string]any{"tag": "column", "width": "auto", "vertical_align": "bottom", "elements": []any{taskCardButton("submit_task_link_followup", submitLabel, "task_link_followup", submitType, true, link, intent)}},
+		map[string]any{"tag": "column", "width": "auto", "vertical_align": "bottom", "elements": []any{taskCardButton("submit_task_link_followup", submitLabel, submitAction, submitType, true, link, intent)}},
 	)
 	formElements = append(formElements, map[string]any{"tag": "column_set", "flex_mode": "none", "horizontal_spacing": "8px", "columns": columns})
 	return map[string]any{"tag": "form", "name": "codex_task_link_followup_form", "direction": "vertical", "vertical_spacing": "8px", "elements": formElements}

@@ -822,6 +822,24 @@ func (client *ActivityClient) InterruptBridgeTurn(ctx context.Context, threadID,
 	return err
 }
 func (client *ActivityClient) SubmitBridgeUserInput(ctx context.Context, target UserInputTarget, response map[string]any) error {
+	if input, ok := findAsyncInput(target.State, target.RequestID); ok {
+		answers, _ := response["answers"].(map[string]any)
+		answer, _ := answers[input.Questions[0]["id"].(string)].(map[string]any)
+		texts, _ := answer["answers"].([]string)
+		if len(texts) != 1 || strings.TrimSpace(texts[0]) == "" {
+			return errors.New("invalid async answer")
+		}
+		payload, _ := json.Marshal([]map[string]string{{"questionItemId": input.Questions[0]["asyncQuestionItemId"].(string), "question": input.Questions[0]["question"].(string), "answer": texts[0]}})
+		text := asyncReplyOpen + "\n" + string(payload) + "\n" + asyncReplyClose
+		// Keep replies on the same conversation and preserve inherited settings.
+		// Async work may already have finished when the user answers.
+		if !desktopTurnRunning(target.State, target.TurnID) {
+			_, err := client.requestFollowerToOwner(ctx, target.ThreadID, target.OwnerClientID, "thread-follower-start-turn", 2, map[string]any{"conversationId": target.ThreadID, "turnStart": map[string]any{"request": map[string]any{"threadId": target.ThreadID, "input": []any{map[string]any{"type": "text", "text": text, "text_elements": []any{}}}}, "context": map[string]any{"inheritThreadSettings": true}}})
+			return err
+		}
+		_, err := client.requestFollowerToOwner(ctx, target.ThreadID, target.OwnerClientID, "thread-follower-steer-turn", 1, map[string]any{"conversationId": target.ThreadID, "input": []any{map[string]any{"type": "text", "text": text, "text_elements": []any{}}}, "restoreMessage": map[string]any{"cwd": recursiveFirstString(target.State, "cwd"), "context": map[string]any{"workspaceRoots": []string{}, "collaborationMode": nil}, "responsesapiClientMetadata": map[string]any{}}, "attachments": []any{}, "clientUserMessageId": client.nextID("message")})
+		return err
+	}
 	requestID, err := target.RequestID.Value()
 	if target.ThreadID == "" || target.OwnerClientID == "" || err != nil {
 		return errors.New("invalid Codex Desktop user-input target")
@@ -872,8 +890,12 @@ func (session *UserInputSession) Submit(ctx context.Context, target UserInputTar
 }
 
 func (session *UserInputSession) Verify(ctx context.Context, target UserInputTarget) (UserInputVerification, error) {
+	_, async := findAsyncInput(target.State, target.RequestID)
 	state, _, revision, err := session.client.loadConversationStateFromOwnerMatchingRevision(ctx, target.ThreadID, target.OwnerClientID, "", func(state map[string]any, revision string) bool {
 		consumed := !containsDesktopUserInputRequestID(state, target.RequestID)
+		if async {
+			consumed = asyncAnswerAccepted(state, target)
+		}
 		// A turn commonly remains "running" while requestUserInput is pending.
 		// The follower response therefore is not proven effective until the exact
 		// typed request ID disappears from a strictly newer authoritative snapshot.
@@ -889,6 +911,9 @@ func (session *UserInputSession) Verify(ctx context.Context, target UserInputTar
 }
 
 func FindPendingUserInput(value any, requestID RequestRef) (PendingUserInputDefinition, bool) {
+	if input, ok := findAsyncInput(value, requestID); ok {
+		return PendingUserInputDefinition{TurnID: input.TurnID, Questions: input.Questions}, true
+	}
 	matches := []PendingUserInputDefinition{}
 	collectPendingUserInputDefinitions(value, requestID, &matches)
 	if len(matches) != 1 {
@@ -964,7 +989,7 @@ func desktopTurnRunning(value any, turnID string) bool {
 				status = object["type"]
 			}
 			text := strings.ToLower(desktopScalarString(status))
-			if text == "running" || text == "in_progress" || text == "active" {
+			if text == "running" || text == "in_progress" || text == "inprogress" || text == "active" {
 				return true
 			}
 		}
@@ -984,6 +1009,10 @@ func desktopTurnRunning(value any, turnID string) bool {
 }
 
 func containsDesktopUserInputRequestID(value any, requestID RequestRef) bool {
+	if strings.HasPrefix(requestID.CompatibilityString(), "async_") {
+		_, ok := findAsyncInput(value, requestID)
+		return ok
+	}
 	switch item := value.(type) {
 	case map[string]any:
 		if item["method"] == "item/tool/requestUserInput" {

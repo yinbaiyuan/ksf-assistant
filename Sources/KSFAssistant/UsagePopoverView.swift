@@ -237,6 +237,13 @@ struct UsagePopoverView: View {
                         .lineLimit(1)
                     Spacer(minLength: 4)
                     projectTaskStatus(item)
+                    projectRowIconButton(
+                        systemName: item.isPinned ? "pin.fill" : "pin",
+                        label: item.isPinned ? "取消固定" : "固定项目",
+                        tint: .secondary
+                    ) {
+                        viewModel.togglePinned(item.id)
+                    }
                 }
 
                 VStack(spacing: 0) {

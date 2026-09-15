@@ -7,6 +7,20 @@ import (
 
 func pointer[T any](value T) *T { return &value }
 
+func TestPinnedUnassignedRemainsOneVisibleGroupWithoutTasks(t *testing.T) {
+	items := BuildProjectDashboard(nil, nil, nil, nil, map[string]bool{UnassignedProjectID: true}, nil, nil, time.Now())
+	if len(items) != 1 || items[0].Kind != "unassigned" || !items[0].IsPinned || items[0].Tasks == nil {
+		t.Fatalf("unexpected pinned group: %#v", items)
+	}
+	snapshot := RemoveWorkspaceTasksFromUnassignedProjects(ProjectDashboardSnapshot{Projects: items}, CodexWorkspaceSnapshot{})
+	if len(SelectHomeProjects(snapshot.Projects)) != 1 {
+		t.Fatal("pinned empty group disappeared")
+	}
+	if items := BuildProjectDashboard(nil, nil, nil, nil, nil, nil, nil, time.Now()); len(items) != 0 {
+		t.Fatal("unpinned empty group retained")
+	}
+}
+
 func TestNormalizeRateLimitsKeepsCodexFirstAndDropsPrivateCreditState(t *testing.T) {
 	response := RateLimitsResponse{
 		RateLimits: RateLimitBucket{LimitID: pointer("codex"), Primary: &RateLimitWindow{UsedPercent: 22}},

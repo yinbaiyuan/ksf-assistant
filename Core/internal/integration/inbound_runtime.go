@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ksfassistant/core/internal/corebridge"
+	"ksfassistant/core/internal/desktop"
 )
 
 var desktopIntegerRequestID = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)$`)
@@ -368,6 +369,9 @@ func (runtime *Runtime) HandleCard(ctx context.Context, action InboundCardAction
 		followup := strings.TrimSpace(fmt.Sprint(action.FormValue["followup"]))
 		if action.Action == "task_link_answer" {
 			questionID, answer := fmt.Sprint(action.Value["questionId"]), fmt.Sprint(action.Value["answer"])
+			if action.Value["answerFromInput"] == true {
+				answer = cardString(action.FormValue["followup"])
+			}
 			requestID := link.ExtraRaw("pendingQuestionRequestRef")
 			if len(requestID) == 0 {
 				requestID, _ = json.Marshal(link.ExtraString("pendingQuestionRequestID"))
@@ -1041,6 +1045,14 @@ func desktopPendingInput(value any, expectedTurnID string) (string, string, []ma
 func desktopPendingInputRaw(value any, expectedTurnID string) (json.RawMessage, string, []map[string]any) {
 	candidates := []desktopInputCandidate{}
 	collectDesktopPendingInputs(value, &candidates)
+	if len(candidates) == 0 {
+		for _, input := range desktop.AsyncInputs(value, false) {
+			if expectedTurnID != "" && input.TurnID == expectedTurnID {
+				ref, _ := json.Marshal(input.RequestID)
+				return ref, input.TurnID, input.Questions
+			}
+		}
+	}
 	matches := []desktopInputCandidate{}
 	for _, candidate := range candidates {
 		if expectedTurnID != "" && candidate.turnID != "" && candidate.turnID != expectedTurnID {

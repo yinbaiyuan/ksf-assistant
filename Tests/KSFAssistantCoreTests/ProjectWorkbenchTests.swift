@@ -2,6 +2,17 @@ import XCTest
 @testable import KSFAssistantCore
 
 final class ProjectWorkbenchTests: XCTestCase {
+    func testPinnedUnassignedHasNoDuplicateUnavailableProject() {
+        let id = KSFProjectDashboardBuilder.unassignedProjectID
+        let items = KSFProjectDashboardBuilder.build(
+            catalog: [], activeTasks: [], threads: [], projections: [:],
+            pinnedProjectIDs: [id], usage: [:], launchActions: [:]
+        )
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items.first?.kind, .unassigned)
+        XCTAssertEqual(items.first?.isPinned, true)
+        XCTAssertEqual(items.first?.tasks.count, 0)
+    }
     func testWaitingRunningPinnedAndExactCWD() {
         let alpha = project("alpha", root: "/git/alpha")
         let beta = project("beta", root: "/git/beta")
