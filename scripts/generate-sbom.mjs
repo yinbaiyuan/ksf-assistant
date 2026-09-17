@@ -22,48 +22,6 @@ for (const module of goModules.filter((item) => item.Path !== 'ksfassistant/core
     filesAnalyzed: false, licenseConcluded: 'NOASSERTION', licenseDeclared: 'NOASSERTION',
   });
 }
-const cli = JSON.parse(readFileSync(path.join(root, 'runtime/lark-cli-runtime.json')));
-const skills = JSON.parse(readFileSync(path.join(root, 'runtime/lark-skills.json')));
-const embeddedIDs = new Set();
-const embeddedRelationships = [];
-packages.push({
-  SPDXID: 'SPDXRef-Lark-Skills', name: 'larksuite-cli-skills', versionInfo: skills.version,
-  downloadLocation: skills.source.url, filesAnalyzed: false, licenseConcluded: skills.license, licenseDeclared: skills.license,
-  checksums: [{ algorithm: 'SHA256', checksumValue: skills.source.sha256 }],
-  sourceInfo: `Official source tag ${skills.source.tag}; ${skills.skills.length} Skills; LICENSE SHA256 ${skills.licenseSha256}`,
-});
-packages.push({
-  SPDXID: 'SPDXRef-Ksfas-Skills-Adapter', name: 'ksfassistant-skills-entry-adapter', versionInfo: lock.version,
-  downloadLocation: 'NOASSERTION', filesAnalyzed: false, licenseConcluded: 'MIT', licenseDeclared: 'MIT',
-  sourceInfo: 'Official Skills are transformed at packaging time by the reproducible KSFAssistant entry adapter. Final per-file hashes and upstream provenance are in runtime/lark-skills/adaptation-report.json; no standalone ksfas Skill is shipped.',
-});
-packages.push({
-  SPDXID: 'SPDXRef-Execution-Manifest', name: 'ksfassistant-feishu-execution-contract', versionInfo: lock.version,
-  downloadLocation: 'NOASSERTION', filesAnalyzed: false, licenseConcluded: 'MIT', licenseDeclared: 'MIT',
-  checksums: [{ algorithm: 'SHA256', checksumValue: createHash('sha256').update(readFileSync(path.join(root, 'Core/internal/usercommand/execution-manifest.json'))).digest('hex') }],
-  sourceInfo: `Compiled execution descriptors for fixed official CLI ${cli.version}; provenance and restrictions are embedded in the manifest.`,
-});
-for (const [target, artifact] of Object.entries(cli.artifacts)) {
-  packages.push({
-    SPDXID: `SPDXRef-Lark-CLI-${target}`, name: `lark-cli-${target}`, versionInfo: cli.version,
-    downloadLocation: `${cli.baseUrl}/${artifact.archive}`, filesAnalyzed: false,
-    licenseConcluded: cli.license, licenseDeclared: cli.license,
-    checksums: [{ algorithm: 'SHA256', checksumValue: artifact.sha256 }],
-  });
-  for (const module of artifact.embeddedGoModules || []) {
-    const identifier = `SPDXRef-Lark-Embedded-${stableID(`${module.name}@${module.version}`)}`;
-    if (!embeddedIDs.has(identifier)) {
-      embeddedIDs.add(identifier);
-      packages.push({
-        SPDXID: identifier, name: module.name, versionInfo: module.version,
-        downloadLocation: 'NOASSERTION', filesAnalyzed: false,
-        licenseConcluded: 'NOASSERTION', licenseDeclared: 'NOASSERTION',
-        sourceInfo: `Embedded in official lark-cli ${cli.version}, verified with go version -m; Go module sum ${module.sum}. Not a KSFAssistant Core dependency.`,
-      });
-    }
-    embeddedRelationships.push({ spdxElementId: `SPDXRef-Lark-CLI-${target}`, relationshipType: 'CONTAINS', relatedSpdxElement: identifier });
-  }
-}
 for (const [location, metadata] of Object.entries(lock.packages || {})) {
   if (!location.startsWith('node_modules/') || !metadata.version) continue;
   const name = location.slice('node_modules/'.length);
@@ -80,9 +38,9 @@ const document = {
   documentNamespace: `https://ksfassistant.invalid/spdx/${revision}`,
   creationInfo: { created: timestamp, creators: ['Tool: scripts/generate-sbom.mjs'] },
   packages,
-  relationships: [...packages.filter(item => item.SPDXID !== 'SPDXRef-Application' && !embeddedIDs.has(item.SPDXID)).map((item) => ({
+  relationships: packages.filter(item => item.SPDXID !== 'SPDXRef-Application').map((item) => ({
     spdxElementId: 'SPDXRef-Application', relationshipType: 'DEPENDS_ON', relatedSpdxElement: item.SPDXID,
-  })), ...embeddedRelationships],
+  })),
 };
 const output = path.join(root, 'dist', 'sbom');
 mkdirSync(output, { recursive: true });

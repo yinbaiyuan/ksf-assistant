@@ -1,6 +1,6 @@
 {
   "name": "ksfassistant-windows",
-  "version": "0.11.0-preview.16",
+  "version": "0.11.0-preview.17",
   "private": true,
   "description": "Windows system-tray host for KSFAssistant",
   "author": "KSFAssistant contributors",
@@ -10,10 +10,9 @@
     "start": "electron .",
     "test": "node --test test/*.test.cjs",
     "build:core": "node scripts/build-core.mjs",
-    "prepare:feishu": "node ../scripts/prepare-feishu-runtime.mjs --platform windows --arch x64 --arch arm64",
     "sbom": "node ../scripts/generate-sbom.mjs",
-    "pack:win": "npm run build:core && npm run prepare:feishu && npm run sbom && electron-builder --win --dir --x64 && electron-builder --win --dir --arm64",
-    "dist:win": "npm run build:core && npm run prepare:feishu && npm run sbom && electron-builder --win nsis --x64 && electron-builder --win nsis --arm64"
+    "pack:win": "npm run build:core && npm run sbom && electron-builder --win --dir --x64 && electron-builder --win --dir --arm64",
+    "dist:win": "npm run build:core && npm run sbom && electron-builder --win nsis --x64 && electron-builder --win nsis --arm64"
   },
   "devDependencies": {
     "electron": "44.1.1",
@@ -23,7 +22,6 @@
     "appId": "com.ksfassistant.desktop",
     "productName": "KSFAssistant",
     "asar": true,
-    "afterSign": "scripts/seal-runtime.cjs",
     "files": [
       "src/**/*",
       "assets/**/*",
@@ -45,10 +43,6 @@
         ]
       },
       {
-        "from": "../dist/runtime/lark-cli-runtime.json",
-        "to": "runtime/lark-cli-runtime.json"
-      },
-      {
         "from": "../dist/core/windows-${arch}",
         "to": "core/windows-${arch}",
         "filter": [
@@ -60,13 +54,6 @@
         "to": "runtime/feishu-bridge/windows-${arch}",
         "filter": [
           "ksf-assistant-feishu-bridge.exe"
-        ]
-      },
-      {
-        "from": "../dist/runtime/lark-cli/windows-${arch}",
-        "to": "runtime/lark-cli/windows-${arch}",
-        "filter": [
-          "lark-cli.exe"
         ]
       },
       {

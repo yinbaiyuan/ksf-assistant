@@ -1,6 +1,6 @@
 # Versioning
 
-KSFAssistant maintains two release lines.
+KSFAssistant maintains one product release line.
 
 ## KSFAssistant product version
 
@@ -14,21 +14,14 @@ bump `productVersion`. `macOSBuildNumber` is a separate monotonically increasing
 platform build number. Run `node scripts/sync-versions.mjs` after changing the
 manifest; builds reject unsynchronized derived files.
 
-## Managed lark-cli version
+## Feishu runtime dependencies
 
-`/runtime/lark-cli-runtime.json` owns one version for the complete managed
-lark-cli distribution. It combines the upstream source version and the exact
-KSFAssistant patch revision, for example `1.0.93-ksfassistant.1`. The patch has
-no independent release version: its path and SHA-256 remain only as auditable
-provenance.
-
-Changing either the upstream source or the patch requires a new managed
-lark-cli version and new hashes for every platform binary. `upstreamVersion`
-is retained only to bind source archives, Feishu API metadata and official
-Skills to the reviewed upstream release. It is not a third release line.
-
-If a managed lark-cli change also changes shipped KSFAssistant behavior, the
-KSFAssistant product version must be bumped as well.
+The product-owned Go bridge directly links the reviewed official Feishu Go SDK.
+Its module version is locked by `Core/go.mod`/`Core/go.sum` and inventoried in
+the generated SBOM. There is no separately versioned managed `lark-cli`
+distribution and no Feishu Skill release line. Historical CLI manifests,
+adapters and compatibility fixtures are not production inputs or package
+artifacts.
 
 ## Compatibility versions
 

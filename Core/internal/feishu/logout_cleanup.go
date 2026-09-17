@@ -69,6 +69,9 @@ func PurgeLocalFeishuState(dataRoot string) error {
 			return err
 		}
 	}
+	if err := purgePlatformOfficialCredentials(dataRoot); err != nil {
+		return err
+	}
 	localCredentialPaths := []string{
 		filepath.Join(dataRoot, "client.json"),
 		filepath.Join(dataRoot, SetupFilename),

@@ -23,7 +23,7 @@ macOS：SwiftUI / AppKit                 Windows：Electron
                      └─ v2 匿名管道 ─ Go 飞书子进程
                                          ├─ 消息、卡片、事件与授权
                                          ├─ 执行治理、工作队列与审计
-                                         └─ 随包 lark-cli → 飞书
+                                         └─ 官方 Go SDK / 受限 OpenAPI → 飞书
 ```
 
 ## 代码地图
@@ -80,7 +80,7 @@ Desktop 增量事件只作为快照失效信号，按任务合并到固定 100ms
 
 Agent 飞书业务中间件已退役：不启动通用本机命令网关，不公开 ClientExecute / OperationPrepare，不启动业务工作箱调度或桌面批准窗口。卡片发送仍经内部绑定、幂等和策略门禁；桌面确认只接受服务消息，不接受遗留 Agent 业务操作。独立 CLI 自行管理独立应用与授权。
 
-0.11 只由固定版官方 CLI 承担生产授权、传输和事件消费，不直接链接飞书 SDK。官方总线 ACK 先于应用工作队列持久化；它不是业务执行确认，也不是零丢失承诺。CLI 转换后的消息/卡片按固定 schema 归一化；附件读取原消息核对绑定，延迟卡片 Token 不进入应用持久化队列。具体边界见 [本机预览改造](architecture/preview-0.11.md)。
+0.11 的生产授权、传输和事件消费由产品自有 Go 桥完成：官方 Go SDK 维持唯一 WebSocket，受限 OpenAPI 只开放任务消息与 CardKit 所需路径。官方总线 ACK 先于应用工作队列持久化；它不是业务执行确认，也不是零丢失承诺。消息/卡片按固定 schema 归一化，延迟卡片 Token 不进入应用持久化队列。具体边界见 [本机预览改造](architecture/preview-0.11.md)。
 
 飞书服务先持久保存事件，验证当前授权后通过 v2 事件端口交付 Core。Core 的 integration 模块持久接受后才 ACK；ACK 只代表交付，不代表任务执行成功。Core 解释任务链接、Plan 和输入动作，调用本地 Codex/Desktop 适配器，构建业务卡片；卡片发送和更新仍必须经过飞书服务的绑定与治理门禁。未注册业务处理器的事件留在飞书事件查询能力中，不自动创建任务。
 
@@ -110,9 +110,9 @@ Core 事件执行分为 `preparing` 与 `executing`：只有可证明尚未开�
 
 ## 降级与状态
 
-飞书服务快照只描述自身运行状态；Core 合成业务链接与 Codex/Desktop/KSF 状态。Feishu inbound/outbound、Codex App Server、Desktop IPC、KSF context、固定 `lark-cli` 能力及三个工作箱分别报告 `ready / degraded / unavailable / disabled`；单项能力不可用不终止服务。只有重复实例、父级管道关闭或私有数据安全无法保证时退出。
+飞书服务快照只描述自身运行状态；Core 合成业务链接与 Codex/Desktop/KSF 状态。Feishu inbound/outbound、Codex App Server、Desktop IPC、KSF context 及业务队列分别报告 `ready / degraded / unavailable / disabled`；单项能力不可用不终止服务。只有重复实例、父级管道关闭或私有数据安全无法保证时退出。
 
-飞书守护进程只创建一个 `CapabilityService`，供内部任务卡片传输使用。Agent 不再通过助手执行通用业务命令；旧别名明确拒绝执行。固定版 CLI 仍经路径、版本和 schema 校验后用于卡片通信，不开放任意 API 转发。
+飞书守护进程只为内部任务卡片建立官方 SDK/OpenAPI 传输。Agent 不再通过助手执行通用业务命令；旧别名明确拒绝执行，也不开放任意 API 转发。
 
 飞书服务维护带 revision 的运行快照并在变化时推送给核心服务。Core 为每次连接生成新代次，只在同代次内比较 revision；自动重启与手动重启共用握手和缓存初始化，拒绝旧连接迟到数据。Dashboard 读取核心服务内存，不再组合 `status`、`targets list`、`task-link protocol` 和 `task-link list` 四次子进程调用。macOS 与 Windows 桌面应用都合并并发 Dashboard 请求；面板活跃状态 3 秒、空闲 15 秒、后台额度 5 分钟。设置、价格、飞书向导和权限只在进入对应页面或修改后读取。
 
@@ -122,7 +122,7 @@ Core 事件执行分为 `preparing` 与 `executing`：只有可证明尚未开�
 
 ## 飞书迁移
 
-Go 入口把 `client.json` 升级为 schema v5，以 `appId + openId` 保存只对当前应用有效的 operator；公开配置快照只暴露绑定状态和指纹。任务连接 schema v2、历史和既有队列不重建。生产执行统一使用受管 `lark-cli 1.0.93-ksfassistant.1`，它由官方 `1.0.93` 源码、固定发行版 API 元数据和可审计补丁共同构成；补丁没有独立版本，只保留路径和哈希溯源。构建同时校验四平台哈希，配置和安全存储与用户自己的 lark-cli 隔离。历史 26 个事件名保留查询/回放；本预览受管监听只启用消息和卡片，其他事件需显式订阅接入。Node 只保留离线回放，不进入安装包或真实事件链路。
+Go 入口把 `client.json` 升级为 schema v5，以 `appId + openId` 保存只对当前应用有效的 operator；公开配置快照只暴露绑定状态和指纹。任务连接 schema v2、历史和既有队列不重建。生产运行只使用官方 SDK/OpenAPI；新凭据在 Windows 进入 DPAPI、在 macOS 进入 Keychain。旧受管 CLI 凭据仅作为一次迁移输入，CLI 二进制、清单和 Skills 不进入安装包。监听固定为 `im.message.receive_v1` 与 `card.action.trigger`，Node 只保留离线回放，不进入安装包或真实事件链路。
 
 能力策略使用 `disabled / confirm_each / allowed` 三态。读取与普通写入默认允许，立即发送、高影响写入和远程操作默认逐次确认，删除、清空、覆盖、移动与历史回退默认禁用。101 项破坏性能力不能按风险级整体放开，也不能设为免确认，只能逐项设为 `confirm_each`。每项都有版本化守卫：`strong` 使用权威预读和后置核验，`bounded` 至少生成脱敏影响摘要；远端结果无法证明时只能进入 `outcome_unknown`。五分钟确认凭证绑定能力、目标参数指纹、预读证据和策略 revision；执行前队列再次复核总开关、策略与预读证据。
 
@@ -130,7 +130,7 @@ Go 入口把 `client.json` 升级为 schema v5，以 `appId + openId` 保存只�
 
 已提交操作超时不会被当成失败，也不会自动重放副作用。具备复读能力的操作最多后台核对三次；无法安全复读或三次后仍不明确时进入 `outcome_unknown + manual_review`。等待确认过期则进入 `expired + reprepare_on_user_request`，可以确定本次没有执行。
 
-三个工作箱内部使用 schema v4 工作项，保留 `workbox-v3` 原路径。工作项持久保存 Operation 关联和执行阶段，在 `pending / running / terminal` 间原子迁移；Operation 是业务状态权威，索引只是可重建投影。统一调度总并发 4、`lark-cli` 并发 2、长远端任务并发 1，同目标串行。恢复统一检查跨文件中断窗口；无法证明授权或执行阶段的旧工作不自动重放。迁移失败时禁止受影响写入，不启用双消费者。
+三个工作箱内部使用 schema v4 工作项，保留 `workbox-v3` 原路径。工作项持久保存 Operation 关联和执行阶段，在 `pending / running / terminal` 间原子迁移；Operation 是业务状态权威，索引只是可重建投影。恢复统一检查跨文件中断窗口；无法证明授权或执行阶段的旧工作不自动重放。迁移失败时禁止受影响写入，不启用双消费者。
 
 队列终态、结果、事件和入站回执保留 30 天或每类 20,000 条；操作记录保留 90 天或 10,000 条；审计日志保留 180 天或合计 200 MB。未知结果和人工复核最多保护 90 天。飞书入站一旦终态便删除原始 payload，仅保留指纹和安全分类。子服务 stderr 持续排空到 `0600` 诊断环：1 MB × 5、最多 7 天；非结构化内容不保存原文。
 

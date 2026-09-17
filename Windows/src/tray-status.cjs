@@ -2,6 +2,8 @@
 
 const zlib = require('node:zlib');
 
+const DEFAULT_TRAY_ICON_SOURCE_SIZE = 48;
+
 const DIGITS = {
   '-': ['000', '000', '111', '000', '000'],
   0: ['111', '101', '101', '101', '111'],
@@ -76,35 +78,43 @@ function pngChunk(type, data) {
   return Buffer.concat([length, typeBuffer, data, checksum]);
 }
 
-function trayIconDataURL(status) {
+function trayIconDataURL(status, requestedSize = DEFAULT_TRAY_ICON_SOURCE_SIZE) {
   const percent = status.remainingPercent;
   const background = percent == null ? [95, 104, 115] : percent < 20 ? [196, 61, 61] : percent < 50 ? [193, 123, 22] : [24, 121, 78];
-  const width = 32;
-  const height = 32;
+  const width = Math.max(16, Math.min(64, Math.round(requestedSize)));
+  const height = width;
   const pixels = Buffer.alloc(width * height * 4);
-  for (let y = 1; y < height - 1; y += 1) {
-    for (let x = 1; x < width - 1; x += 1) {
-      const cornerX = x < 7 ? 7 : x > 24 ? 24 : x;
-      const cornerY = y < 7 ? 7 : y > 24 ? 24 : y;
-      if ((x - cornerX) ** 2 + (y - cornerY) ** 2 > 36) continue;
+  const radius = Math.max(3, Math.round(width / 6));
+  const maximum = width - 1;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const cornerX = x < radius ? radius : x > maximum - radius ? maximum - radius : x;
+      const cornerY = y < radius ? radius : y > maximum - radius ? maximum - radius : y;
+      if ((x - cornerX) ** 2 + (y - cornerY) ** 2 > radius ** 2) continue;
       const offset = (y * width + x) * 4;
       pixels.set([...background, 255], offset);
     }
   }
 
-  const scale = status.label.length >= 3 ? 2 : 3;
-  const totalWidth = status.label.length * 3 * scale + (status.label.length - 1) * scale;
+  const horizontalUnits = status.label.length * 3 + status.label.length - 1;
+  // Reserve a two-digit slot even for a one-digit percentage. The colored
+  // plate stays full-size while a lone digit no longer expands to fill it.
+  const layoutUnits = Math.max(7, horizontalUnits);
+  const verticalPadding = Math.max(2, Math.round(height * 0.16));
+  const scaleX = Math.max(1, Math.floor((width - 2) / layoutUnits));
+  const scaleY = Math.max(1, Math.floor((height - verticalPadding * 2) / 5));
+  const totalWidth = horizontalUnits * scaleX;
   const startX = Math.floor((width - totalWidth) / 2);
-  const startY = Math.floor((height - 5 * scale) / 2);
+  const startY = Math.floor((height - 5 * scaleY) / 2);
   for (const [characterIndex, character] of [...status.label].entries()) {
     const glyph = DIGITS[character];
     for (let row = 0; row < glyph.length; row += 1) {
       for (let column = 0; column < glyph[row].length; column += 1) {
         if (glyph[row][column] !== '1') continue;
-        for (let dy = 0; dy < scale; dy += 1) {
-          for (let dx = 0; dx < scale; dx += 1) {
-            const x = startX + characterIndex * 4 * scale + column * scale + dx;
-            const y = startY + row * scale + dy;
+        for (let dy = 0; dy < scaleY; dy += 1) {
+          for (let dx = 0; dx < scaleX; dx += 1) {
+            const x = startX + characterIndex * 4 * scaleX + column * scaleX + dx;
+            const y = startY + row * scaleY + dy;
             pixels.set([255, 255, 255, 255], (y * width + x) * 4);
           }
         }

@@ -1,6 +1,7 @@
 .DS_Store
 .build/
 dist/
+artifacts/
 Windows/node_modules/
 *.xcuserstate
 Core/internal/service/configuration-receipts-v1/

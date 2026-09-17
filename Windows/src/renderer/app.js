@@ -42,24 +42,24 @@ const state = {
 };
 
 const icons = {
-  settings: '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.12 2.12-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.55V20.3h-3v-.09a1.7 1.7 0 0 0-1.03-1.55 1.7 1.7 0 0 0-1.88.34l-.06.06-2.12-2.12.06-.06A1.7 1.7 0 0 0 7.02 15a1.7 1.7 0 0 0-1.55-1.03H5.4v-3h.08A1.7 1.7 0 0 0 7.02 9.94a1.7 1.7 0 0 0-.34-1.88L6.62 8l2.12-2.12.06.06a1.7 1.7 0 0 0 1.88.34 1.7 1.7 0 0 0 1.03-1.55V4.7h3v.08a1.7 1.7 0 0 0 1.03 1.55 1.7 1.7 0 0 0 1.88-.34l.06-.06L19.8 8l-.06.06a1.7 1.7 0 0 0-.34 1.88 1.7 1.7 0 0 0 1.55 1.03h.08v3h-.08A1.7 1.7 0 0 0 19.4 15Z"/>',
   refresh: '<path d="M20 11a8.1 8.1 0 1 0 2.2 5.5"/><path d="M20 4v7h-7"/>',
   chart: '<path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/><path d="M2 19h22"/>',
   back: '<path d="m15 18-6-6 6-6"/>',
+  chevronRight: '<path d="m9 18 6-6-6-6"/>',
   grid: '<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/>',
   pin: '<path d="M12 17v5"/><path d="M5 17h14l-2-5V5l2-2H5l2 2v7l-2 5Z"/>',
   folder: '<path d="M3 6h6l2 2h10v10a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z"/>',
-  add: '<path d="M12 5v14M5 12h14"/>',
-  play: '<path d="M7 4.8v14.4L19 12 7 4.8Z"/>',
+  addBubble: '<path d="M21 15a3 3 0 0 1-3 3H8l-5 3V7a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3Z"/><path d="M12 8v6M9 11h6"/>',
+  play: '<path fill="currentColor" stroke="none" d="M7 4.8v14.4L19 12 7 4.8Z"/>',
   archive: '<path d="M4 7h16"/><path d="M5 7v13h14V7"/><path d="M3 3h18v4H3z"/><path d="M9 11h6"/>',
   send: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
-  open: '<path d="M15 3h6v6"/><path d="m10 14 11-11"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  sendOff: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/><path d="m3 3 18 18"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
-  stop: '<rect width="14" height="14" x="5" y="5" rx="2"/>',
-  close: '<path d="m6 6 12 12M18 6 6 18"/>',
+  power: '<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/>',
 };
 
 function icon(name, className = '') {
+  if (name === 'settings') return `<span class="fluent-icon" aria-hidden="true">&#xE713;</span>`;
   return `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name]}</svg>`;
 }
 
@@ -71,6 +71,12 @@ function buttonIcon(action, name, label, extra = '', disabled = false) {
   return `<button class="icon-button ${extra}" ${disabled ? 'disabled' : ''} type="button" data-action="${action}" title="${escapeHTML(label)}" aria-label="${escapeHTML(label)}">${icon(name)}</button>`;
 }
 
+function pinButton(action, id, isPinned, targetLabel) {
+  const pinned = Boolean(isPinned);
+  const label = pinned ? '取消固定' : `固定${targetLabel}`;
+  return `<button class="icon-button pin-button ${pinned ? 'pinned' : ''}" type="button" data-action="${action}" data-id="${escapeHTML(id)}" data-pinned="${pinned}" aria-pressed="${pinned}" title="${label}" aria-label="${label}">${icon('pin')}</button>`;
+}
+
 function header(title, extraActions = '') {
   const secondary = state.page !== 'home';
   const accountLoading = title === 'Codex 用量' && (state.loading || state.refreshing);
@@ -79,7 +85,6 @@ function header(title, extraActions = '') {
     <h1 class="app-title">${escapeHTML(title)}${accountLoading ? '<span class="account-spinner" role="status" aria-label="正在读取 Codex 用量"></span>' : ''}</h1>
     <div class="header-actions">${extraActions}
       ${state.page === 'home' ? buttonIcon('settings', 'settings', '设置') : ''}
-      ${buttonIcon('refresh', 'refresh', '刷新')}
     </div>
   </header>`;
 }
@@ -100,6 +105,7 @@ function render() {
   else if (state.page === 'feishu') renderFeishuSurface();
   else root.innerHTML = renderHome();
   root.setAttribute('aria-busy', state.refreshing ? 'true' : 'false');
+  if (state.page === 'history') applyHistoryBarHeights();
   reportHeight();
 }
 
@@ -108,28 +114,27 @@ function renderHome() {
   if (!dashboard) return `${header('Codex 用量')}<section class="card callout error"><strong>核心服务暂不可用</strong>${escapeHTML(state.error)}</section>`;
   const bucket = dashboard.usage.buckets.find((item) => item.limitId === 'codex') || dashboard.usage.buckets[0];
   const remaining = headlineRemaining(bucket);
-  const window = shortestWindow(bucket);
   const projects = selectHomeProjects(dashboard.projects.projects, dashboard.feishu.links);
   const workspaceLibrary = dashboard.workspaces?.workspaces || [];
   const workspaces = selectHomeWorkspaces(workspaceLibrary, dashboard.feishu.links);
   return `${header('Codex 用量')}
-    ${renderQuota(bucket, remaining, window)}
+    ${renderQuota(bucket, remaining)}
     <div class="section-header"><h2 class="section-title">Token 活动</h2><span class="section-action">${buttonIcon('history', 'chart', '查看每日 Token 历史')}</span></div>
     ${renderTokens(dashboard.usage)}
-    ${state.settings?.ksfRoot ? `<div class="section-header"><h2 class="section-title">KSF 项目</h2><span class="section-meta">${projects.length}</span><span class="section-action">${buttonIcon('projects', 'grid', '查看全部项目')}</span></div>${renderProjectSection(projects, dashboard.projects)}` : ''}
-    ${workspaceLibrary.length ? `<div class="section-header"><h2 class="section-title">Codex 工作区</h2><span class="section-meta">${workspaceLibrary.length}</span><span class="section-action">${buttonIcon('workspaces', 'grid', '查看全部 Codex 工作区')}</span></div>${workspaces.length ? `<section class="project-stack">${workspaces.map((item) => renderWorkspaceCard(item)).join('')}</section>` : ''}` : ''}
+    ${state.settings?.ksfRoot ? `<div class="section-divider"></div><div class="section-header"><h2 class="section-title">KSF 项目</h2><span class="section-meta">${projects.length}</span><span class="section-action">${buttonIcon('projects', 'grid', '查看全部项目')}</span></div>${renderProjectSection(projects, dashboard.projects)}` : ''}
+    ${workspaceLibrary.length ? `<div class="section-divider"></div><div class="section-header"><h2 class="section-title">Codex 工作区</h2><span class="section-meta">${workspaceLibrary.length}</span><span class="section-action">${buttonIcon('workspaces', 'grid', '查看全部 Codex 工作区')}</span></div>${workspaces.length ? `<section class="project-stack">${workspaces.map((item) => renderWorkspaceCard(item)).join('')}</section>` : ''}` : ''}
     ${state.error ? `<p class="support-copy">${escapeHTML(state.error)}</p>` : ''}`;
 }
 
-function renderQuota(bucket, remaining, window) {
+function renderQuota(bucket, remaining) {
   if (!bucket || remaining == null) {
     return `<section class="card callout error"><strong>额度信息暂不可用</strong>${escapeHTML(state.dashboard?.usage?.rateError || '请确认 Codex 已登录并支持账户额度接口。')}</section>`;
   }
+  const windows = [bucket.primary, bucket.secondary].filter(Boolean).slice(0, 2);
   return `<section class="card quota-card">
-    <div class="quota-head"><span class="quota-value">${remaining}%</span><span class="quota-unit">剩余</span><span class="plan-badge">${escapeHTML((bucket.planType || 'Codex').toUpperCase())}</span></div>
-    <div class="quota-updated">${relativeTime(state.dashboard.usage.rateUpdatedAt)}</div>
-    <progress class="progress" value="${remaining}" max="100" aria-label="通用额度剩余 ${remaining}%"></progress>
-    <div class="quota-meta"><span>${window?.windowDurationMins ? durationWindow(window.windowDurationMins) : '额度窗口'}</span><strong>${window?.resetsAt ? `${remaining}% · ${formatReset(window.resetsAt)}` : `${remaining}%`}</strong></div>
+    <div class="quota-head"><span class="quota-value">${remaining}%</span><span class="quota-unit">通用额度剩余</span><span class="quota-time">${formatUpdateTime(state.dashboard.usage.rateUpdatedAt)}</span></div>
+    <progress class="progress ${remaining <= 20 ? 'danger' : remaining <= 50 ? 'warning' : ''}" value="${remaining}" max="100" aria-label="通用额度剩余 ${remaining}%"></progress>
+    ${windows.map((item) => { const value = Math.max(0, Math.min(100, 100 - item.usedPercent)); return `<div class="quota-meta"><span>${durationWindow(item.windowDurationMins)}</span><strong>${value}%${item.resetsAt ? ` · ${formatReset(item.resetsAt)}` : ''}</strong></div>`; }).join('')}
   </section>`;
 }
 
@@ -152,8 +157,7 @@ function renderTokens(usage) {
     ['本机今日', local ? formatTokens(local.tokens) : '—'],
   ];
   const plan = selectedPricingPlan();
-  return `<section class="card token-card">${metrics.map(([label, value]) => `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`).join('')}<div class="token-cost-row"><span><small>API 估算</small><strong>${escapeHTML(compactPricingName(plan))}</strong></span><b>今日 ${formatCostEstimate(local ? usage.localDailyCost : null)}</b></div></section>
-    <p class="support-copy">账号数据可能延迟；本机统计覆盖此电脑的 Codex 会话。</p>`;
+  return `<section class="card token-card">${metrics.map(([label, value]) => `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`).join('')}<div class="token-cost-row"><span><small>API 估算</small><strong>${escapeHTML(compactPricingName(plan))}</strong></span><b>今日 ${formatCostEstimate(local ? usage.localDailyCost : null)}</b></div></section>`;
 }
 
 function renderHistoryPage() {
@@ -177,8 +181,8 @@ function renderHistoryPage() {
     const localHeight = Math.max(2, day.localTokens / maximum * 100);
     const serverLabel = day.serverTokens == null ? '未同步' : formatTokens(day.serverTokens);
     const shareLabel = day.serverTokens > 0 ? formatShare(day.localTokens / day.serverTokens) : '—';
-    const serverBar = day.serverTokens == null ? '' : `<span class="history-server" style="height:${serverHeight}%"></span>`;
-    return `<button class="history-bar${selectedClass}" type="button" data-action="history-day" data-date="${escapeHTML(day.startDate)}" title="${escapeHTML(historyDateLabel(day.startDate))} · 服务器 ${escapeHTML(serverLabel)} · 本机 ${escapeHTML(formatTokens(day.localTokens))}" aria-label="${escapeHTML(historyDateLabel(day.startDate))}，服务器 ${escapeHTML(serverLabel)}，本机 ${escapeHTML(formatTokens(day.localTokens))}，本机占比 ${escapeHTML(shareLabel)}">${serverBar}<span class="history-local" style="height:${localHeight}%"></span></button>`;
+    const serverBar = day.serverTokens == null ? '' : `<span class="history-server" data-height="${serverHeight}"></span>`;
+    return `<button class="history-bar${selectedClass}" type="button" data-action="history-day" data-date="${escapeHTML(day.startDate)}" title="${escapeHTML(historyDateLabel(day.startDate))} · 服务器 ${escapeHTML(serverLabel)} · 本机 ${escapeHTML(formatTokens(day.localTokens))}" aria-label="${escapeHTML(historyDateLabel(day.startDate))}，服务器 ${escapeHTML(serverLabel)}，本机 ${escapeHTML(formatTokens(day.localTokens))}，本机占比 ${escapeHTML(shareLabel)}">${serverBar}<span class="history-local" data-height="${localHeight}"></span></button>`;
   }).join('');
   return `${header('每日 Token')}
     <div class="pricing-toolbar"><select data-field="pricing-plan" aria-label="API 价格方案">${renderPricingOptions()}</select></div>
@@ -194,6 +198,14 @@ function renderHistoryPage() {
       <p class="history-note">按当前所选 API 价格估算，历史金额会随方案或价格变化，不代表实际账单。</p>
     </section>
     ${state.historyError || state.historyServerError ? `<p class="support-copy">${escapeHTML(state.historyError || state.historyServerError)}</p>` : ''}`;
+}
+
+function applyHistoryBarHeights() {
+  for (const bar of root.querySelectorAll('.history-bar [data-height]')) {
+    const value = Number(bar.dataset.height);
+    const height = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
+    bar.style.height = `${height}%`;
+  }
 }
 
 function renderPricingPage() {
@@ -328,14 +340,14 @@ function renderProjectCard(item) {
     <div class="project-card-head">
       ${item.kind === 'project' ? `<button class="project-name icon-button-text" type="button" data-action="project-detail" data-id="${escapeHTML(item.id)}">${escapeHTML(title)}</button>` : `<span class="project-name">${escapeHTML(title)}</span>`}
       ${activeCount ? `<span class="activity-count" title="活跃任务">${playIcon()} ${activeCount}</span>` : ''}
-      ${item.kind === 'project' || item.kind === 'unassigned' ? `<button class="icon-button" type="button" data-action="pin" data-id="${escapeHTML(item.id)}" data-pinned="${item.isPinned}" title="${item.isPinned ? '取消固定' : '固定项目'}" aria-label="${item.isPinned ? '取消固定' : '固定项目'}">${icon('pin')}</button>` : ''}
+      ${item.kind === 'project' || item.kind === 'unassigned' ? pinButton('pin', item.id, item.isPinned, '项目') : ''}
     </div>
     <div class="task-list">${item.tasks.length ? item.tasks.map((task) => renderTask(task, project, null, title)).join('') : '<div class="empty">暂无任务</div>'}</div>
     ${item.kind === 'project' ? `<footer class="project-footer">
       <div class="usage-pair"><span>累计 <strong>${formatTokens(usage?.cumulativeTokens)}</strong></span><span>今日 <strong>${formatTokens(usage?.todayTokens)}</strong></span></div>
       <div class="project-actions">
         ${item.launchAction ? buttonIcon(`launch-project:${item.id}`, 'play', item.launchAction.title || '启动项目') : ''}
-        ${buttonIcon(`create-task:${item.id}`, 'add', '新建任务')}
+        ${buttonIcon(`create-task:${item.id}`, 'addBubble', '新建任务')}
         ${buttonIcon(`open-folder:${item.id}`, 'folder', '打开项目目录')}
         ${buttonIcon(`archive-task:${item.id}`, 'archive', '归档项目')}
       </div>
@@ -346,17 +358,30 @@ function renderProjectCard(item) {
 function renderTask(task, project, workspace = null, containerName = null) {
   const link = state.dashboard.feishu.links.find((item) => item.taskKey === task.taskKey);
   const linkReleasable = isTaskLinkReleasable(link);
-  const detail = taskDetail(task, link);
+  const showsKSFRoute = !workspace;
   return `<div class="task-row">
-    ${taskStateIcon(task.classification)}
-    <div class="task-copy"><span class="task-name">${escapeHTML(task.name || '未命名任务')}</span><span class="task-detail">${escapeHTML(detail)}</span>${project ? `<span class="task-detail">${escapeHTML(taskReportLabel(task.taskRuntime))}</span>` : ''}</div>
+    <div class="task-copy"><div class="task-title-line">${taskStateIcon(task.classification)}<button class="task-name icon-button-text" type="button" data-action="open-task" data-thread="${escapeHTML(task.threadId)}">${escapeHTML(task.name || '未命名任务')}</button><span class="status-chip ${escapeHTML(task.classification)}">${escapeHTML(taskClassificationText(task))}</span></div>${showsKSFRoute ? `<span class="task-detail">${renderTaskRouteSummary(task)}</span>` : ''}</div>
     <div class="task-actions">
       <button class="icon-button" type="button" data-action="task-detail" data-task="${escapeHTML(task.id)}" title="任务详情" aria-label="任务详情">${icon('info')}</button>
-      ${link?.controls?.canInterrupt ? `<button class="icon-button" type="button" data-action="interrupt-link" data-thread="${escapeHTML(task.threadId)}" title="停止本轮" aria-label="停止本轮">${icon('stop')}</button>` : ''}
-      <button class="icon-button" type="button" data-action="toggle-link" data-thread="${escapeHTML(task.threadId)}" data-title="${escapeHTML(task.name || '未命名任务')}" data-project="${escapeHTML(containerName || project?.name || workspace?.name || '其他任务')}" data-linked="${linkReleasable}" title="${linkReleasable ? (link?.linkState === 'pending' ? '解除待核实的飞书连接' : '解除飞书连接') : '连接到飞书'}" aria-label="${linkReleasable ? '解除飞书连接' : '连接到飞书'}" >${icon(linkReleasable ? 'close' : 'send')}</button>
-      <button class="icon-button" type="button" data-action="open-task" data-thread="${escapeHTML(task.threadId)}" title="在 Codex 中打开" aria-label="在 Codex 中打开">${icon('open')}</button>
+      <button class="icon-button" type="button" data-action="toggle-link" data-thread="${escapeHTML(task.threadId)}" data-title="${escapeHTML(task.name || '未命名任务')}" data-project="${escapeHTML(containerName || project?.name || workspace?.name || '其他任务')}" data-linked="${linkReleasable}" title="${linkReleasable ? (link?.linkState === 'pending' ? '解除待核实的飞书连接' : '解除飞书连接') : '连接到飞书'}" aria-label="${linkReleasable ? '解除飞书连接' : '连接到飞书'}" >${icon(linkReleasable ? 'sendOff' : 'send')}</button>
     </div>
   </div>`;
+}
+
+function renderTaskRouteSummary(task) {
+  const route = !task.taskRuntime || task.taskRuntime.routeFreshness === 'current' ? task.route : null;
+  const mainJob = route?.jobs?.find((job) => job.role === 'main');
+  const abilities = route?.abilities?.map((ability) => ability.name).filter(Boolean) || [];
+  const routeLine = route
+    ? `${route.category?.name || '未分类'} · ${mainJob?.name || '无主岗位'}`
+    : '未绑定 KSF 路由';
+  const abilityLine = route
+    ? `${abilities.length ? abilities.join('、') : '无基本功'} · ${route?.dispatchableSkills?.length || 0} Skill`
+    : '';
+  return [routeLine, abilityLine, taskReportLabel(task.taskRuntime)]
+    .filter(Boolean)
+    .map((line) => escapeHTML(line))
+    .join('</span><span class="task-detail">');
 }
 
 function renderWorkspaceCard(item, activeOnly = false) {
@@ -367,7 +392,7 @@ function renderWorkspaceCard(item, activeOnly = false) {
       <span class="project-name">${escapeHTML(item.name)}</span>
       <span class="activity-count" title="运行中任务">${playIcon()} ${item.runningCount}</span>
       ${item.waitingCount ? `<span class="activity-count waiting-count" title="等待任务">待 ${item.waitingCount}</span>` : ''}
-      <button class="icon-button" type="button" data-action="workspace-pin" data-id="${escapeHTML(item.id)}" data-pinned="${Boolean(item.isPinned)}" title="${item.isPinned ? '取消固定' : '固定工作区'}" aria-label="${item.isPinned ? '取消固定' : '固定工作区'}">${icon('pin')}</button>
+      ${pinButton('workspace-pin', item.id, item.isPinned, '工作区')}
     </div>
     ${item.path ? `<div class="workspace-path" title="${escapeHTML(item.path)}">${escapeHTML(item.path)}</div>` : ''}
     <div class="task-list">${tasks.map((task) => renderTask(task, null, item)).join('')}</div>
@@ -375,7 +400,7 @@ function renderWorkspaceCard(item, activeOnly = false) {
     ${item.kind === 'workspace' && item.path ? `<footer class="project-footer">
       <div class="usage-pair"><span>累计 <strong>${formatTokens(item.usage?.cumulativeTokens)}</strong></span><span>今日 <strong>${formatTokens(item.usage?.todayTokens)}</strong></span></div>
       <div class="project-actions">
-        ${buttonIcon(`workspace-create-task:${item.id}`, 'add', '新建任务')}
+        ${buttonIcon(`workspace-create-task:${item.id}`, 'addBubble', '新建任务')}
         ${buttonIcon(`workspace-open-folder:${item.id}`, 'folder', '打开工作区文件夹')}
       </div>
     </footer>` : ''}
@@ -439,7 +464,7 @@ function renderProjectsPage() {
     <section class="card settings-list">${projects.length ? projects.map((project) => {
       const item = dashboardById.get(project.id);
       const active = item?.tasks?.filter((task) => task.classification === 'running' || task.classification === 'waiting').length || 0;
-      return `<div class="library-row"><button class="project-name icon-button-text" type="button" data-action="project-detail" data-id="${escapeHTML(project.id)}"><span class="library-name">${escapeHTML(project.name)}</span><span class="library-summary">${escapeHTML(project.summary || project.focus || '暂无摘要')}</span></button><div class="task-actions">${active ? `<span class="status-chip running">${active} 活跃</span>` : ''}<button class="icon-button" type="button" data-action="pin" data-id="${escapeHTML(project.id)}" data-pinned="${Boolean(item?.isPinned)}" title="${item?.isPinned ? '取消固定' : '固定项目'}">${icon('pin')}</button></div></div>`;
+      return `<div class="library-row"><button class="project-name icon-button-text" type="button" data-action="project-detail" data-id="${escapeHTML(project.id)}"><span class="library-name">${escapeHTML(project.name)}</span><span class="library-summary">${escapeHTML(project.summary || project.focus || '暂无摘要')}</span></button><div class="task-actions">${active ? `<span class="status-chip running">${active} 活跃</span>` : ''}${pinButton('pin', project.id, item?.isPinned, '项目')}</div></div>`;
     }).join('') : '<div class="empty"><strong>没有匹配项目</strong>调整搜索词后重试。</div>'}</section>`;
 }
 
@@ -462,18 +487,17 @@ function renderProjectPage() {
 
 function renderSettingsPage() {
   const settings = state.settings || {};
-  const feishu = state.dashboard?.feishu || { availability: 'notConfigured', targetAliases: [] };
+  const projectCount = state.dashboard?.projects?.catalog?.length || 0;
+  const ksfStatus = settings.ksfRoot ? `已连接 · ${projectCount} 个活动项目` : 'KSF 是可选增强能力；不影响额度、Token、任务状态和飞书。';
   return `${header('设置')}
     <section class="card settings-list">
-      <div class="setting"><div class="setting-title">运行组件</div><div class="component-status-list"><div class="component-status"><span>核心服务</span><strong>${state.dashboard?.coreVersion ? '运行中' : '不可用'}</strong></div><div class="component-status"><span>飞书服务</span><strong>${escapeHTML(feishuComponentStatusText(feishu))}</strong></div></div><div class="setting-description">退出 KSFAssistant 将停止核心服务、飞书服务及其子进程。</div></div>
-      <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">KSF 知识库</div><div class="setting-description">KSF 是可选增强能力；未配置不影响额度、Token、任务状态和飞书。</div></div><button class="button ${settings.ksfRoot ? 'danger' : ''}" type="button" data-action="${settings.ksfRoot ? 'clear-ksf' : 'choose-ksf'}">${settings.ksfRoot ? '取消' : '选择目录'}</button></div><div class="setting-path">${escapeHTML(settings.ksfRoot || '未接入')}</div></div>
-      <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">飞书</div><div class="setting-description">${escapeHTML(feishuConfigurationPresentation().title)}</div></div><button class="button" type="button" data-action="feishu-settings">配置</button></div></div>
-      <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">API 估算价格</div><div class="setting-description">${escapeHTML(selectedPricingPlan()?.displayName || 'GPT-6 Astra')}</div></div><button class="button" type="button" data-action="pricing">管理价格方案</button></div></div>
-      <div class="setting"><div class="setting-head"><div class="setting-copy"><label class="setting-title" for="launch-login">登录时启动</label><div class="setting-description">登录 Windows 后在系统托盘中启动。</div></div><input id="launch-login" class="switch" type="checkbox" data-field="launch-login" ${settings.launchAtLogin ? 'checked' : ''}></div></div>
+      <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">KSF 知识库（可选）</div><div class="setting-description">${escapeHTML(ksfStatus)}</div></div><button class="button compact-button ${settings.ksfRoot ? 'danger' : ''}" type="button" data-action="${settings.ksfRoot ? 'clear-ksf' : 'choose-ksf'}">${settings.ksfRoot ? '取消' : '选择目录'}</button></div></div>
+      <div class="setting"><div class="setting-head"><div class="setting-copy"><label class="setting-title" for="launch-login">登录时启动</label><div class="setting-description">${settings.launchAtLogin ? '已启用' : '登录 Windows 后在系统托盘中启动'}</div></div><input id="launch-login" class="switch" type="checkbox" data-field="launch-login" ${settings.launchAtLogin ? 'checked' : ''}></div></div>
       <div class="setting"><div class="setting-head"><div class="setting-copy"><label class="setting-title" for="prevent-sleep">禁止电脑睡眠</label><div class="setting-description">助手运行时保持唤醒，屏幕可关闭。耗电增加；不阻止合盖或手动睡眠。</div></div><input id="prevent-sleep" class="switch" type="checkbox" data-field="prevent-sleep" ${settings.preventSleep ? 'checked' : ''}></div></div>
-      <div class="setting"><div class="setting-head"><div class="setting-copy"><div class="setting-title">版本</div><div class="setting-description">Windows 0.11.0-preview.1 · 核心服务 ${escapeHTML(state.dashboard?.coreVersion || '—')}</div></div></div></div>
+      <button class="setting setting-link" type="button" data-action="pricing" title="管理价格方案"><span class="setting-copy"><span class="setting-title">API 估算价格</span><span class="setting-description">${escapeHTML(selectedPricingPlan()?.displayName || 'GPT-6 Astra')}</span></span>${icon('chevronRight')}</button>
+      <button class="setting setting-link" type="button" data-action="feishu-settings"><span class="setting-copy"><span class="setting-title">飞书服务</span><span class="setting-description">${escapeHTML(feishuConfigurationPresentation().title)}</span></span>${icon('chevronRight')}</button>
     </section>
-    <div class="detail-actions"><button class="button danger" type="button" data-action="quit">退出 KSFAssistant</button></div>`;
+    <button class="settings-exit" type="button" data-action="quit" title="退出 KSFAssistant 将停止核心服务、飞书服务及其子进程。">${icon('power')}<span>退出</span></button>`;
 }
 
 function feishuConfigurationPresentation(snapshot = state.feishuConfiguration) {
@@ -564,7 +588,7 @@ function renderFeishuApplicationSetup() {
 function renderFeishuOverview(step = '') {
   const summary = feishuConfigurationPresentation();
   const tone = ['success', 'warning', 'neutral'].includes(summary.tone) ? summary.tone : 'neutral';
-  return '<section class="feishu-overview" aria-label="飞书接入状态" title="' + escapeHTML(summary.title + '：' + summary.detail) + '"><h2 class="setting-title">飞书接入状态</h2>'
+  return '<section class="card feishu-overview" aria-label="飞书接入状态" title="' + escapeHTML(summary.title + '：' + summary.detail) + '"><h2 class="setting-title">飞书接入状态</h2>'
     + renderFeishuFacts(['robot', 'authorizedUser', 'taskConnection']) + step + '</section>';
 }
 
@@ -578,7 +602,7 @@ function renderFeishuDiagnostics() {
     + (feishuAction('restart')?.enabled ? renderFeishuAction('restart') : '')
     + (d.selfTarget ? '<div class="feishu-self-test">' + (state.feishuSetupBusy && state.feishuLastAction === 'test_message' ? '<p role="status">正在发送测试消息…</p>' : renderFeishuAction('test_message'))
       + (state.feishuLastAction === 'test_message' && state.feishuActionFeedback ? '<p class="setting-description" role="status">' + escapeHTML(state.feishuActionFeedback) + '</p>' : '') + '</div>' : '');
-  return '<section class="feishu-diagnostics">' + feishuDisclosure('diagnostics', '诊断详情', contents) + '</section>';
+  return '<section class="card feishu-diagnostics">' + feishuDisclosure('diagnostics', '诊断详情', contents) + '</section>';
 }
 
 function renderFeishuVersions() {
@@ -704,7 +728,12 @@ async function performFeishuConfigurationAction(action, options = {}) {
       showToast(result.message || '已取消，未执行配置操作。');
       return;
     }
-    if (result.outcome === 'unknown' || result.outcome === 'failed') {
+    const currentFlowSupersedesUnknown = result.outcome === 'unknown'
+      && ['create_app', 'start_auth'].includes(action)
+      && result.snapshot?.flow?.id
+      && result.snapshot.flow.state === 'pending'
+      && (result.snapshot.flow.qrDataURL || result.snapshot.flow.verificationURL);
+    if ((result.outcome === 'unknown' || result.outcome === 'failed') && !currentFlowSupersedesUnknown) {
       state.feishuSetupError = (feishuAction(action)?.title || action) + '：' + (result.message || '结果待核实');
     }
     state.feishuActionFeedback = result.message || '';
@@ -756,6 +785,12 @@ function durationWindow(minutes) {
 
 function formatReset(timestamp) {
   return `${new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(timestamp * 1000))} 重置`;
+}
+
+function formatUpdateTime(value) {
+  if (!value) return '尚未更新';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '尚未更新' : new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
 }
 
 function relativeTime(value) {
@@ -1011,7 +1046,7 @@ function showToast(message, error = false) {
 }
 
 function reportHeight() {
-  requestAnimationFrame(() => api.resize(Math.max(320, root.scrollHeight + 1)));
+  requestAnimationFrame(() => api.resize(Math.max(320, root.scrollHeight)));
 }
 
 root.addEventListener('click', async (event) => {

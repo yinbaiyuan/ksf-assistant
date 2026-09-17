@@ -70,10 +70,7 @@ func run(arguments []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	approvalGate := &feishu.UserApprovalGate{}
-	executor := feishu.CapabilityExecutor{Binary: strings.TrimSpace(os.Getenv("LARK_CLI_BIN")), Profile: strings.TrimSpace(os.Getenv("LARK_CLI_PROFILE")), DataRoot: dataRoot, WorkingDirectory: dataRoot, UserApproval: approvalGate}
-	if executor.Profile == "" {
-		executor.Profile = "default"
-	}
+	executor := feishu.CapabilityExecutor{Profile: "default", DataRoot: dataRoot, WorkingDirectory: dataRoot, UserApproval: approvalGate}
 	defer feishu.CancelUserAuthFlow(dataRoot)
 	defer feishu.CancelAppConfiguration(dataRoot)
 	var messageClient *feishu.OfficialMessageClient
@@ -123,7 +120,7 @@ func run(arguments []string) error {
 			_ = feishu.NewAuditLog(dataRoot).Record("work_scheduler_stopped", map[string]any{"error": schedulerErr.Error()})
 		}
 	}()
-	var inbound *feishu.OfficialInbound
+	var inbound *feishu.NativeOfficialInbound
 	if messageClient != nil {
 		eventState := feishu.NewEventConsumerStateStore(dataRoot)
 		_ = eventState.UpdateConnection("starting")
@@ -173,21 +170,23 @@ func run(arguments []string) error {
 				rpcServer.degrade(recoverErr)
 			}
 			go runInboundRecovery(ctx, processor)
-			inbound, err = feishu.NewOfficialInbound(executor, messageClient,
-				func(callCtx context.Context, eventKey string, payload []byte) error {
-					if eventKey == feishu.MailMessageReceivedEvent && !rpcServer.mailEventsEnabled() {
-						return nil
-					}
-					if err := processor.Handle(callCtx, eventKey, payload); err != nil {
-						return err
-					}
-					return eventState.MarkReceived(eventKey)
-				}, func(state string) { _ = eventState.UpdateConnection(state) })
-			if err != nil {
-				rpcServer.degrade(err)
+			credentials, credentialErr := feishu.LoadOfficialCredentials()
+			if credentialErr != nil {
+				rpcServer.degrade(credentialErr)
 			} else {
-				go func() { rpcServer.degrade(inbound.Start(ctx)) }()
-				defer inbound.Close()
+				inbound, err = feishu.NewNativeOfficialInbound(credentials,
+					func(callCtx context.Context, eventKey string, payload []byte) error {
+						if err := processor.Handle(callCtx, eventKey, payload); err != nil {
+							return err
+						}
+						return eventState.MarkReceived(eventKey)
+					}, func(state string) { _ = eventState.UpdateConnection(state) })
+				if err != nil {
+					rpcServer.degrade(err)
+				} else {
+					go func() { rpcServer.degrade(inbound.Start(ctx)) }()
+					defer inbound.Close()
+				}
 			}
 		}
 	}
@@ -205,20 +204,28 @@ func run(arguments []string) error {
 }
 
 func managedMessageClient(ctx context.Context, executor feishu.CapabilityExecutor) (*feishu.OfficialMessageClient, error) {
-	if probe := feishu.ProbeLarkCLI(ctx, executor.Binary); probe.State != "ready" {
-		return nil, errors.New("fixed_lark_cli_unavailable")
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	identity, err := executor.RunAuthJSON(ctx, []string{"auth", "status", "--json"}, nil, 5*time.Second)
+	config, err := feishu.NewClientConfigStore(executor.DataRoot).Load()
+	if err != nil || config.Operator == nil {
+		return nil, errors.New("bound Feishu application is unavailable")
+	}
+	credentials, err := feishu.LoadOfficialCredentialsForApp(executor.DataRoot, config.Operator.AppID)
 	if err != nil {
 		return nil, err
 	}
-	identities, _ := identity["identities"].(map[string]any)
-	bot, _ := identities["bot"].(map[string]any)
-	appID, _ := identity["appId"].(string)
-	if bot["available"] != true || identity["brand"] != "feishu" {
-		return nil, errors.New("official_cli_bot_identity_unavailable")
+	if strings.HasPrefix(credentials.Source, "lark-cli") || strings.HasPrefix(credentials.Source, "legacy-") {
+		if err := feishu.StoreOfficialCredentials(executor.DataRoot, credentials.AppID, credentials.AppSecret, credentials.Brand); err != nil {
+			return nil, err
+		}
+		credentials.Source = "migrated-native-store"
 	}
-	return feishu.NewOfficialMessageClient(appID, executor)
+	transport, err := feishu.NewOpenAPIMessageTransport(credentials)
+	if err != nil {
+		return nil, err
+	}
+	return feishu.NewOfficialMessageClientAtRoot(credentials.AppID, executor.DataRoot, transport)
 }
 
 func runBridgeSnapshotPublisher(ctx context.Context, peer *privateipc.Peer, server *bridgeRPCServer) {

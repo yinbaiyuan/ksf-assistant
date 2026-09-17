@@ -1,0 +1,9 @@
+patches/lark-cli-v1.0.93-ksfassistant.patch text eol=lf
+runtime/lark-skills.json text eol=lf
+Core/internal/usercommand/*.go text eol=lf
+Core/internal/usercommand/execution-overlay.json text eol=lf
+Core/internal/capabilitypolicy/*.go text eol=lf
+Core/internal/feishucli/catalog.json text eol=lf
+scripts/generate-execution-manifest.py text eol=lf
+scripts/execution-source-ast.go text eol=lf
+*.sh text eol=lf

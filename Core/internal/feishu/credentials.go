@@ -49,15 +49,78 @@ func LoadOfficialCredentials() (OfficialCredentials, error) {
 	if err != nil {
 		return OfficialCredentials{}, err
 	}
+	dataRoot := strings.TrimSpace(os.Getenv("FEISHU_BRIDGE_DATA_DIR"))
+	if dataRoot == "" {
+		dataRoot = filepath.Join(home, ".config", "feishu-bridge")
+	}
+	if _, nativePathErr := os.Lstat(officialCredentialPath(dataRoot)); nativePathErr == nil {
+		return loadPlatformOfficialCredentials(dataRoot)
+	} else if !errors.Is(nativePathErr, os.ErrNotExist) {
+		return OfficialCredentials{}, nativePathErr
+	}
+	// Existing installations are migrated lazily. Reading the previous managed
+	// profile here is compatibility only; the CLI is no longer executed or
+	// packaged and every new credential is written to the product-owned store.
 	if runtime.GOOS == "windows" {
 		return loadWindowsOfficialCredentials(home)
 	}
-	dataRoot := strings.TrimSpace(os.Getenv("FEISHU_BRIDGE_DATA_DIR"))
 	configDir, err := ManagedLarkCLIConfigDir(dataRoot)
 	if err != nil {
 		return OfficialCredentials{}, err
 	}
 	return loadLarkProfile(filepath.Join(configDir, "config.json"), home, "default", readPlatformMasterKey)
+}
+
+// LoadOfficialCredentialsForApp makes the application already bound by
+// KSFAssistant authoritative. A stale native credential may be replaced only
+// by the product-owned legacy default profile for that exact application.
+func LoadOfficialCredentialsForApp(dataRoot, expectedAppID string) (OfficialCredentials, error) {
+	if runtime.GOOS != "windows" {
+		return LoadOfficialCredentials()
+	}
+	expectedAppID = strings.TrimSpace(expectedAppID)
+	if expectedAppID == "" {
+		return OfficialCredentials{}, errors.New("bound Feishu application is unavailable")
+	}
+	if credentials, err := loadPlatformOfficialCredentials(dataRoot); err == nil && credentials.AppID == expectedAppID {
+		return credentials, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return OfficialCredentials{}, err
+	}
+	var legacy OfficialCredentials
+	if runtime.GOOS == "windows" {
+		legacy, err = loadWindowsOfficialCredentials(home)
+	} else {
+		configDir, pathErr := ManagedLarkCLIConfigDir(dataRoot)
+		if pathErr != nil {
+			return OfficialCredentials{}, pathErr
+		}
+		legacy, err = loadLarkProfile(filepath.Join(configDir, "config.json"), home, "default", readPlatformMasterKey)
+	}
+	if err != nil {
+		return OfficialCredentials{}, errors.New("bound Feishu application credential is unavailable")
+	}
+	if legacy.AppID != expectedAppID {
+		return OfficialCredentials{}, errors.New("stored Feishu credential does not match the bound application")
+	}
+	if err := StoreOfficialCredentials(dataRoot, legacy.AppID, legacy.AppSecret, legacy.Brand); err != nil {
+		return OfficialCredentials{}, err
+	}
+	legacy.Source = "migrated-native-store"
+	return legacy, nil
+}
+
+func StoreOfficialCredentials(dataRoot, appID, appSecret, brand string) error {
+	if strings.TrimSpace(appID) == "" || strings.TrimSpace(appSecret) == "" {
+		return errors.New("official Feishu credentials are incomplete")
+	}
+	return storePlatformOfficialCredentials(dataRoot, strings.TrimSpace(appID), appSecret, brandOrDefault(brand))
+}
+
+func officialCredentialPath(dataRoot string) string {
+	return filepath.Join(dataRoot, "credentials", "official-sdk.json")
 }
 
 func loadLarkProfile(configPath, home, requested string, masterKeyReader func() ([]byte, error)) (OfficialCredentials, error) {

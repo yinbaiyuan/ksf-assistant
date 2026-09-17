@@ -1,8 +1,12 @@
 package feishu
 
 import (
+	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +18,91 @@ import (
 
 const registrationURLFixture = "https://open.feishu.cn/page/cli?user_code=ABC-123&lpv=" + PinnedLarkCLIUpstreamVersion + "&ocv=" + PinnedLarkCLIUpstreamVersion + "&from=cli"
 const registrationConfigFixture = `{"apps":[{"name":"default","appId":"cli_fixture","appSecret":{"source":"keychain","id":"appsecret:cli_fixture"},"brand":"feishu","lang":"zh_cn","users":[]}]}`
+
+func assertRequiredRegistrationAddons(t *testing.T, value string) {
+	t.Helper()
+	parsed, err := url.Parse(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := parsed.Query()
+	encoded := query.Get("addons")
+	if encoded == "" || len(query["addons"]) != 1 {
+		t.Fatalf("required registration addons missing: %q", value)
+	}
+	compressed, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("registration addons are not base64url: %v", err)
+	}
+	reader, err := gzip.NewReader(strings.NewReader(string(compressed)))
+	if err != nil {
+		t.Fatalf("registration addons are not gzip: %v", err)
+	}
+	payload, err := io.ReadAll(reader)
+	if closeErr := reader.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatalf("registration addons cannot be read: %v", err)
+	}
+	if string(payload) != `{"callbacks":{"items":["card.action.trigger","im.message.receive_v1"]}}` {
+		t.Fatalf("unexpected registration addons: %s", payload)
+	}
+	query.Del("addons")
+	parsed.RawQuery = query.Encode()
+	original, err := url.Parse(registrationURLFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Scheme != original.Scheme || parsed.Host != original.Host || parsed.Path != original.Path || parsed.Query().Encode() != original.Query().Encode() {
+		t.Fatalf("registration contract changed beyond addons: %q", value)
+	}
+}
+
+func TestNativeRegistrationURLIncludesCompleteTaskCardContract(t *testing.T) {
+	value, err := nativeRegistrationURL(registrationURLFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := url.Parse(value)
+	if parsed.Query().Get("from") != "sdk" || parsed.Query().Get("tp") != "sdk" || parsed.Query().Get("createOnly") != "true" {
+		t.Fatalf("SDK registration identity missing: %s", value)
+	}
+	compressed, err := base64.RawURLEncoding.DecodeString(parsed.Query().Get("addons"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := gzip.NewReader(strings.NewReader(string(compressed)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := io.ReadAll(reader)
+	_ = reader.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var addons struct {
+		Scopes struct {
+			Tenant []string `json:"tenant"`
+		} `json:"scopes"`
+		Events struct {
+			Items struct {
+				Tenant []string `json:"tenant"`
+			} `json:"items"`
+		} `json:"events"`
+		Callbacks struct {
+			Items []string `json:"items"`
+		} `json:"callbacks"`
+	}
+	if json.Unmarshal(payload, &addons) != nil || !contains(addons.Events.Items.Tenant, "im.message.receive_v1") || !contains(addons.Callbacks.Items, "card.action.trigger") {
+		t.Fatalf("required events or callbacks missing: %s", payload)
+	}
+	for _, scope := range BaseConnectionPermissionScopes() {
+		if !contains(addons.Scopes.Tenant, scope) {
+			t.Fatalf("required scope missing: %s", scope)
+		}
+	}
+}
 
 func fakeAppRegistrationCLI(t *testing.T, ending string) CapabilityExecutor {
 	t.Helper()
@@ -78,9 +167,14 @@ func TestAppRegistrationBindsReturnedUserWithoutOAuth(t *testing.T) {
 func TestAppRegistrationStagesThenPublishesOnce(t *testing.T) {
 	runner := fakeAppRegistrationCLI(t, successfulRegistrationScript())
 	status, err := StartAppConfiguration(context.Background(), runner, runner.DataRoot, "default", true)
-	if err != nil || status["status"] != "pending" || status["verificationUrl"] != registrationURLFixture || status["flow"] != "app-create" {
+	if err != nil || status["status"] != "pending" || status["flow"] != "app-create" {
 		t.Fatalf("start=%#v err=%v", status, err)
 	}
+	verificationURL, ok := status["verificationUrl"].(string)
+	if !ok {
+		t.Fatalf("verification URL missing: %#v", status)
+	}
+	assertRequiredRegistrationAddons(t, verificationURL)
 	args, err := os.ReadFile(filepath.Join(runner.DataRoot, "args"))
 	if err != nil || strings.Contains("\n"+string(args), "\n--json\n") {
 		t.Fatalf("config init used an unsupported JSON flag: %q (%v)", args, err)
@@ -286,6 +380,7 @@ func TestAppRegistrationURLAndResultContracts(t *testing.T) {
 	for _, value := range []string{
 		strings.Replace(registrationURLFixture, "open.feishu.cn", "open.feishu.cn.evil.test", 1),
 		registrationURLFixture + "&device_code=secret",
+		registrationURLFixture + "&addons=untrusted",
 		registrationURLFixture + "&user_code=OTHER",
 		strings.ReplaceAll(registrationURLFixture, PinnedLarkCLIUpstreamVersion, PinnedLarkCLIVersion),
 		strings.ReplaceAll(registrationURLFixture, PinnedLarkCLIUpstreamVersion, "1.0.94"),
@@ -294,6 +389,18 @@ func TestAppRegistrationURLAndResultContracts(t *testing.T) {
 		if validAppRegistrationURL(value) {
 			t.Fatal("unsafe URL accepted")
 		}
+	}
+	first, err := appRegistrationURLWithRequiredAddons(registrationURLFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := appRegistrationURLWithRequiredAddons(registrationURLFixture)
+	if err != nil || first != second {
+		t.Fatal("registration addons are not deterministic")
+	}
+	assertRequiredRegistrationAddons(t, first)
+	if _, err := appRegistrationURLWithRequiredAddons("https://open.feishu.cn/page/cli?user_code=untrusted"); err == nil {
+		t.Fatal("invalid upstream registration URL was augmented")
 	}
 	for _, value := range []string{`null`, `{}`, `{"appId":"cli_fixture","appSecret":"secret","brand":"feishu"}`, `{"appId":"cli_fixture","appSecret":"****","brand":"lark"}`} {
 		if _, valid := registrationResult([]byte(value)); valid {
@@ -312,9 +419,7 @@ func TestAppRegistrationOutputIsBoundedAndStreaming(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if session.snapshot().VerificationURL != registrationURLFixture {
-		t.Fatal("split URL not reconstructed")
-	}
+	assertRequiredRegistrationAddons(t, session.snapshot().VerificationURL)
 	if _, err := output.Write(make([]byte, maximumAuthOutputBytes)); err == nil || ctx.Err() == nil {
 		t.Fatal("overflow did not cancel process")
 	}

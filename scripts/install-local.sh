@@ -49,7 +49,8 @@ validate_artifact() {
             test -x "$app/Contents/Resources/runtime/$component/$target/ksf-assistant-$component" || return 1
         done
     done
-    test -s "$app/Contents/Resources/runtime/lark-cli-runtime.json" || return 1
+    test -x "$app/Contents/Resources/runtime/feishu-bridge/darwin-arm64/ksf-assistant-feishu-bridge" || return 1
+    test -x "$app/Contents/Resources/runtime/feishu-bridge/darwin-x64/ksf-assistant-feishu-bridge" || return 1
 }
 
 /usr/bin/ditto "$source_app" "$stage_app"

@@ -315,11 +315,7 @@ func (server *bridgeRPCServer) HandlePrivateRPC(ctx context.Context, method stri
 		if err := requireNoBridgeParams(params); err != nil {
 			return nil, err
 		}
-		runner := feishu.CapabilityExecutor{Binary: strings.TrimSpace(os.Getenv("LARK_CLI_BIN")), Profile: strings.TrimSpace(os.Getenv("LARK_CLI_PROFILE")), DataRoot: server.dataRoot, WorkingDirectory: server.dataRoot}
-		if probe := feishu.ProbeLarkCLI(ctx, runner.Binary); probe.State != "ready" {
-			return nil, privateipc.NewError(-32061, "fixed lark-cli capability unavailable")
-		}
-		return feishu.AuthPermissions(ctx, runner)
+		return nil, privateipc.NewError(-32601, "standalone permission inspection is retired")
 	case "bridge/auth/cancel":
 		if err := requireNoBridgeParams(params); err != nil {
 			return nil, err
@@ -331,8 +327,6 @@ func (server *bridgeRPCServer) HandlePrivateRPC(ctx context.Context, method stri
 		}
 		evidence, err := feishu.ReadConfigurationEvidence(ctx, server.authRunner(), server.dataRoot)
 		evidence.ServiceVersion = version
-		probe := feishu.ProbeLarkCLI(ctx, server.authRunner().Binary)
-		evidence.CLIVersion, evidence.CLIState = probe.Version, probe.State
 		return evidence, err
 	case feishuprotocol.MethodConfigurationFlow:
 		if err := requireNoBridgeParams(params); err != nil {
@@ -487,11 +481,7 @@ func (server *bridgeRPCServer) HandlePrivateRPC(ctx context.Context, method stri
 }
 
 func (server *bridgeRPCServer) authRunner() feishu.CapabilityExecutor {
-	profile := strings.TrimSpace(os.Getenv("LARK_CLI_PROFILE"))
-	if profile == "" {
-		profile = "default"
-	}
-	return feishu.CapabilityExecutor{Binary: strings.TrimSpace(os.Getenv("LARK_CLI_BIN")), Profile: profile, DataRoot: server.dataRoot, WorkingDirectory: server.dataRoot}
+	return feishu.CapabilityExecutor{Profile: "default", DataRoot: server.dataRoot, WorkingDirectory: server.dataRoot}
 }
 
 func (server *bridgeRPCServer) mailEventsEnabled() bool {
@@ -545,7 +535,7 @@ func (server *bridgeRPCServer) snapshot(ctx context.Context) feishuprotocol.Snap
 	queueHealth := feishu.QueueHealthSnapshot(server.dataRoot, settings)
 	capabilities := map[string]feishuprotocol.CapabilityHealth{
 		"feishuInbound": {State: "unavailable"}, "feishuOutbound": {State: "unavailable"},
-		"larkCLI": {State: "disabled"}, "outbox": {State: "ready"}, "actionbox": {State: "ready"},
+		"outbox": {State: "ready"},
 	}
 	if bindingState != "" {
 		capabilities["cardBindings"] = feishuprotocol.CapabilityHealth{State: bindingState, Detail: bindingDetail}
@@ -553,8 +543,6 @@ func (server *bridgeRPCServer) snapshot(ctx context.Context) feishuprotocol.Snap
 	if messages != nil {
 		capabilities["feishuOutbound"] = feishuprotocol.CapabilityHealth{State: "ready"}
 	}
-	probe := feishu.ProbeLarkCLI(ctx, strings.TrimSpace(os.Getenv("LARK_CLI_BIN")))
-	capabilities["larkCLI"] = feishuprotocol.CapabilityHealth{State: probe.State, Detail: probe.Detail}
 	config, configErr := feishu.NewClientConfigStore(server.dataRoot).Load()
 	aliases := []string{}
 	if configErr == nil {
@@ -567,17 +555,14 @@ func (server *bridgeRPCServer) snapshot(ctx context.Context) feishuprotocol.Snap
 	sort.Strings(aliases)
 	eventState, _ := feishu.NewEventConsumerStateStore(server.dataRoot).Read()
 	connection, _ := eventState["connection"].(map[string]any)
-	connected := messages != nil && eventState["transport"] == "official-cli" && strings.TrimSpace(stringValue(connection["state"])) == "connected"
+	connected := messages != nil && eventState["transport"] == "official-sdk" && strings.TrimSpace(stringValue(connection["state"])) == "connected"
 	if connected {
 		capabilities["feishuInbound"] = feishuprotocol.CapabilityHealth{State: "ready"}
 	} else if messages != nil {
-		capabilities["feishuInbound"] = feishuprotocol.CapabilityHealth{State: "degraded", Detail: "official CLI consumers are not ready"}
+		capabilities["feishuInbound"] = feishuprotocol.CapabilityHealth{State: "degraded", Detail: "official SDK connection is not ready"}
 	}
 	if messages == nil {
 		capabilities["outbox"] = feishuprotocol.CapabilityHealth{State: "degraded", Detail: "Feishu outbound unavailable"}
-	}
-	if capabilities["larkCLI"].State != "ready" {
-		capabilities["actionbox"] = feishuprotocol.CapabilityHealth{State: "degraded", Detail: "fixed lark-cli capability unavailable"}
 	}
 	for name, health := range queueHealth {
 		if health.State == "degraded" {
@@ -591,17 +576,12 @@ func (server *bridgeRPCServer) snapshot(ctx context.Context) feishuprotocol.Snap
 	if !connected {
 		blockers = append(blockers, "feishuInbound")
 	}
-	if probe.State != "ready" {
-		blockers = append(blockers, "larkCLI")
-	}
 	availability, message := "ready", ""
 	if messages == nil {
 		availability, message = "unavailable", "飞书凭据缺失或传输尚未连接。"
 
 	} else if !connected {
 		availability, message = "degraded", "飞书事件消费者尚未就绪。"
-	} else if probe.State != "ready" {
-		availability, message = "degraded", "固定版官方 CLI 尚未通过验证。"
 	}
 	if runtimeError != "" {
 		availability, message = "degraded", "Feishu runtime processing unavailable"

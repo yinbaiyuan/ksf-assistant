@@ -23,7 +23,6 @@ func TestLegacyEventRolesNeverDisableInboundReadiness(t *testing.T) {
 			settings.Outbound.Enabled = true
 			settings.Outbound.DryRun = false
 			root := t.TempDir()
-			t.Setenv("LARK_CLI_BIN", filepath.Join(root, "missing-cli"))
 			server := newTestBridgeRPCServer(root, settings)
 			server.messages = &feishu.OfficialMessageClient{}
 			if connected {
@@ -39,7 +38,7 @@ func TestLegacyEventRolesNeverDisableInboundReadiness(t *testing.T) {
 			if snapshot.Profile != "managed" || !snapshot.ProfileValid || snapshot.Capabilities["feishuInbound"].State != expected || snapshot.InboundConnection != connected {
 				t.Fatalf("legacy %q connected=%v: %+v", legacy, connected, snapshot)
 			}
-			if slices.Contains(snapshot.ReadinessBlockers, "feishuInbound") == connected || !slices.Contains(snapshot.ReadinessBlockers, "larkCLI") || snapshot.Availability == "ready" {
+			if slices.Contains(snapshot.ReadinessBlockers, "feishuInbound") == connected || (snapshot.Availability == "ready") != connected {
 				t.Fatalf("readiness gate bypassed: %+v", snapshot)
 			}
 			server.messages = nil
@@ -139,8 +138,8 @@ func TestBridgeSnapshotDegradesCapabilitiesIndependently(t *testing.T) {
 	if snapshot.Capabilities["feishuOutbound"].State != "unavailable" {
 		t.Fatalf("outbound state = %#v", snapshot.Capabilities["feishuOutbound"])
 	}
-	if snapshot.Capabilities["actionbox"].State != "degraded" {
-		t.Fatalf("actionbox state = %#v", snapshot.Capabilities["actionbox"])
+	if _, exists := snapshot.Capabilities["actionbox"]; exists {
+		t.Fatalf("retired actionbox capability leaked: %#v", snapshot.Capabilities["actionbox"])
 	}
 	if snapshot.Capabilities["codexAppServer"].State != "" || snapshot.Capabilities["ksfContext"].State != "" {
 		t.Fatalf("Core capabilities = %#v", snapshot.Capabilities)

@@ -94,7 +94,7 @@ func TestServerUpdatesPrivateHostIntegrationContext(t *testing.T) {
 	if err := New(service.New(), input, &output).Serve(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), `"state":"ready"`) || !strings.Contains(output.String(), ksfRoot) {
+	if !strings.Contains(output.String(), `"state":"ready"`) || !strings.Contains(output.String(), fmt.Sprintf("%q", ksfRoot)) {
 		t.Fatalf("unexpected integration response: %s", output.String())
 	}
 	stored, err := os.ReadFile(filepath.Join(dataRoot, integration.HostContextFilename))

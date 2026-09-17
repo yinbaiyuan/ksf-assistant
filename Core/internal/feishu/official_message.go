@@ -26,12 +26,29 @@ type OfficialMessageClient struct {
 }
 
 func NewOfficialMessageClient(appID string, runner MessageCLI) (*OfficialMessageClient, error) {
+	return newOfficialMessageClient(appID, "", runner)
+}
+
+// NewOfficialMessageClientAtRoot binds CardKit's durable entity journal to the
+// product data root independently of the transport implementation. The legacy
+// CLI executor happened to carry DataRoot; the internal OpenAPI transport does
+// not, so relying on a transport type assertion silently bypassed CardKit.
+func NewOfficialMessageClientAtRoot(appID, dataRoot string, runner MessageCLI) (*OfficialMessageClient, error) {
+	if strings.TrimSpace(dataRoot) == "" {
+		return nil, errors.New("official message data root is required")
+	}
+	return newOfficialMessageClient(appID, dataRoot, runner)
+}
+
+func newOfficialMessageClient(appID, dataRoot string, runner MessageCLI) (*OfficialMessageClient, error) {
 	if strings.TrimSpace(appID) == "" || runner == nil {
 		return nil, errors.New("official CLI application identity and runner are required")
 	}
-	client := &OfficialMessageClient{client: runner, appID: strings.TrimSpace(appID)}
-	if executor, ok := runner.(CapabilityExecutor); ok {
-		client.nativeRoot = executor.DataRoot
+	client := &OfficialMessageClient{client: runner, appID: strings.TrimSpace(appID), nativeRoot: strings.TrimSpace(dataRoot)}
+	if client.nativeRoot == "" {
+		if executor, ok := runner.(CapabilityExecutor); ok {
+			client.nativeRoot = executor.DataRoot
+		}
 	}
 	return client, nil
 }

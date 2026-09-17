@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -160,7 +161,7 @@ func noSymlinks(name string) error {
 }
 
 func validRelative(name string) bool {
-	if name == "" || strings.ContainsAny(name, "\\:\x00\r\n") || filepath.IsAbs(name) || filepath.ToSlash(filepath.Clean(name)) != name {
+	if name == "" || strings.ContainsAny(name, "\\:\x00\r\n") || path.IsAbs(name) || path.Clean(name) != name {
 		return false
 	}
 	for _, part := range strings.Split(name, "/") {

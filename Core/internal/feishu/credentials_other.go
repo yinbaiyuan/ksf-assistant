@@ -11,6 +11,12 @@ func loadWindowsOfficialCredentials(string) (OfficialCredentials, error) {
 	return OfficialCredentials{}, errors.New("Windows credentials are unavailable")
 }
 
+func loadPlatformOfficialCredentials(string) (OfficialCredentials, error) {
+	return OfficialCredentials{}, errors.New("native Feishu credentials are unavailable on this platform")
+}
+
 func storePlatformOfficialCredentials(string, string, string, string) error { return nil }
 
 func platformOfficialCredentialStatus() string { return "lark-cli-config" }
+
+func purgePlatformOfficialCredentials(string) error { return nil }

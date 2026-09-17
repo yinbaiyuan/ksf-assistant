@@ -27,7 +27,7 @@ function harness(value = snapshot()) {
     state: { page: 'feishu', dashboard: {}, settings: { selectedFeishuTargetAlias: 'fixture' }, feishuConfiguration: value, feishuConfigurationGeneration: 0, feishuConfigurationLoading: false, feishuRetiredEpochs: new Set(), feishuSetupMode: 'new', feishuSetupBusy: false, feishuSetupError: '', feishuSections: {}, staticDataLoaded: true },
     document: { hidden: false, addEventListener: (name, handler) => listeners.set(name, handler) },
     root: { querySelector: (selector) => selector.includes('secret') ? fields.secret : fields.app, addEventListener: (name, handler) => listeners.set(name, handler) },
-    render: () => {}, header: (_title, actions = '') => actions, buttonIcon: (action, _name, label, _extra, disabled) => `<button data-action="${action}" aria-label="${label}" ${disabled ? 'disabled' : ''}></button>`, selectedPricingPlan: () => null, feishuComponentStatusText: () => '',
+    render: () => {}, header: (_title, actions = '') => actions, buttonIcon: (action, _name, label, _extra, disabled) => `<button data-action="${action}" aria-label="${label}" ${disabled ? 'disabled' : ''}></button>`, icon: (name) => `<svg data-icon="${name}"></svg>`, selectedPricingPlan: () => null, feishuComponentStatusText: () => '',
     crypto, window: { confirm: () => { throw new Error('Renderer must not confirm configuration'); } },
     setTimeout: (callback, delay) => { timers.set(++timerId, { callback, delay }); return timerId; },
     clearTimeout: (timer) => timers.delete(timer),
@@ -300,6 +300,23 @@ test('unknown action results are not retried and errors retain the last snapshot
   assert.match(context.renderFeishuPage(), /操作结果未知/);
   assert.doesNotMatch(context.renderFeishuPage(), /private credentials/);
   assert.equal(context.state.feishuSetupBusy, false);
+});
+
+test('a current QR supersedes stale unknown-result copy without replaying app creation', async () => {
+  const initial = snapshot({ actions: [action('create_app')] });
+  const current = snapshot({ revision: 2, flow: flow({ kind: 'app' }), actions: [action('cancel_flow')] });
+  const { context, calls } = harness(initial);
+  context.api.actFeishuConfiguration = async () => {
+    calls.push(['attempt']);
+    return { outcome: 'unknown', snapshot: current, message: '原请求尚待核实，请刷新查询。' };
+  };
+  await context.performFeishuConfigurationAction('create_app');
+  await context.performFeishuConfigurationAction('create_app');
+  assert.equal(calls.length, 1);
+  assert.equal(context.state.feishuSetupError, '');
+  assert.equal(context.state.feishuActionOutcome, 'unknown');
+  assert.match(context.renderFeishuPage(), /当前飞书会话二维码/);
+  assert.doesNotMatch(context.renderFeishuPage(), /原请求尚待核实/);
 });
 
 test('duplicate actions are blocked and a newer read invalidates late mutation results', async () => {

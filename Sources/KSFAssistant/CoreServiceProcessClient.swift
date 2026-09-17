@@ -91,8 +91,7 @@ actor CoreServiceProcessClient {
         var environment = ProcessInfo.processInfo.environment
         if let runtime = Self.locateFeishuRuntime() {
             environment["KSF_ASSISTANT_MANAGED"] = "1"
-            environment["KSF_ASSISTANT_FEISHU_BRIDGE"] = runtime.bridge.path
-            environment["KSF_ASSISTANT_LARK_CLI"] = runtime.larkCLI.path
+            environment["KSF_ASSISTANT_FEISHU_BRIDGE"] = runtime.path
             environment["FEISHU_BRIDGE_DATA_DIR"] = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".config/feishu-bridge", isDirectory: true).path
         }
@@ -311,30 +310,24 @@ actor CoreServiceProcessClient {
 
 
 
-    private static func locateFeishuRuntime() -> (bridge: URL, larkCLI: URL)? {
+    private static func locateFeishuRuntime() -> URL? {
         let fileManager = FileManager.default
 #if arch(arm64)
         let platformDirectory = "darwin-arm64"
 #else
         let platformDirectory = "darwin-x64"
 #endif
-        var roots: [(URL, URL)] = []
+        var candidates: [URL] = []
         if let resources = Bundle.main.resourceURL {
-            roots.append((
-                resources.appendingPathComponent("runtime/feishu-bridge/\(platformDirectory)/ksf-assistant-feishu-bridge"),
-                resources.appendingPathComponent("runtime/lark-cli/\(platformDirectory)/lark-cli")
-            ))
+            candidates.append(
+                resources.appendingPathComponent("runtime/feishu-bridge/\(platformDirectory)/ksf-assistant-feishu-bridge")
+            )
         }
         let current = URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
-        roots.append((
-            current.appendingPathComponent("dist/runtime/feishu-bridge/\(platformDirectory)/ksf-assistant-feishu-bridge"),
-            current.appendingPathComponent("dist/runtime/lark-cli/\(platformDirectory)/lark-cli")
-        ))
-        return roots.compactMap { bridge, larkCLI -> (URL, URL)? in
-            guard fileManager.isExecutableFile(atPath: bridge.path),
-                  fileManager.isExecutableFile(atPath: larkCLI.path) else { return nil }
-            return (bridge, larkCLI)
-        }.first
+        candidates.append(
+            current.appendingPathComponent("dist/runtime/feishu-bridge/\(platformDirectory)/ksf-assistant-feishu-bridge")
+        )
+        return candidates.first { fileManager.isExecutableFile(atPath: $0.path) }
     }
 
     private static func decoder() -> JSONDecoder {

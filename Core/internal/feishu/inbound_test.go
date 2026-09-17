@@ -38,17 +38,15 @@ func TestCLIInboundStillRejectsUnidentifiedForms(t *testing.T) {
 	}
 }
 
-func TestFixedEventCatalogMatchesFrozenContract(t *testing.T) {
-	if len(FixedEventKeys) != 26 {
-		t.Fatalf("event count = %d, want 26", len(FixedEventKeys))
+func TestFixedEventCatalogMatchesInternalBridgeBoundary(t *testing.T) {
+	want := []string{"card.action.trigger", "im.message.receive_v1"}
+	if len(FixedEventKeys) != len(want) {
+		t.Fatalf("event count = %d, want %d", len(FixedEventKeys), len(want))
 	}
-	for _, key := range []string{ApprovalInstanceStatusChangedEvent, ApprovalTaskStatusChangedEvent} {
+	for _, key := range want {
 		if !contains(FixedEventKeys, key) {
-			t.Fatalf("approval event missing from fixed catalog: %s", key)
+			t.Fatalf("required bridge event missing: %s", key)
 		}
-	}
-	if !contains(FixedEventKeys, MailMessageReceivedEvent) {
-		t.Fatal("mail event missing from fixed catalog")
 	}
 }
 
@@ -75,14 +73,13 @@ func TestOfficialInboundDispatchesFrozenReplayWithoutSecondConsumer(t *testing.T
 	}
 }
 
-func TestOfficialInboundDispatchesApprovalReplay(t *testing.T) {
-	var got string
-	inbound, err := NewOfficialInbound(CapabilityExecutor{Binary: "fixture-cli"}, nil, func(_ context.Context, key string, _ []byte) error { got = key; return nil }, nil)
+func TestOfficialInboundRejectsRetiredApprovalReplay(t *testing.T) {
+	inbound, err := NewOfficialInbound(CapabilityExecutor{Binary: "fixture-cli"}, nil, func(_ context.Context, _ string, _ []byte) error { return nil }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	err = inbound.HandlePayload(context.Background(), []byte(`{"schema":"2.0","header":{"event_id":"evt_approval","event_type":"approval.task.status_changed_v4"},"event":{"task_id":"task_1","instance_code":"instance_1"}}`))
-	if err != nil || got != ApprovalTaskStatusChangedEvent {
-		t.Fatalf("approval replay failed: key=%q err=%v", got, err)
+	if err == nil {
+		t.Fatal("retired approval event was accepted")
 	}
 }

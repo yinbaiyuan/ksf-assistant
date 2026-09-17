@@ -70,15 +70,11 @@ func ConfigureExistingApp(ctx context.Context, runner CapabilityExecutor, appID,
 	if profile != "default" {
 		return nil, errors.New("官方 CLI 配置必须为 default")
 	}
-	if _, err := newAppConfigurationPath(runner.DataRoot); err != nil {
-		return nil, err
-	}
 	CancelUserAuthFlow(runner.DataRoot)
-	_, err := runner.RunAuthJSON(ctx, []string{"config", "init", "--name", profile, "--app-id", appID, "--app-secret-stdin", "--brand", brand, "--lang", "zh_cn"}, []byte(appSecret+"\n"), time.Minute)
-	if err != nil {
+	if err := StoreOfficialCredentials(runner.DataRoot, appID, appSecret, brand); err != nil {
 		return nil, err
 	}
-	return map[string]any{"status": "configured", "flow": "existing-app", "profile": profile, "brand": brand, "larkCliProfile": "configured", "next": "run_auth_start_user_for_qr_oauth"}, nil
+	return map[string]any{"status": "configured", "flow": "existing-app", "profile": profile, "brand": brand, "next": "scan_to_bind_current_user"}, nil
 }
 
 func StartAppConfiguration(ctx context.Context, runner CapabilityExecutor, dataRoot, profile string, createNew bool) (map[string]any, error) {
@@ -91,12 +87,11 @@ func StartAppConfiguration(ctx context.Context, runner CapabilityExecutor, dataR
 	if profile != "default" {
 		return nil, errors.New("官方 CLI 配置必须为 default")
 	}
-	current, err := runner.RunAuthJSON(ctx, []string{"auth", "status", "--json"}, nil, 15*time.Second)
-	appID, _ := current["appId"].(string)
-	if err != nil || current["brand"] != "feishu" || !regexp.MustCompile(`^cli_[A-Za-z0-9_-]{1,124}$`).MatchString(appID) {
+	credentials, err := loadPlatformOfficialCredentials(dataRoot)
+	if err != nil || credentials.Brand != "feishu" || !regexp.MustCompile(`^cli_[A-Za-z0-9_-]{1,124}$`).MatchString(credentials.AppID) {
 		return nil, errors.New("existing_app_credentials_required")
 	}
-	return map[string]any{"status": "configured", "flow": "existing-config", "profile": profile, "next": "run_auth_start_user_for_qr_oauth"}, nil
+	return map[string]any{"status": "configured", "flow": "existing-config", "profile": profile, "next": "scan_to_bind_current_user"}, nil
 }
 
 func StartUserAuth(ctx context.Context, runner CapabilityExecutor, dataRoot, scope string) (map[string]any, error) {

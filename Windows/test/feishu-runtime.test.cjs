@@ -1,180 +1,76 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
 const repoRoot = path.resolve(__dirname, '..', '..');
+const read = relative => fs.readFileSync(path.join(repoRoot, relative), 'utf8');
 
-test('bundled Feishu runtime manifest is complete and pinned', () => {
-  const result = spawnSync(process.execPath, ['scripts/prepare-feishu-runtime.mjs', '--verify'], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-  });
-  assert.equal(result.status, 0, result.stderr);
-	assert.match(result.stdout, /lark-cli 1\.0\.93-ksfassistant\.1/);
-	assert.doesNotMatch(result.stdout, /Node/);
+test('production bridge owns the official SDK and only required callbacks', () => {
+  const goMod = read('Core/go.mod');
+  const inbound = read('Core/internal/feishu/native_inbound.go');
+  const events = read('Core/internal/feishu/inbound.go');
+  assert.match(goMod, /github\.com\/larksuite\/oapi-sdk-go\/v3 v3\.12\.0/);
+  assert.match(inbound, /larkws\.NewClient/);
+  assert.match(inbound, /im\.message\.receive_v1/);
+  assert.match(inbound, /OnP2CardActionTrigger/);
+  const fixedCatalog = events.match(/var FixedEventKeys = \[\]string\{([\s\S]*?)\n\}/)?.[1] || '';
+  assert.doesNotMatch(fixedCatalog, /approval\.|mail\.user_mailbox/);
 });
 
-test('runtime preparation cross-compiles Windows artifacts from the pinned source on any build host', () => {
-	const source = fs.readFileSync(path.join(repoRoot, 'scripts', 'prepare-feishu-runtime.mjs'), 'utf8');
-	assert.match(source, /target\.split\('-'\)/);
-	assert.match(source, /CGO_ENABLED: '0', GOOS: goos, GOARCH: goarch/);
-	assert.match(source, /GIT_CEILING_DIRECTORIES: repoRoot/);
-	assert.match(source, /run\('git'.*cwd: sourceRoot, env: patchEnvironment/);
-	assert.doesNotMatch(source, /--directory=\$\{sourceRelative\}/);
-	assert.match(source, /'build', '-buildvcs=false', '-trimpath', '-ldflags'/);
-	assert.match(source, /normalizeReleaseAPIMetadata/);
-	assert.doesNotMatch(source, /process\.platform === 'win32'/);
+test('Windows and macOS package only the internal bridge', () => {
+  const config = JSON.parse(read('Windows/package.json'));
+  const resources = config.build.extraResources;
+  assert.ok(resources.some(item => item.to === 'runtime/feishu-bridge/windows-${arch}'));
+  assert.ok(!resources.some(item => /lark-cli|lark-skills/.test(`${item.from} ${item.to}`)));
+  assert.equal(config.build.afterSign, undefined);
+  assert.doesNotMatch(config.scripts['pack:win'], /prepare:feishu/);
+  assert.doesNotMatch(config.scripts['dist:win'], /prepare:feishu/);
+
+  const mac = read('scripts/build-app.sh');
+  assert.match(mac, /runtime\/feishu-bridge\/darwin-arm64/);
+  assert.doesNotMatch(mac, /prepare-feishu-runtime|lark-cli|lark-skills/);
 });
 
-test('Windows package copies only Go Feishu production dependencies', () => {
-  const packageConfig = JSON.parse(fs.readFileSync(path.join(repoRoot, 'Windows', 'package.json'), 'utf8'));
-  const resources = packageConfig.build.extraResources;
-	assert.ok(resources.some((item) => item.from === '../dist/runtime/feishu-bridge/windows-${arch}'
-    && item.to === 'runtime/feishu-bridge/windows-${arch}'));
-	assert.ok(resources.some((item) => item.from === '../dist/runtime/lark-cli/windows-${arch}'
-		&& item.to === 'runtime/lark-cli/windows-${arch}'));
-	assert.ok(!resources.some((item) => /runtime\/node|services\/feishu-bridge/.test(`${item.from} ${item.to}`)));
-});
-
-test('Windows and macOS both inject only the native bridge and lark-cli', () => {
-  const windowsMain = fs.readFileSync(path.join(repoRoot, 'Windows', 'src', 'main.cjs'), 'utf8');
-  const macClient = fs.readFileSync(path.join(repoRoot, 'Sources', 'KSFAssistant', 'CoreServiceProcessClient.swift'), 'utf8');
-	assert.match(windowsMain, /KSF_ASSISTANT_LARK_CLI:\s*runtime\.larkCLI/);
-	assert.match(windowsMain, /KSF_ASSISTANT_FEISHU_BRIDGE:\s*runtime\.bridge/);
-	assert.doesNotMatch(windowsMain, /KSF_ASSISTANT_NODE|KSF_ASSISTANT_FEISHU_SERVICE_ROOT|FEISHU_GO_PREVIEW/);
-  assert.match(macClient, /environment\["KSF_ASSISTANT_FEISHU_BRIDGE"\] = runtime\.bridge\.path/);
-  assert.match(macClient, /environment\["KSF_ASSISTANT_LARK_CLI"\] = runtime\.larkCLI\.path/);
-  assert.doesNotMatch(macClient, /KSF_ASSISTANT_NODE/);
-  assert.doesNotMatch(macClient, /KSF_ASSISTANT_FEISHU_SERVICE_ROOT/);
-});
-
-test('macOS uses Node only for build tooling and bundles no Node runtime or service', () => {
-  const buildScript = fs.readFileSync(path.join(repoRoot, 'scripts', 'build-app.sh'), 'utf8');
-  assert.match(buildScript, /node\s+"\$repo_root\/scripts\/prepare-feishu-runtime\.mjs"/);
-  assert.match(buildScript, /node\s+"\$repo_root\/scripts\/generate-sbom\.mjs"/);
-  assert.doesNotMatch(buildScript, /runtime\/node\/darwin/);
-  assert.doesNotMatch(buildScript, /services\/feishu-bridge\/scripts\/bridge-client\.js/);
-  assert.doesNotMatch(buildScript, /cp.*node_modules|cp.*node\.exe|cp.*node-runtime/);
-});
-
-test('official CLI and Skills share a pinned tag, SHA256 hashes and license', () => {
-  const cli = JSON.parse(fs.readFileSync(path.join(repoRoot, 'runtime/lark-cli-runtime.json')));
-  const skills = JSON.parse(fs.readFileSync(path.join(repoRoot, 'runtime/lark-skills.json')));
-  assert.equal(cli.version, '1.0.93-ksfassistant.1');
-  assert.equal(cli.upstreamVersion, '1.0.93');
-  assert.equal(skills.version, cli.upstreamVersion);
-  assert.equal(skills.source.tag, `v${cli.upstreamVersion}`);
-  assert.equal(cli.automaticUpdate, false);
-  assert.equal(cli.license, 'MIT');
-  assert.equal(skills.license, 'MIT');
-  assert.equal(cli.apiMetadata.normalization, 'release-schema-v1.0.93');
-  assert.match(cli.apiMetadata.url, /^https:\/\/open\.feishu\.cn\//);
-  assert.match(cli.apiMetadata.sha256, /^[a-f0-9]{64}$/);
-  assert.equal(cli.apiMetadata.serviceCount, 15);
-  assert.match(skills.licenseSha256, /^[a-f0-9]{64}$/);
-  assert.match(skills.source.sha256, /^[a-f0-9]{64}$/);
-  assert.equal(skills.skills.length, 28);
-  for (const target of ['darwin-arm64', 'darwin-x64', 'windows-arm64', 'windows-x64']) {
-    const artifact = cli.artifacts[target];
-    assert.match(artifact.sha256, /^[a-f0-9]{64}$/);
-    assert.match(artifact.executableSha256, /^[a-f0-9]{64}$/);
-    assert.equal(artifact.managedVersion, cli.version);
-    assert.ok(artifact.embeddedGoModules.some(module => module.name === 'github.com/larksuite/oapi-sdk-go/v3' && module.version === 'v3.7.2'));
-  }
-  for (const skill of skills.skills) {
-    assert.match(skill.name, /^lark-[a-z0-9-]+$/);
-    assert.match(skill.files['SKILL.md'], /^[a-f0-9]{64}$/);
-    for (const [name, digest] of Object.entries(skill.files)) {
-      assert.ok(!name.split('/').includes('..') && !path.isAbsolute(name));
-      assert.match(digest, /^[a-f0-9]{64}$/);
-    }
+test('hosts inject no managed CLI or Node Feishu runtime', () => {
+  const windowsMain = read('Windows/src/main.cjs');
+  const macClient = read('Sources/KSFAssistant/CoreServiceProcessClient.swift');
+  assert.match(windowsMain, /KSF_ASSISTANT_FEISHU_BRIDGE:\s*runtime\.bridge/);
+  assert.match(macClient, /environment\["KSF_ASSISTANT_FEISHU_BRIDGE"\] = runtime\.path/);
+  for (const source of [windowsMain, macClient]) {
+    assert.doesNotMatch(source, /KSF_ASSISTANT_LARK_CLI|KSF_ASSISTANT_NODE|KSF_ASSISTANT_FEISHU_SERVICE_ROOT/);
   }
 });
 
-test('both platform packages retain migration and task binaries without Agent Skills', () => {
-  const config = JSON.parse(fs.readFileSync(path.join(repoRoot, 'Windows/package.json')));
-  assert.equal(config.build.afterSign, 'scripts/seal-runtime.cjs');
-  for (const component of ['toolchain', 'task']) {
-    assert.ok(config.build.extraResources.some(item => item.from === `../dist/runtime/${component}/windows-\${arch}` && item.filter.includes(`ksf-assistant-${component}.exe`)));
-  }
-  assert.ok(!config.build.extraResources.some(item => item.to === 'runtime/lark-skills'));
-  assert.ok(config.build.extraResources.some(item => item.to === 'runtime/lark-cli-runtime.json'));
-  const mac = fs.readFileSync(path.join(repoRoot, 'scripts/build-app.sh'), 'utf8');
-  assert.match(mac, /for component in toolchain task/);
-  assert.match(mac, /lipo -create/);
-  assert.doesNotMatch(mac, /cp -R.*dist\/runtime\/lark-skills/);
-  const build = fs.readFileSync(path.join(repoRoot, 'scripts/build-core.sh'), 'utf8');
+test('internal credentials use platform protection and one-scan registration', () => {
+  assert.match(read('Core/internal/feishu/credentials_windows.go'), /CryptProtectData/);
+  assert.match(read('Core/internal/feishu/credentials_darwin.go'), /com\.ksfassistant\.feishu/);
+  const registration = read('Core/internal/feishu/app_registration_native.go');
+  assert.match(registration, /oauth\/v1\/app\/registration/);
+  assert.match(registration, /request_user_info/);
+  assert.match(registration, /BaseConnectionPermissionScopes\(\)/);
+  assert.match(registration, /im\.message\.receive_v1/);
+  assert.match(registration, /card\.action\.trigger/);
+  assert.match(registration, /bindRegistrationOperator/);
+  assert.doesNotMatch(registration, /RunAuthJSON|lark-cli/);
+});
+
+test('the old skipped distribution check is now an always-on retirement check', () => {
+  const forbidden = [
+    ['Windows/package.json', /lark-cli-runtime|runtime\/lark-cli|lark-skills/],
+    ['scripts/build-app.sh', /lark-cli-runtime|runtime\/lark-cli|lark-skills/],
+    ['scripts/generate-sbom.mjs', /SPDXRef-Lark-CLI|SPDXRef-Lark-Skills/],
+  ];
+  for (const [file, pattern] of forbidden) assert.doesNotMatch(read(file), pattern, file);
+});
+
+test('both platform builds retain product-owned bridge, task and toolchain binaries', () => {
+  const build = read('scripts/build-core.sh');
   assert.match(build, /darwin-arm64 darwin-x64 windows-x64 windows-arm64/);
   assert.match(build, /for component in toolchain task/);
   assert.equal((build.match(/go build -buildvcs=false/g) || []).length, 3);
-  const windowsBuild = fs.readFileSync(path.join(repoRoot, 'Windows/scripts/build-core.mjs'), 'utf8');
+  const windowsBuild = read('Windows/scripts/build-core.mjs');
   assert.equal((windowsBuild.match(/'build', '-buildvcs=false'/g) || []).length, 3);
-});
-
-test('Windows signing reseals packaged hashes without losing the controlled pre-sign hash', async () => {
-  const os = require('node:os');
-  const crypto = require('node:crypto');
-  const sealRuntime = require('../scripts/seal-runtime.cjs');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ksfas-runtime-seal-'));
-  try {
-    const runtime = path.join(root, 'resources/runtime');
-    const cli = path.join(runtime, 'lark-cli/windows-x64/lark-cli.exe');
-    const task = path.join(runtime, 'task/windows-x64/ksf-assistant-task.exe');
-    fs.mkdirSync(path.dirname(cli), { recursive: true });
-    fs.mkdirSync(path.dirname(task), { recursive: true });
-    fs.writeFileSync(cli, 'signed-cli-fixture');
-    fs.writeFileSync(task, 'signed-task-fixture');
-    const filename = path.join(runtime, 'lark-cli-runtime.json');
-    fs.writeFileSync(filename, JSON.stringify({ artifacts: { 'windows-x64': { sha256: 'official-archive', executableSha256: 'upstream-executable' } } }));
-    await sealRuntime({ appOutDir: root, electronPlatformName: 'win32' });
-    const artifact = JSON.parse(fs.readFileSync(filename)).artifacts['windows-x64'];
-    const hash = content => crypto.createHash('sha256').update(content).digest('hex');
-    assert.equal(artifact.sha256, 'official-archive');
-    assert.equal(artifact.controlledExecutableSha256, 'upstream-executable');
-    assert.equal(artifact.executableSha256, hash('signed-cli-fixture'));
-    assert.equal(artifact.taskExecutableSha256, hash('signed-task-fixture'));
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('staged runtime binaries and every Skill match the bundled hash manifests', {
-  skip: !fs.existsSync(path.join(repoRoot, 'dist/runtime/lark-skills/manifest.json')),
-}, () => {
-  const crypto = require('node:crypto');
-  const hash = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-  const runtime = path.join(repoRoot, 'dist/runtime');
-  const cli = JSON.parse(fs.readFileSync(path.join(runtime, 'lark-cli-runtime.json')));
-  for (const [target, artifact] of Object.entries(cli.artifacts)) {
-    const binary = path.join(runtime, 'lark-cli', target, artifact.executable);
-    if (!fs.existsSync(binary)) continue;
-    assert.equal(hash(binary), artifact.executableSha256);
-    const task = path.join(runtime, 'task', target, `ksf-assistant-task${target.startsWith('windows') ? '.exe' : ''}`);
-    assert.ok(fs.statSync(task).isFile());
-    assert.equal(hash(task), artifact.taskExecutableSha256);
-    const manager = path.join(runtime, 'toolchain', target, `ksf-assistant-toolchain${target.startsWith('windows') ? '.exe' : ''}`);
-    assert.ok(fs.statSync(manager).isFile());
-    if (!target.startsWith('windows')) {
-      fs.accessSync(task, fs.constants.X_OK);
-      fs.accessSync(manager, fs.constants.X_OK);
-      fs.accessSync(binary, fs.constants.X_OK);
-    }
-  }
-  const skills = JSON.parse(fs.readFileSync(path.join(runtime, 'lark-skills/manifest.json')));
-  const upstream = JSON.parse(fs.readFileSync(path.join(repoRoot, 'runtime/lark-skills.json')));
-  assert.deepEqual(skills.skills.map(skill => skill.name), upstream.skills.map(skill => `ksf-${skill.name}`));
-  assert.ok(!skills.skills.some(skill => skill.name === 'ksfas'));
-  assert.equal(skills.adaptation.revision, 'ksf-names-v2');
-  assert.equal(skills.adaptation.upstreamManifestSha256, hash(path.join(repoRoot, 'runtime/lark-skills.json')));
-  assert.equal(skills.adaptation.digest, hash(path.join(runtime, 'lark-skills/adaptation-report.json')));
-  assert.equal(hash(path.join(runtime, 'lark-skills/LICENSE')), skills.licenseSha256);
-  for (const skill of skills.skills) {
-    for (const [name, digest] of Object.entries(skill.files)) {
-      assert.equal(hash(path.join(runtime, 'lark-skills/skills', skill.name, name)), digest);
-    }
-  }
 });

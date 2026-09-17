@@ -68,9 +68,6 @@ func (state *configurationRuntime) convergePresentation(result *ConfigurationSna
 	if result.Flow != nil && result.Flow.Kind == "user" && result.Flow.State == "completed" && e.Auth != nil && e.Auth.IdentityValid {
 		result.Flow = nil
 	}
-	if e.CLIState != "" && e.CLIState != "ready" {
-		result.Issues = append(result.Issues, ConfigurationIssue{"runtime", "cli_unavailable", "lark-cli 不可用或版本不兼容，请修复运行组件。"})
-	}
 	actions := result.Actions[:0]
 	for _, a := range result.Actions {
 		if a.ID == "set_feature" || a.ID == "enable_outbound" {

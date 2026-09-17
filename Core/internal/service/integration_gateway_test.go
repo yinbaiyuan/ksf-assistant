@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"ksfassistant/core/internal/desktop"
 	"ksfassistant/core/internal/domain"
 	"ksfassistant/core/internal/feishu"
 	"ksfassistant/core/internal/feishucli"
@@ -531,7 +532,7 @@ func TestIntegrationGatewayConcurrentComposeDoesNotMutateCachedSnapshot(t *testi
 					t.Errorf("another composition contaminated capabilities: %#v", snapshot.Capabilities)
 					return
 				}
-				if !reflect.DeepEqual(snapshot.ReadinessBlockers, []string{"transport", "businessIntegration"}) {
+				if !reflect.DeepEqual(snapshot.ReadinessBlockers, []string{"transport", "desktopIPC", "businessIntegration"}) {
 					t.Errorf("another composition contaminated blockers: %#v", snapshot.ReadinessBlockers)
 					return
 				}
@@ -565,6 +566,36 @@ func TestTaskCardRuntimeWriteBlockersSurviveSnapshotComposition(t *testing.T) {
 		if snapshot.TaskLinkReady {
 			t.Fatalf("write blocker %s ignored", blocker)
 		}
+	}
+}
+
+func TestTaskLinkReadinessRequiresAvailableDesktopIPC(t *testing.T) {
+	root := t.TempDir()
+	service := &Service{
+		feishuDataRoot:   root,
+		hostContextStore: integration.NewHostContextStore(root),
+		desktop:          desktop.New(""),
+	}
+	service.integrationRuntime = gatewayRuntime(t, root, &gatewayMessagePort{})
+	if err := service.desktop.Start(context.Background()); err == nil {
+		t.Fatal("unconfigured Desktop IPC unexpectedly started")
+	}
+
+	snapshot := service.composeIntegrationSnapshot(domain.FeishuSnapshot{Availability: "ready"})
+	if snapshot.TaskLinkReady {
+		t.Fatal("task link reported ready while Desktop IPC was unavailable")
+	}
+	if snapshot.Capabilities["desktopIPC"].State == "ready" {
+		t.Fatalf("Desktop IPC capability unexpectedly ready: %#v", snapshot.Capabilities["desktopIPC"])
+	}
+	found := false
+	for _, blocker := range snapshot.ReadinessBlockers {
+		if blocker == "desktopIPC" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Desktop IPC blocker missing: %#v", snapshot.ReadinessBlockers)
 	}
 }
 

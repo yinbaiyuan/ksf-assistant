@@ -28,6 +28,9 @@ func ReadConfigurationEvidence(ctx context.Context, runner CapabilityExecutor, d
 			result.Problems = append(result.Problems, "cleanup_state_unreadable")
 		}
 	}
+	if runner.Binary == "" {
+		return readNativeConfigurationEvidence(ctx, dataRoot, result)
+	}
 	if !result.CleanupPending {
 		if err := MigrateOwnedLegacyProfile(ctx, runner, dataRoot); err != nil {
 			result.Problems = append(result.Problems, "legacy_migration_pending")
@@ -209,6 +212,15 @@ func configurationScopeState(value any, required []string) string {
 }
 
 func configurationFileEvidenceFor(dataRoot string) (string, string, error) {
+	native := officialCredentialPath(dataRoot)
+	if info, err := os.Lstat(native); err == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > maximumPrivateJSONBytes {
+			return "", "", errors.New("unsafe native configuration file")
+		}
+		return "present", fmt.Sprintf("%d:%d", info.ModTime().UnixNano(), info.Size()), nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", "", err
+	}
 	root, err := ManagedLarkCLIConfigDir(dataRoot)
 	if err != nil {
 		return "", "", err

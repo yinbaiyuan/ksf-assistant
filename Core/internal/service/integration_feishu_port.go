@@ -168,6 +168,19 @@ func (service *Service) composeIntegrationSnapshot(snapshot domain.FeishuSnapsho
 	for key, value := range service.privateCapabilities().Capabilities {
 		snapshot.Capabilities[key] = domain.CapabilityHealth{State: value.State, Detail: value.Detail}
 	}
+	if snapshot.Capabilities["desktopIPC"].State != "ready" {
+		snapshot.TaskLinkReady = false
+		blocked := false
+		for _, blocker := range snapshot.ReadinessBlockers {
+			if blocker == "desktopIPC" {
+				blocked = true
+				break
+			}
+		}
+		if !blocked {
+			snapshot.ReadinessBlockers = append(snapshot.ReadinessBlockers, "desktopIPC")
+		}
+	}
 	if service.integrationRuntime != nil {
 		health := service.integrationRuntime.Health()
 		snapshot.Capabilities["businessIntegration"] = domain.CapabilityHealth{State: health.State, Detail: health.Detail}

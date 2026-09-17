@@ -76,7 +76,7 @@ func (err *CapabilityExecutionError) Unwrap() error { return err.Err }
 func CapabilityOutcomeUncertain(err error) bool {
 	var cliError *CLIExecutionError
 	if errors.As(err, &cliError) {
-		return cliError.Started
+		return cliExecutionOutcomeUncertain(cliError)
 	}
 	if isUserApprovalError(err) {
 		return false
@@ -86,6 +86,15 @@ func CapabilityOutcomeUncertain(err error) bool {
 		return false
 	}
 	return executionError.Phase == "write" || executionError.Phase == "remote_verification" || executionError.Phase == "verification"
+}
+
+func cliExecutionOutcomeUncertain(failure *CLIExecutionError) bool {
+	if failure == nil || !failure.Started {
+		return false
+	}
+	// Empty is retained for compatibility with older persisted/test errors;
+	// native transports set an explicit outcome.
+	return failure.Outcome == "" || failure.Outcome == "unknown"
 }
 
 func CapabilityOperationErrorCode(err error) string {

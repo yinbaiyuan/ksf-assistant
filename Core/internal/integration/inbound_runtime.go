@@ -1347,7 +1347,7 @@ func (runtime *Runtime) applyDesktopTaskSnapshot(ctx context.Context, link TaskL
 		return ctx.Err()
 	}
 	if revision != "" && revision == link.ExtraString("observedSnapshotRevision") &&
-		link.ExtraString("userMessageProjectionVersion") == "1" &&
+		link.ExtraString("userMessageProjectionVersion") == desktopUserMessageProjectionVersion &&
 		link.ExtraString("progressProjectionVersion") == "2" && link.ExtraString("activityProjectionVersion") == activityProjectionVersion {
 		return nil
 	}
@@ -1367,7 +1367,10 @@ func (runtime *Runtime) applyDesktopTaskSnapshot(ctx context.Context, link TaskL
 	if projection.TurnState == "waiting_input" && desktopAnswerSubmissionPending(link, projection) {
 		return nil
 	}
-	if link.ExtraString("activityProjectionVersion") == activityProjectionVersion && !desktopProjectionRequiresSync(link, projection) {
+	if link.ExtraString("userMessageProjectionVersion") == desktopUserMessageProjectionVersion &&
+		link.ExtraString("progressProjectionVersion") == "2" &&
+		link.ExtraString("activityProjectionVersion") == activityProjectionVersion &&
+		!desktopProjectionRequiresSync(link, projection) {
 		return nil
 	}
 	updated, err := runtime.links.UpdateActiveByID(link.ID, func(value *TaskLink) {
@@ -1375,7 +1378,7 @@ func (runtime *Runtime) applyDesktopTaskSnapshot(ctx context.Context, link TaskL
 		value.SetExtraValue("cardSnapshotArrivedAt", time.Now().UTC())
 		value.SetExtraString("latestInput", projection.UserInput)
 		value.SetExtraString("latestInputTurnId", projection.TurnID)
-		value.SetExtraString("userMessageProjectionVersion", "1")
+		value.SetExtraString("userMessageProjectionVersion", desktopUserMessageProjectionVersion)
 		value.SetExtraString("progressProjectionVersion", "2")
 		value.SetExtraString("activityProjectionVersion", activityProjectionVersion)
 		value.SetExtraValue("taskActivity", projection.Activity)

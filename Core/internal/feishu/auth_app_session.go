@@ -2,8 +2,10 @@ package feishu
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -102,6 +104,9 @@ func FinishAppConfiguration(ctx context.Context, runner CapabilityExecutor, data
 }
 
 func startAppConfiguration(ctx context.Context, runner CapabilityExecutor, dataRoot, profile string) (map[string]any, error) {
+	if runner.Binary == "" {
+		return startNativeAppConfiguration(ctx, dataRoot, profile)
+	}
 	if ctx.Err() != nil {
 		return nil, appConfigurationNotStarted("创建请求已取消")
 	}
@@ -362,13 +367,42 @@ func (output *appRegistrationOutput) Write(data []byte) (int, error) {
 			output.session.cancel()
 			return 0, errors.New("官方应用创建链接不兼容")
 		}
+		verificationURL, err := appRegistrationURLWithRequiredAddons(line)
+		if err != nil {
+			output.session.cancel()
+			return 0, errors.New("官方应用创建链接不兼容")
+		}
 		output.session.mu.Lock()
-		output.session.status.VerificationURL = line
+		output.session.status.VerificationURL = verificationURL
 		output.session.mu.Unlock()
 		output.ready = true
 		close(output.session.ready)
 	}
 	return len(data), nil
+}
+
+const requiredAppRegistrationAddons = `{"callbacks":{"items":["card.action.trigger","im.message.receive_v1"]}}`
+
+func appRegistrationURLWithRequiredAddons(value string) (string, error) {
+	if !validAppRegistrationURL(value) {
+		return "", errors.New("invalid app registration URL")
+	}
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	writer.Header.ModTime = time.Unix(0, 0)
+	writer.Header.OS = 255
+	if _, err := writer.Write([]byte(requiredAppRegistrationAddons)); err != nil {
+		return "", err
+	}
+	if err := writer.Close(); err != nil {
+		return "", err
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(compressed.Bytes())
+	result := value + "&addons=" + encoded
+	if !validAuthVerificationURL(result) {
+		return "", errors.New("invalid augmented app registration URL")
+	}
+	return result, nil
 }
 
 func validAppRegistrationURL(value string) bool {
@@ -382,7 +416,8 @@ func validAppRegistrationURL(value string) bool {
 	query := parsed.Query()
 	// The controlled patch intentionally reports the upstream protocol version
 	// to Feishu while the binary itself retains its managed distribution version.
-	if len(query) != 4 || !regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`).MatchString(query.Get("user_code")) || query.Get("lpv") != PinnedLarkCLIUpstreamVersion || query.Get("ocv") != PinnedLarkCLIUpstreamVersion || query.Get("from") != "cli" {
+	version := query.Get("lpv")
+	if len(query) != 4 || !regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`).MatchString(query.Get("user_code")) || (version != "internal" && version != PinnedLarkCLIUpstreamVersion) || query.Get("ocv") != version || query.Get("from") != "cli" {
 		return false
 	}
 	for _, values := range query {

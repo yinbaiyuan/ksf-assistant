@@ -220,7 +220,12 @@ func (c *OfficialMessageClient) patchNative(ctx context.Context, id, raw string)
 		// for an uncertain write, and never recreate a message here.
 		if state.Pending != nil {
 			if err = c.applyNativeWrite(ctx, path, &state); err != nil {
-				return err
+				if !nativeWriteWasRejected(err) {
+					return err
+				}
+				// A decoded API rejection proves the persisted request did not
+				// apply. applyNativeWrite has removed only that rejected pending
+				// record, so the latest desired projection may safely supersede it.
 			}
 		}
 		if reflect.DeepEqual(state.Projection, p) {
@@ -228,7 +233,15 @@ func (c *OfficialMessageClient) patchNative(ctx context.Context, id, raw string)
 		}
 		if state.Projection.Streaming {
 			if err = c.syncNativeTexts(ctx, path, &state, p); err != nil {
-				return err
+				if !nativeWriteWasRejected(err) {
+					return err
+				}
+				// Long-lived CardKit streams may reject an element write after the
+				// streaming window closes. Converge the card with one full current
+				// projection instead of leaving a rejected element write at the
+				// head of the journal.
+				data, _ := json.Marshal(p.Card)
+				return c.nativeWrite(ctx, path, &state, nativeCardWrite{Request: MessageCLIRequest{Method: "replace", Body: map[string]any{"card": map[string]any{"type": "card_json", "data": string(data)}}}, Replacement: &p})
 			}
 			if !p.Streaming {
 				disabled := false
@@ -378,7 +391,7 @@ func (c *OfficialMessageClient) applyNativeWrite(ctx context.Context, path strin
 				return c.nativeWrite(ctx, path, state, *w)
 			}
 		}
-		if errors.As(err, &rejection) || errors.As(err, &failure) && !failure.Started {
+		if errors.As(err, &rejection) || errors.As(err, &failure) && (!failure.Started || failure.Outcome == "rejected") {
 			state.Pending = nil
 			_ = writePrivateJSON(path, state)
 		}
@@ -405,4 +418,9 @@ func (c *OfficialMessageClient) applyNativeWrite(ctx context.Context, path strin
 		state.ActivityAcknowledged = state.Acknowledged
 	}
 	return writePrivateJSON(path, state)
+}
+
+func nativeWriteWasRejected(err error) bool {
+	var failure *CLIExecutionError
+	return errors.As(err, &failure) && failure.Started && failure.Outcome == "rejected"
 }

@@ -3,7 +3,10 @@
 package feishu
 
 import (
+	"errors"
 	"fmt"
+	"os"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -48,9 +51,19 @@ func replacePrivateFile(source, destination string) error {
 	if err != nil {
 		return err
 	}
-	return windows.MoveFileEx(
-		from,
-		to,
-		windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH,
-	)
+	if info, statErr := os.Lstat(destination); statErr == nil && info.IsDir() {
+		return windows.ERROR_ACCESS_DENIED
+	}
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for {
+		err = windows.MoveFileEx(
+			from,
+			to,
+			windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH,
+		)
+		if err == nil || (!errors.Is(err, windows.ERROR_ACCESS_DENIED) && !errors.Is(err, windows.ERROR_SHARING_VIOLATION)) || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }

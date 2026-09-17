@@ -11,6 +11,7 @@ import (
 type closedStreamFixture struct {
 	probeCLIFixture
 	patchFailure bool
+	patchReject  bool
 }
 
 type sequenceRecoveryFixture struct {
@@ -84,6 +85,11 @@ func TestNativeSequenceRecoveryIsBoundedAcrossRestart(t *testing.T) {
 }
 
 func (f *closedStreamFixture) CallMessage(ctx context.Context, r MessageCLIRequest) (map[string]any, error) {
+	if r.Method == "patch" && f.patchReject {
+		f.patchReject = false
+		f.requests = append(f.requests, r)
+		return nil, &CLIExecutionError{Code: "feishu_openapi_failed", Started: true, Outcome: "rejected", Structured: map[string]any{"type": "api", "code": float64(230099), "http_status": 400}}
+	}
 	if r.Method == "patch" && f.patchFailure {
 		f.requests = append(f.requests, r)
 		return nil, errors.New("timeout")
@@ -98,6 +104,29 @@ func (f *closedStreamFixture) CallMessage(ctx context.Context, r MessageCLIReque
 		}
 	}
 	return f.probeCLIFixture.CallMessage(ctx, r)
+}
+
+func TestNativeRejectedElementWriteConvergesWithFullCard(t *testing.T) {
+	f := &closedStreamFixture{patchReject: true}
+	c, _ := NewOfficialMessageClient("app", f)
+	c.nativeRoot = t.TempDir()
+	ctx := context.Background()
+	if _, err := c.Send(ctx, MessageTarget{Type: "open_id", ID: "ou_test"}, "card", nativeFixture, "unique"); err != nil {
+		t.Fatal(err)
+	}
+	updated := strings.Replace(nativeFixture, "hello", "hello current", 1)
+	if err := c.PatchCard(ctx, "om_probe", updated); err != nil {
+		t.Fatal("confirmed rejection blocked current projection", err)
+	}
+	writes := f.requests[2:]
+	if len(writes) != 3 || writes[0].Method != "content" || writes[1].Method != "patch" || writes[2].Method != "replace" {
+		t.Fatal("card did not converge through a full replacement", writes)
+	}
+	var state nativeCardState
+	missing, err := readPrivateJSON(c.nativeKeyPath("unique"), &state)
+	if err != nil || missing || state.Pending != nil || nativeTexts(state.Projection)["m1"] != "hello current" {
+		t.Fatalf("rejected journal head was not resolved: missing=%v err=%v pending=%v projection=%q", missing, err, state.Pending != nil, nativeTexts(state.Projection)["m1"])
+	}
 }
 
 func TestNativeFallbackUncertainPatchKeepsExactIdentity(t *testing.T) {

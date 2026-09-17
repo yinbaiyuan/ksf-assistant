@@ -13,6 +13,7 @@ const skillsManifest = JSON.parse(readFileSync(path.join(repoRoot, 'runtime', 'l
 const args = process.argv.slice(2);
 const verifyOnly = args.includes('--verify');
 const updateControlledHashes = args.includes('--update-controlled-hashes');
+const windowsDevelopmentRuntime = args.includes('--windows-development-runtime');
 const platform = valueAfter('--platform');
 const arches = valuesAfter('--arch');
 
@@ -114,8 +115,45 @@ function normalizeReleaseAPIMetadata(data) {
   return canonicalJSON(data);
 }
 
-async function stageAPIMetadata(cache, sourceRoot) {
+function normalizeWindowsDevelopmentAPIMetadata(data) {
+  const service = name => data.services.find(item => item.name === name);
+  const im = service('im');
+  const folder = im?.resources?.files?.methods?.folder;
+  const chatCreate = im?.resources?.chats?.methods?.create;
+  const mail = service('mail')?.resources?.['user_mailbox.threads']?.methods?.list?.parameters;
+  const mindnotes = service('mindnotes')?.resources?.nodes?.methods?.list;
+  const includesTokens = (actual, required) => Array.isArray(actual) && required.every(token => actual.includes(token));
+  if (folder?.id !== 'files.folder' || !includesTokens(chatCreate?.accessTokens, ['tenant', 'user']) || !includesTokens(mindnotes?.accessTokens, ['tenant', 'user']) || typeof mail?.folder_id?.description !== 'string' || typeof mail?.label_id?.description !== 'string') {
+    throw new Error('Official Feishu API metadata is incompatible with the Windows development runtime');
+  }
+  delete im.resources.files.methods.folder;
+  chatCreate.accessTokens = ['tenant'];
+  mindnotes.accessTokens = ['user'];
+  mail.folder_id.description = '文件夹 id，支持INBOX、SENT、SPAM、ARCHIVED、SCHEDULED、TRASH、DRAFT以及自定义文件夹ID';
+  mail.label_id.description = '标签id，支持IMPORTANT、OTHER、FLAGGED以及自定义标签ID';
+  return canonicalJSON(data);
+}
+
+async function stageAPIMetadata(cache, sourceRoot, target) {
   const item = larkCliManifest.apiMetadata;
+  if (windowsDevelopmentRuntime) {
+    const metadata = path.join(cache, `development-windows-${target}-api-meta.json`);
+    const envelopePath = `${metadata}.download`;
+    rmSync(envelopePath, { force: true });
+    await download(item.url, envelopePath);
+    let envelope;
+    try {
+      envelope = JSON.parse(readFileSync(envelopePath, 'utf8'));
+    } finally {
+      rmSync(envelopePath, { force: true });
+    }
+    if (envelope?.msg !== 'succeeded' || !Array.isArray(envelope?.data?.services) || envelope.data.services.length !== item.serviceCount) throw new Error('Official Feishu API metadata response is invalid');
+    writeFileSync(metadata, `${JSON.stringify(normalizeWindowsDevelopmentAPIMetadata(envelope.data), null, 2)}\n`);
+    const destination = path.join(sourceRoot, item.path);
+    mkdirSync(path.dirname(destination), { recursive: true });
+    cpSync(metadata, destination);
+    return;
+  }
   const metadata = path.join(cache, item.archive);
   if (!existsSync(metadata) || sha256(metadata) !== item.sha256) {
     const envelopePath = `${metadata}.download`;
@@ -153,7 +191,7 @@ async function stageLarkCLI(target) {
 	mkdirSync(unpack, { recursive: true });
 	run('tar', ['-xzf', archive, '-C', unpack]);
 	const sourceRoot = path.join(unpack, larkCliManifest.source.root);
-	await stageAPIMetadata(cache, sourceRoot);
+	await stageAPIMetadata(cache, sourceRoot, target);
 	const sourceRelative = path.relative(repoRoot, sourceRoot).split(path.sep).join('/');
 	if (!safeRelative(sourceRelative)) throw new Error('Invalid controlled lark-cli source directory');
 	const patchPath = path.join(repoRoot, larkCliManifest.patch.path);
@@ -166,7 +204,15 @@ async function stageLarkCLI(target) {
 	run('git', applyArgs, { cwd: sourceRoot, env: patchEnvironment });
 	run('gofmt', ['-w', 'cmd/auth/auth.go', 'cmd/auth/logout.go', 'cmd/auth/logout_ksfassistant_test.go', 'cmd/auth/scopes.go', 'cmd/config/init.go', 'cmd/config/init_interactive.go', 'cmd/config/init_ksfassistant_test.go', 'cmd/config/bind_test.go', 'internal/keychain/keychain.go'], { cwd: sourceRoot });
 	if (!upstreamTestsPassed) {
-		run('go', ['test', './cmd/auth', './cmd/config', './internal/auth', './internal/keychain'], { cwd: sourceRoot });
+		const authTestPattern = windowsDevelopmentRuntime ? '^TestAuthLogoutRunPurgeLocalProfile' : '.';
+		const configTestPattern = windowsDevelopmentRuntime ? '^TestConfigInitJSONRegistrationUserIsOptional$' : '.';
+		if (windowsDevelopmentRuntime) {
+			run('go', ['test', './cmd/auth', '-run', authTestPattern], { cwd: sourceRoot });
+			run('go', ['test', './cmd/config', '-run', configTestPattern], { cwd: sourceRoot });
+			run('go', ['test', './internal/auth', './internal/keychain'], { cwd: sourceRoot });
+		} else {
+			run('go', ['test', './cmd/auth', './cmd/config', './internal/auth', './internal/keychain'], { cwd: sourceRoot });
+		}
 		upstreamTestsPassed = true;
 	}
 	const outputDir = path.join(repoRoot, 'dist', 'runtime', 'lark-cli', target);
@@ -178,7 +224,7 @@ async function stageLarkCLI(target) {
 	const ldflags = `-s -w -X github.com/larksuite/cli/internal/build.Version=${larkCliManifest.version} -X github.com/larksuite/cli/internal/build.Date=2026-09-01`;
 	run('go', ['build', '-buildvcs=false', '-trimpath', '-ldflags', ldflags, '-o', output, '.'], { cwd: sourceRoot, env: { CGO_ENABLED: '0', GOOS: goos, GOARCH: goarch } });
 	if (updateControlledHashes) item.executableSha256 = sha256(output);
-	else if (sha256(output) !== item.executableSha256) throw new Error(`Controlled lark-cli executable checksum mismatch: ${target}`);
+	else if (!windowsDevelopmentRuntime && sha256(output) !== item.executableSha256) throw new Error(`Controlled lark-cli executable checksum mismatch: ${target}`);
 	if (!target.startsWith('windows-')) chmodSync(output, 0o755);
   rmSync(unpack, { recursive: true, force: true });
 }
@@ -232,9 +278,15 @@ if (verifyOnly) {
 if (!['windows', 'darwin'].includes(platform) || arches.length === 0) {
   throw new Error('Usage: prepare-feishu-runtime.mjs --platform windows|darwin --arch x64 [--arch arm64]');
 }
+if (windowsDevelopmentRuntime && platform !== 'windows') throw new Error('Windows development runtime is only available for --platform windows');
+if (windowsDevelopmentRuntime && updateControlledHashes) throw new Error('Windows development runtime cannot update controlled release hashes');
 for (const arch of [...new Set(arches)]) {
 	const target = `${platform}-${arch}`;
 	await stageLarkCLI(target);
+}
+if (windowsDevelopmentRuntime) {
+	console.log(`Staged Windows development lark-cli ${larkCliManifest.version}; release manifests and macOS runtimes were not changed.`);
+	process.exit(0);
 }
 await stageSkills();
 for (const [target, artifact] of Object.entries(larkCliManifest.artifacts)) {

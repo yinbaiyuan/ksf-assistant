@@ -2,27 +2,19 @@
 
 The generated SPDX 2.3 SBOM is the machine-readable dependency inventory. This file highlights packages distributed with or linked into preview artifacts; upstream license files remain authoritative.
 
-## lark-cli
-
-Source: [larksuite/cli](https://github.com/larksuite/cli)
-
-Managed distribution version: 1.0.93-ksfassistant.1
-Upstream version: 1.0.93
-License: MIT
-
-Platform binaries are built from the verified upstream source plus the auditable KSFAssistant patch and checked against the SHA-256 values in `runtime/lark-cli-runtime.json`. The patch has no independent release version; its exact path and hash are provenance of the managed distribution version. The 28 upstream Skills and their MIT license come from the same v1.0.93 source tag, with original per-file provenance in `runtime/lark-skills.json`. KSFAssistant distributes entry-adapted versions, preserving the upstream license and domain guidance; the packaged adaptation report records original/final hashes and adapter sources. The app does not independently update these components.
-
-Core no longer directly links the Lark Go SDK. The official CLI embeds its own Go dependencies (including its SDK); the generated SBOM records those as CLI supply-chain contents, not Core dependencies. Post-signing binary hashes are recorded separately from upstream download hashes.
-
 ## Go runtime dependencies
 
+- `github.com/larksuite/oapi-sdk-go/v3` 3.12.0 — MIT; official Feishu/Lark WebSocket event transport
+- `github.com/skip2/go-qrcode` — MIT; local one-time connection QR rendering
+- `github.com/gorilla/websocket` 1.5.0 — BSD-2-Clause; WebSocket transport dependency of the official SDK
+- `github.com/gogo/protobuf` 1.3.2 — BSD-3-Clause; protocol dependency of the official SDK
 - `golang.org/x/sys` 0.10.0 — BSD-3-Clause
 
 These packages are linked into Go binaries. Their source repositories and license texts are identified by the generated SBOM and Go module metadata.
 
 ## Frozen Node compatibility tests
 
-`Services/FeishuBridge` retains `@larksuiteoapi/node-sdk` 1.73.0 and `@larksuite/cli` 1.0.92 solely as a frozen offline regression baseline under their upstream licenses. They are not installed as a production service or bundled with the macOS application. Node.js is a build/test dependency; Windows Electron supplies its own host runtime.
+`Services/FeishuBridge` retains `@larksuiteoapi/node-sdk` 1.73.0 and `@larksuite/cli` 1.0.92 solely as a frozen offline regression baseline under their upstream licenses. They are not installed as a production service or bundled with the macOS application. Node.js 24.20.0 is the reviewed build/test runtime; Windows Electron supplies its own host runtime.
 
 ## go-winio
 

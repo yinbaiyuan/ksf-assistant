@@ -44,5 +44,60 @@ test('tray icon is a colored PNG data URL and unavailable data stays explicit', 
   assert.match(status.tooltip, /额度暂不可用/);
   const dataURL = trayIconDataURL(status);
   assert.match(dataURL, /^data:image\/png;base64,/);
-  assert.deepEqual(Buffer.from(dataURL.split(',')[1], 'base64').subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  const png = Buffer.from(dataURL.split(',')[1], 'base64');
+  assert.deepEqual(png.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  assert.equal(png.readUInt32BE(16), 48);
+  assert.equal(png.readUInt32BE(20), 48);
+});
+
+test('tray icon fills every Windows DPI representation without outer transparent padding', () => {
+  const status = buildTrayStatus({ usage: { buckets: [{ primary: { usedPercent: 41 } }] } });
+  for (const size of [16, 20, 24, 32]) {
+    const png = Buffer.from(trayIconDataURL(status, size).split(',')[1], 'base64');
+    assert.equal(png.readUInt32BE(16), size);
+    assert.equal(png.readUInt32BE(20), size);
+    const chunks = [];
+    for (let offset = 8; offset < png.length;) {
+      const length = png.readUInt32BE(offset);
+      const type = png.subarray(offset + 4, offset + 8).toString('ascii');
+      if (type === 'IDAT') chunks.push(png.subarray(offset + 8, offset + 8 + length));
+      offset += 12 + length;
+    }
+    const scanlines = require('node:zlib').inflateSync(Buffer.concat(chunks));
+    const alphaAt = (x, y) => scanlines[y * (1 + size * 4) + 1 + x * 4 + 3];
+    assert.ok(Array.from({ length: size }, (_, x) => alphaAt(x, 0)).some(Boolean), `top edge missing at ${size}px`);
+    assert.ok(Array.from({ length: size }, (_, x) => alphaAt(x, size - 1)).some(Boolean), `bottom edge missing at ${size}px`);
+    assert.ok(Array.from({ length: size }, (_, y) => alphaAt(0, y)).some(Boolean), `left edge missing at ${size}px`);
+    assert.ok(Array.from({ length: size }, (_, y) => alphaAt(size - 1, y)).some(Boolean), `right edge missing at ${size}px`);
+  }
+});
+
+test('a single tray digit keeps the same compact scale as a two-digit value', () => {
+  const decode = (status) => {
+    const size = 24;
+    const png = Buffer.from(trayIconDataURL(status, size).split(',')[1], 'base64');
+    const chunks = [];
+    for (let offset = 8; offset < png.length;) {
+      const length = png.readUInt32BE(offset);
+      if (png.subarray(offset + 4, offset + 8).toString('ascii') === 'IDAT') chunks.push(png.subarray(offset + 8, offset + 8 + length));
+      offset += 12 + length;
+    }
+    const scanlines = require('node:zlib').inflateSync(Buffer.concat(chunks));
+    const white = [];
+    for (let y = 0; y < size; y += 1) {
+      for (let x = 0; x < size; x += 1) {
+        const offset = y * (1 + size * 4) + 1 + x * 4;
+        if (scanlines[offset] === 255 && scanlines[offset + 1] === 255 && scanlines[offset + 2] === 255 && scanlines[offset + 3] === 255) white.push([x, y]);
+      }
+    }
+    return {
+      width: Math.max(...white.map(([x]) => x)) - Math.min(...white.map(([x]) => x)) + 1,
+      height: Math.max(...white.map(([, y]) => y)) - Math.min(...white.map(([, y]) => y)) + 1,
+    };
+  };
+  const oneDigit = decode({ remainingPercent: 8, label: '8' });
+  const twoDigits = decode({ remainingPercent: 88, label: '88' });
+  assert.equal(oneDigit.height, twoDigits.height);
+  assert.ok(oneDigit.width < twoDigits.width * 0.6, `${oneDigit.width}px should stay compact beside ${twoDigits.width}px`);
+  assert.ok(oneDigit.height <= 15, `single digit is too tall at ${oneDigit.height}px`);
 });

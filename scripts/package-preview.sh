@@ -48,24 +48,6 @@ export PREVIEW_SOURCE_SHA256="$(cat "$preview_root/source.sha256")"
 export SOURCE_DATE_EPOCH="$(node -p "require(process.argv[1]).sourceDateEpoch" "$preview_root/source-manifest.json")"
 source_root="$preview_root/source"
 tar -czf "$preview_root/KSFAssistant-preview-source.tar.gz" -C "$preview_root" source source-manifest.json source.sha256
-if [[ "$mode" != "--freeze-only" ]]; then
-    node --input-type=module - "$repo_root" "$source_root" <<'NODE'
-import { existsSync, readFileSync, mkdirSync, copyFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
-import path from 'node:path';
-const [root, frozen] = process.argv.slice(2);
-const cli = JSON.parse(readFileSync(path.join(frozen, 'runtime/lark-cli-runtime.json')));
-const skills = JSON.parse(readFileSync(path.join(frozen, 'runtime/lark-skills.json')));
-const output = path.join(frozen, 'dist/cache/lark-cli');
-mkdirSync(output, {recursive:true});
-for (const item of [...Object.values(cli.artifacts), skills.source]) {
-  const input = path.join(root, 'dist/cache/lark-cli', item.archive);
-  if (!existsSync(input)) continue;
-  if (createHash('sha256').update(readFileSync(input)).digest('hex') !== item.sha256) throw new Error('Cached artifact checksum mismatch');
-  copyFileSync(input, path.join(output, item.archive));
-}
-NODE
-fi
 if [[ "$mode" == "--mac" || "$mode" == "--all" ]]; then
     (cd "$source_root" && bash scripts/build-app.sh)
     /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$source_root/dist/KSFAssistant.app" "$preview_root/KSFAssistant-preview-mac-universal.zip"

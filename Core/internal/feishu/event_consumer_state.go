@@ -102,7 +102,7 @@ func (store EventConsumerStateStore) update(change func(map[string]any, string))
 		}
 		now := time.Now().UTC().Format(time.RFC3339Nano)
 		value["schemaVersion"] = 3
-		value["transport"] = "official-cli"
+		value["transport"] = "official-sdk"
 		value["updatedAt"] = now
 		change(value, now)
 		return writePrivateJSON(store.path, value)

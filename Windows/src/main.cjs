@@ -16,7 +16,15 @@ const { migrateLegacySettings: migrateSettings } = require('./identity-migration
 const { taskURL, clamp, isPathInside } = require('./security.cjs');
 const { buildTrayStatus, trayIconDataURL } = require('./tray-status.cjs');
 
-const APP_WIDTH = 392;
+const WINDOWS_TRAY_REPRESENTATIONS = [
+  { size: 16, scaleFactor: 1 },
+  { size: 20, scaleFactor: 1.25 },
+  { size: 24, scaleFactor: 1.5 },
+  { size: 32, scaleFactor: 2 },
+];
+
+const APP_WIDTH = 336;
+const HEIGHT_ROUNDING_TOLERANCE = 2;
 let window = null;
 let tray = null;
 let core = null;
@@ -50,6 +58,7 @@ function createWindow() {
   window = new BrowserWindow({
     width: APP_WIDTH,
     height: 760,
+    useContentSize: true,
     minWidth: APP_WIDTH,
     maxWidth: APP_WIDTH,
     minHeight: 320,
@@ -82,8 +91,7 @@ function createWindow() {
 }
 
 function createTray() {
-  const iconPath = path.join(__dirname, '..', 'assets', 'icon.png');
-  const icon = nativeImage.createFromPath(iconPath).resize({ width: 20, height: 20 });
+  const icon = createTrayStatusIcon(buildTrayStatus(null));
   tray = new Tray(icon);
   updateTrayStatus(null);
   tray.setContextMenu(Menu.buildFromTemplate([
@@ -94,18 +102,25 @@ function createTray() {
   tray.on('click', () => window?.isVisible() ? window.hide() : showWindow());
 }
 
+function createTrayStatusIcon(status) {
+  const icon = nativeImage.createEmpty();
+  for (const representation of WINDOWS_TRAY_REPRESENTATIONS) {
+    icon.addRepresentation({
+      scaleFactor: representation.scaleFactor,
+      dataURL: trayIconDataURL(status, representation.size),
+    });
+  }
+  return icon;
+}
+
 function feishuRuntime() {
   const arch = process.arch === 'arm64' ? 'windows-arm64' : 'windows-x64';
   const repoRoot = path.resolve(__dirname, '..', '..');
   const bundledBridge = app.isPackaged
     ? path.join(process.resourcesPath, 'runtime', 'feishu-bridge', arch, 'ksf-assistant-feishu-bridge.exe')
     : path.join(repoRoot, 'dist', 'runtime', 'feishu-bridge', arch, 'ksf-assistant-feishu-bridge.exe');
-  const bundledLarkCLI = app.isPackaged
-    ? path.join(process.resourcesPath, 'runtime', 'lark-cli', arch, 'lark-cli.exe')
-    : path.join(repoRoot, 'dist', 'runtime', 'lark-cli', arch, 'lark-cli.exe');
 	return {
 		bridge: fs.existsSync(bundledBridge) ? bundledBridge : '',
-		larkCLI: fs.existsSync(bundledLarkCLI) ? bundledLarkCLI : '',
 	};
 }
 
@@ -118,12 +133,12 @@ function removeLegacyFeishuScheduledTask() {
 function updateTrayStatus(snapshot) {
   if (!tray) return;
   const status = buildTrayStatus(snapshot);
-  const icon = nativeImage.createFromDataURL(trayIconDataURL(status)).resize({ width: 20, height: 20 });
+  const icon = createTrayStatusIcon(status);
   if (!icon.isEmpty()) tray.setImage(icon);
   tray.setToolTip(status.tooltip);
 }
 
-function showWindow() {
+function positionWindow() {
   if (!window || !tray) return;
   const trayBounds = tray.getBounds();
   const display = screen.getDisplayNearestPoint({ x: trayBounds.x, y: trayBounds.y });
@@ -133,6 +148,11 @@ function showWindow() {
   const below = trayBounds.y + trayBounds.height + bounds.height + 8 <= area.y + area.height;
   const y = below ? trayBounds.y + trayBounds.height + 6 : trayBounds.y - bounds.height - 6;
   window.setPosition(x, clamp(y, area.y + 8, area.y + area.height - bounds.height - 8), false);
+}
+
+function showWindow() {
+  if (!window || !tray) return;
+  positionWindow();
   window.show();
   window.focus();
   window.webContents.send('ksfassistant:visible');
@@ -362,10 +382,11 @@ function registerIPC() {
     if (!window || !Number.isFinite(requestedHeight)) return;
     const display = screen.getDisplayMatching(window.getBounds());
     const height = clamp(Math.ceil(requestedHeight), 320, Math.max(320, display.workArea.height - 16));
-    if (window.getBounds().height === height) return;
+    const contentBounds = window.getContentBounds();
+    if (Math.abs(contentBounds.height - height) <= HEIGHT_ROUNDING_TOLERANCE) return;
     const wasVisible = window.isVisible();
-    window.setSize(APP_WIDTH, height, false);
-    if (wasVisible) showWindow();
+    window.setContentBounds({ ...contentBounds, height }, false);
+    if (wasVisible) positionWindow();
   });
   ipcMain.on('window:hide', () => window?.hide());
   ipcMain.on('app:quit', () => { quitting = true; app.quit(); });
@@ -512,7 +533,6 @@ app.whenReady().then(async () => {
     env: {
       KSF_ASSISTANT_MANAGED: '1',
 			KSF_ASSISTANT_FEISHU_BRIDGE: runtime.bridge,
-      KSF_ASSISTANT_LARK_CLI: runtime.larkCLI,
       FEISHU_BRIDGE_DATA_DIR: path.join(os.homedir(), '.config', 'feishu-bridge'),
     },
     integrations: { ksfRoot: store.get().ksfRoot },

@@ -8,7 +8,7 @@
 | Codex CLI | 支持 `account/rateLimits/read` 与 `account/usage/read` | 额度与账号 Token 独立降级 |
 | Codex Desktop | 支持当前本机 IPC 协议 | 任务计数、打开任务和前台首轮提交可能不可用 |
 | KSF | 根目录含 `AGENTS.md`、标准面板桥及 v1 Catalog/Projection 协议；Ruby 3.2+ 在 `PATH` | 项目工作台与长期 Token 历史不可用 |
-| 飞书服务 | macOS 与 Windows 四个目标均使用包内 Go 服务及受管 `lark-cli 1.0.93-ksfassistant.1`（上游 `1.0.93`）；任务控制要求 `codex-feishu-task-link-v1` response v2 | 飞书状态、测试发送与任务连接独立降级；退出 KSFAssistant 时随核心服务一起停止；不自动跨运行时回退 |
+| 飞书服务 | macOS 与 Windows 四个目标均使用包内 Go 服务、官方 Go SDK 与产品自有 OpenAPI 白名单；任务控制要求 `codex-feishu-task-link-v1` response v2 | 飞书状态、测试发送与任务连接独立降级；退出 KSFAssistant 时随核心服务一起停止；不执行或下载 `lark-cli`，不发布飞书 Skills |
 
 Codex Desktop IPC 不是公开稳定接口。macOS 默认连接当前用户 Unix Socket；Windows 预览版不猜测私有端点，必须通过 `CODEX_DESKTOP_IPC_PATH` 明确指定兼容 Codex Desktop 暴露的当前用户命名管道。IPC 不可用时，额度、账号 Token、项目目录和已完成任务仍可读取，但实时状态及前台首轮提交会降级。升级 Codex 后应运行对应平台烟测，再判断是否继续兼容。
 

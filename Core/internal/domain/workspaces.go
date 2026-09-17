@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"path"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -249,7 +248,7 @@ func normalizedWorkspacePath(value, platform string) (string, string) {
 		clean := path.Clean(forward)
 		return strings.ReplaceAll(clean, "/", "\\"), strings.ToLower(clean)
 	}
-	clean := filepath.Clean(value)
+	clean := path.Clean(value)
 	return clean, clean
 }
 
@@ -258,7 +257,7 @@ func workspaceBaseName(value, platform string) string {
 		value = strings.ReplaceAll(value, "\\", "/")
 		return path.Base(value)
 	}
-	return filepath.Base(value)
+	return path.Base(value)
 }
 
 func selectWorkspaceTasks(values []CodexWorkspaceTask, connectedOptions ...map[string]bool) ([]CodexWorkspaceTask, int, int) {

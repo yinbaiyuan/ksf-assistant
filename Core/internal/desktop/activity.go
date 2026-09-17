@@ -116,6 +116,9 @@ func DefaultEndpoint(home string) string {
 		}
 		return filepath.Join(root, "ipc", "ipc.sock")
 	}
+	if runtime.GOOS == "windows" {
+		return `\\.\pipe\codex-ipc`
+	}
 	return ""
 }
 

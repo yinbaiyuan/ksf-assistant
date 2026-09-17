@@ -379,7 +379,7 @@ func operationPersistenceFailure(result ActionResult, err error) ActionResult {
 func isUncertainExecutionError(err error) bool {
 	var cliError *CLIExecutionError
 	if errors.As(err, &cliError) {
-		return cliError.Started
+		return cliExecutionOutcomeUncertain(cliError)
 	}
 	if isUserApprovalError(err) {
 		return false

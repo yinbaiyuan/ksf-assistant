@@ -3,10 +3,12 @@
 package feishu
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,6 +69,52 @@ func loadWindowsOfficialCredentials(_ string) (OfficialCredentials, error) {
 	return OfficialCredentials{AppID: strings.TrimSpace(profile.AppID), AppSecret: secret, Brand: brandOrDefault(profile.Brand), Source: "lark-cli-keychain"}, nil
 }
 
+func loadPlatformOfficialCredentials(dataRoot string) (OfficialCredentials, error) {
+	var stored windowsOfficialCredentialFile
+	missing, err := readWindowsOfficialCredentialFile(officialCredentialPath(dataRoot), &stored)
+	if err != nil || missing || stored.SchemaVersion != 1 || strings.TrimSpace(stored.AppID) == "" {
+		return OfficialCredentials{}, errors.New("native Feishu credential is unavailable")
+	}
+	protected, err := hex.DecodeString(stored.ProtectedSecret)
+	if err != nil || len(protected) == 0 {
+		return OfficialCredentials{}, errors.New("native Feishu credential is invalid")
+	}
+	defer clear(protected)
+	plain, err := unprotectWindowsCredential(protected)
+	if err != nil {
+		return OfficialCredentials{}, errors.New("native Feishu credential could not be decrypted for the current user")
+	}
+	defer clear(plain)
+	secret, err := decodeWindowsCredentialSecret(plain)
+	if err != nil {
+		return OfficialCredentials{}, err
+	}
+	return OfficialCredentials{AppID: strings.TrimSpace(stored.AppID), AppSecret: secret, Brand: brandOrDefault(stored.Brand), Source: "windows-dpapi"}, nil
+}
+
+func readWindowsOfficialCredentialFile(path string, stored *windowsOfficialCredentialFile) (bool, error) {
+	missing, err := readPrivateJSON(path, stored)
+	if err == nil || missing {
+		return missing, err
+	}
+	if validateErr := validatePrivateRegularFile(path); validateErr != nil {
+		return false, validateErr
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil || len(data) > maximumPrivateJSONBytes || !bytes.HasPrefix(data, []byte{0xef, 0xbb, 0xbf}) {
+		return false, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data[3:]))
+	decoder.DisallowUnknownFields()
+	if decodeErr := decoder.Decode(stored); decodeErr != nil {
+		return false, decodeErr
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return false, errors.New("native Feishu credential contains trailing data")
+	}
+	return false, nil
+}
+
 func readWindowsKeychainAccount(service, account string) (string, error) {
 	key, err := registry.OpenKey(registry.CURRENT_USER, `Software\LarkCli\keychain\`+service, registry.QUERY_VALUE)
 	if err != nil {
@@ -108,7 +156,7 @@ func storePlatformOfficialCredentials(dataRoot, appID, appSecret, brand string) 
 		return errors.New("Windows DPAPI credential could not be encrypted for the current user")
 	}
 	defer clear(protected)
-	return writePrivateJSON(filepath.Join(dataRoot, "credentials", "official-sdk.json"), windowsOfficialCredentialFile{
+	return writePrivateJSON(officialCredentialPath(dataRoot), windowsOfficialCredentialFile{
 		SchemaVersion:   1,
 		AppID:           strings.TrimSpace(appID),
 		Brand:           brandOrDefault(brand),
@@ -117,6 +165,8 @@ func storePlatformOfficialCredentials(dataRoot, appID, appSecret, brand string) 
 }
 
 func platformOfficialCredentialStatus() string { return "windows-dpapi" }
+
+func purgePlatformOfficialCredentials(string) error { return nil }
 
 func protectWindowsCredential(plain []byte) ([]byte, error) {
 	if len(plain) == 0 {

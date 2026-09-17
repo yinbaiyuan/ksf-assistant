@@ -187,9 +187,6 @@ func New() *Service {
 		environment := []string{
 			"FEISHU_BRIDGE_DATA_DIR=" + dataRoot,
 		}
-		if larkCLI := strings.TrimSpace(os.Getenv("KSF_ASSISTANT_LARK_CLI")); larkCLI != "" {
-			environment = append(environment, "LARK_CLI_BIN="+larkCLI)
-		}
 		managedSupervisor = managedfeishu.NewSupervisor(managedfeishu.SupervisorOptions{
 			Executable:  executable,
 			Directory:   filepath.Dir(executable),
