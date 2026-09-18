@@ -177,6 +177,48 @@ func TestVerifiedLogoutEndsEveryEarlierConnectionFlowWithoutResolvingOtherWrites
 	}
 }
 
+func TestLaterVerifiedConnectionSupersedesUnknownLogoutWithoutClaimingItSucceeded(t *testing.T) {
+	s := &Service{feishuDataRoot: t.TempDir()}
+	defer s.closeConfiguration()
+	logout := ConfigurationReceipt{SchemaVersion: 1, RequestID: "old-logout", Action: "logout", ApplicationID: "old-app", Outcome: "unknown", Stage: "submitted", UpdatedAt: "2026-09-18T03:29:27Z"}
+	testMessage := ConfigurationReceipt{SchemaVersion: 1, RequestID: "later-message", Action: "test_message", ApplicationID: "connected-app", Outcome: "completed", Stage: "verified", UpdatedAt: "2026-09-18T04:15:22Z"}
+	for _, receipt := range []ConfigurationReceipt{logout, testMessage} {
+		if err := privatestore.WriteJSON(s.receiptPath(receipt.RequestID), receipt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !configurationLogoutSupersededByConnection(logout, s.loadConfigurationReceipts()) {
+		t.Fatal("later verified connection did not release the old logout lock")
+	}
+	for _, failure := range s.configurationFailures() {
+		if failure.Action == "logout" {
+			t.Fatal("superseded logout still blocks the current action")
+		}
+	}
+	s.persistSupersededLogoutOutcomes()
+	var resolved ConfigurationReceipt
+	if missing, err := privatestore.ReadJSON(s.receiptPath(logout.RequestID), &resolved); err != nil || missing {
+		t.Fatal(err)
+	}
+	if resolved.Outcome != "resolved" || resolved.Stage != "verified" || resolved.Code != "superseded_by_connection" || resolved.ApplicationID != "" {
+		t.Fatalf("superseded logout was not preserved as a scrubbed terminal result: %+v", resolved)
+	}
+}
+
+func TestUnknownLogoutIsNotSupersededByUnverifiedOrEarlierConnection(t *testing.T) {
+	logout := ConfigurationReceipt{Action: "logout", Outcome: "unknown", Stage: "submitted", UpdatedAt: "2026-09-18T03:29:27Z"}
+	for _, later := range []ConfigurationReceipt{
+		{Action: "test_message", ApplicationID: "app", Outcome: "pending", Stage: "submitted", UpdatedAt: "2026-09-18T04:15:22Z"},
+		{Action: "test_message", ApplicationID: "", Outcome: "completed", Stage: "verified", UpdatedAt: "2026-09-18T04:15:22Z"},
+		{Action: "test_message", ApplicationID: "app", Outcome: "completed", Stage: "verified", UpdatedAt: "2026-09-18T03:15:22Z"},
+		{Action: "restart", ApplicationID: "app", Outcome: "completed", Stage: "verified", UpdatedAt: "2026-09-18T04:15:22Z"},
+	} {
+		if configurationLogoutSupersededByConnection(logout, []ConfigurationReceipt{later}) {
+			t.Fatalf("insufficient connection evidence released logout: %+v", later)
+		}
+	}
+}
+
 func TestLogoutScrubsAndCancelsEarlierAuthorizationReceipt(t *testing.T) {
 	s := &Service{feishuDataRoot: t.TempDir()}
 	defer s.closeConfiguration()
@@ -236,6 +278,58 @@ func TestLoginLogoutHistoryCannotDisableNextScan(t *testing.T) {
 	create, _ := configurationActionByID(snapshot, "create_app")
 	if !create.Enabled || strings.Contains(create.Reason, "原请求") {
 		t.Fatalf("verified logout history disabled a new scan: %+v", create)
+	}
+}
+
+func TestBridgeRestartRetiresLostConfigurationFlowWithoutReplayingIt(t *testing.T) {
+	for _, scenario := range []struct {
+		name     string
+		action   string
+		evidence feishuprotocol.ConfigurationEvidence
+	}{
+		{name: "application", action: "create_app", evidence: feishuprotocol.ConfigurationEvidence{ApplicationState: "missing", OperatorState: "missing"}},
+		{name: "operator", action: "start_auth", evidence: feishuprotocol.ConfigurationEvidence{ApplicationState: "present", OperatorState: "missing"}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			s := &Service{feishuDataRoot: t.TempDir()}
+			receipt := ConfigurationReceipt{SchemaVersion: 1, RequestID: "interrupted", Action: scenario.action, FlowID: "lost-flow", Outcome: "pending", Stage: "submitted"}
+			if err := s.saveConfigurationReceipt(receipt); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now()
+			s.retireInterruptedConfigurationFlowReceipts(configurationData{quickAt: now, evidenceAt: now, evidence: scenario.evidence})
+			var retired ConfigurationReceipt
+			if missing, err := privatestore.ReadJSON(s.receiptPath(receipt.RequestID), &retired); err != nil || missing {
+				t.Fatal(err)
+			}
+			if retired.Outcome != "failed" || retired.Stage != "verified" || retired.Code != "configuration_flow_interrupted" || retired.FlowID != "" || !strings.Contains(retired.Message, "重新扫码") {
+				t.Fatalf("interrupted flow was not made safely retryable: %+v", retired)
+			}
+		})
+	}
+}
+
+func TestLiveOrUnverifiedConfigurationFlowIsNeverRetired(t *testing.T) {
+	for _, scenario := range []struct {
+		name string
+		data configurationData
+	}{
+		{name: "live", data: configurationData{quickAt: time.Now(), evidenceAt: time.Now(), flow: &feishuprotocol.ConfigurationFlow{ID: "live", State: "pending"}, evidence: feishuprotocol.ConfigurationEvidence{ApplicationState: "missing"}}},
+		{name: "failed flow read", data: configurationData{quickAt: time.Now(), evidenceAt: time.Now(), flowFailed: true, evidence: feishuprotocol.ConfigurationEvidence{ApplicationState: "missing"}}},
+		{name: "unverified evidence", data: configurationData{quickAt: time.Now(), evidenceAt: time.Now(), evidenceFailed: true, evidence: feishuprotocol.ConfigurationEvidence{ApplicationState: "missing"}}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			s := &Service{feishuDataRoot: t.TempDir()}
+			receipt := ConfigurationReceipt{SchemaVersion: 1, RequestID: "preserved", Action: "create_app", FlowID: "flow", Outcome: "pending", Stage: "submitted"}
+			if err := s.saveConfigurationReceipt(receipt); err != nil {
+				t.Fatal(err)
+			}
+			s.retireInterruptedConfigurationFlowReceipts(scenario.data)
+			var preserved ConfigurationReceipt
+			if missing, err := privatestore.ReadJSON(s.receiptPath(receipt.RequestID), &preserved); err != nil || missing || preserved.Outcome != "pending" {
+				t.Fatalf("unverified flow was retired: %+v %v", preserved, err)
+			}
+		})
 	}
 }
 

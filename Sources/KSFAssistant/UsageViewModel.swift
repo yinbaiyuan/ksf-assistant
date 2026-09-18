@@ -170,7 +170,7 @@ final class UsageViewModel: ObservableObject {
     }
 
     #if FEISHU_LAYOUT_PREVIEW
-    func loadFeishuLayoutPreview(snapshot: FeishuConfigurationSnapshot?, toolchain: ToolchainStatus, failed: Bool = false) throws {
+    func loadFeishuLayoutPreview(snapshot: FeishuConfigurationSnapshot?, failed: Bool = false) throws {
         precondition(!started && !coreServiceEnabled)
         if let snapshot { try feishuConfigurationSession.restore(snapshot) }
         if failed { feishuConfiguration.phase = .unknown }

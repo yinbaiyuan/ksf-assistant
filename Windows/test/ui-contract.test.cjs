@@ -223,6 +223,16 @@ test('Token hierarchy matches the six-cell shared product contract', () => {
   assert.match(main, /pricingSelection/);
 });
 
+test('API estimate model selection uses the shared compact dropdown on Windows', () => {
+  assert.match(app, /function renderPricingPlanMenu/);
+  assert.ok((app.match(/renderPricingPlanMenu\(/g) || []).length >= 4);
+  assert.match(app, /class="pricing-plan-menu-chevron"/);
+  assert.match(app, /data-field="pricing-plan" aria-label="API 估算模型"/);
+  assert.match(css, /\.pricing-plan-menu-chevron\s*\{[^}]*border-top:\s*5px solid/s);
+  assert.match(css, /\.pricing-plan-menu select\s*\{[^}]*position:\s*absolute/s);
+  assert.doesNotMatch(app, /class="pricing-toolbar"/);
+});
+
 test('interactive states and reduced motion are present', () => {
   assert.match(css, /:focus-visible/);
   assert.match(css, /prefers-reduced-motion/);

@@ -1,8 +1,0 @@
-node_modules
-logs
-.env.local
-.env.*.local
-.DS_Store
-docs/local-notes.md
-.agent/local-notes.md
-/--profile/

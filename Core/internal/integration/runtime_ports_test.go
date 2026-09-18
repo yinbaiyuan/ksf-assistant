@@ -262,6 +262,40 @@ func TestInboundStagingUsesOnlyCapabilityPort(t *testing.T) {
 	}
 }
 
+func TestImageReplyToTaskCardStagesAttachmentAndContinuesExistingTask(t *testing.T) {
+	var received string
+	core := &fakeCorePort{start: func(_ context.Context, text string) (string, error) {
+		received = text
+		return "turn-image", nil
+	}}
+	messages := &fakeFeishuPort{stage: func(_ context.Context, message InboundMessage) (StagedInboundMessage, error) {
+		if message.ParentID != "card-1" || message.MessageType != "image" {
+			return StagedInboundMessage{}, errors.New("wrong image reply")
+		}
+		return StagedInboundMessage{CleanupDir: "/private/image", Assets: []InboundAsset{{MessageType: "image", ResourceType: "image", DisplayName: "image", LocalPath: "/private/image/01-image", SizeBytes: 7}}}, nil
+	}}
+	runtime := testRuntime(t, core, messages)
+	link := seedCard(t, runtime)
+	if _, err := runtime.Store().UpdateActiveByID(link.ID, func(value *TaskLink) {
+		value.ActiveTurnID = ""
+		value.TurnState = "completed"
+		value.TurnOwner = "none"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	message := InboundMessage{MessageID: "om_image_reply", ParentID: "card-1", RootID: "card-1", ChatID: "chat-1", ChatType: "p2p", SenderOpenID: "user-1", MessageType: "image"}
+	if err := runtime.HandleMessage(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	if messages.staged.Load() != 1 || !strings.Contains(received, "/private/image/01-image") {
+		t.Fatalf("image reply did not reach the existing task: staged=%d prompt=%q", messages.staged.Load(), received)
+	}
+	stored, found, err := runtime.Store().FindByID(link.ID)
+	if err != nil || !found || stored.ActiveTurnID != "turn-image" || stored.ExtraString("pendingCleanupDir") != "/private/image" || !containsString(stored.MessageIDs, message.MessageID) {
+		t.Fatalf("image reply state was not retained: %+v %v", stored, err)
+	}
+}
+
 func TestAnswerPreservesTypedRequestIDAndRevision(t *testing.T) {
 	core, messages := &fakeCorePort{}, &fakeFeishuPort{}
 	runtime := testRuntime(t, core, messages)

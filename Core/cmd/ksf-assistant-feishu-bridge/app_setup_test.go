@@ -123,6 +123,15 @@ func TestAppConfigurationRPCHonorsCancelledStart(t *testing.T) {
 	}
 }
 
+func TestSupplementalUserAuthorizationIsRetired(t *testing.T) {
+	server := newTestBridgeRPCServer(t.TempDir(), feishu.DefaultSettings())
+	result, err := server.HandlePrivateRPC(context.Background(), feishuprotocol.MethodAuthStart, json.RawMessage(`{"kind":"user","scope":"required"}`))
+	var rpcErr *privateipc.RPCError
+	if result != nil || !errors.As(err, &rpcErr) || rpcErr.Code != -32602 || rpcErr.Message != "supplemental_user_authorization_retired" {
+		t.Fatalf("supplemental authorization was not retired: result=%+v err=%v", result, err)
+	}
+}
+
 func TestConfigurationPrivateReadsAndScopedCancellation(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", root+"/missing-config")

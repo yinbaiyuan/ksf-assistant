@@ -118,19 +118,19 @@ test('optional user authorization does not appear as a required setup action', (
   assert.doesNotMatch(html, /feishu-config-start_auth|补充本人授权/);
 });
 
-test('one enabled next action is prioritized using facts without deriving lifecycle readiness', () => {
+test('the one-scan action is prioritized without deriving lifecycle readiness', () => {
   const { context } = harness(snapshot({
     summary: { state: 'unknown', title: '保持 Core 未知状态', tone: 'warning' },
-    facts: [{ id: 'user', title: '用户', state: 'missing' }, { id: 'operator', title: '操作人', state: 'missing' }],
-    actions: [action('start_auth'), action('finish_app', false)],
+    facts: [{ id: 'application', title: '应用', state: 'missing' }, { id: 'operator', title: '操作人', state: 'missing' }],
+    actions: [action('create_app'), action('finish_app', false)],
   }));
-  assert.equal(context.feishuPrimaryAction(), 'start_auth');
+  assert.equal(context.feishuPrimaryAction(), 'create_app');
   let html = context.renderFeishuPage();
   assert.equal((html.match(/class="button primary /g) || []).length, 1);
-  assert.match(html, /class="button primary feishu-primary"[^>]*feishu-config-start_auth/);
+  assert.match(html, /class="button primary feishu-primary"[^>]*feishu-config-create_app/);
   assert.match(html, /保持 Core 未知状态/);
   context.state.feishuConfiguration.facts[0].state = 'present';
-  context.state.feishuConfiguration.actions.find(action=>action.id==='start_auth').enabled=false;
+  context.state.feishuConfiguration.actions.find(action=>action.id==='create_app').enabled=false;
   assert.equal(context.feishuPrimaryAction(), null);
   context.state.feishuConfiguration.facts[0].state = 'unknown';
   assert.equal(context.feishuPrimaryAction(), null);
@@ -174,6 +174,28 @@ test('blocked reconnect keeps the scan guidance visible and offers controlled cl
   assert.match(html, /仍有活动飞书连接/);
   assert.equal((html.match(/feishu-config-logout/g) || []).length, 1);
   assert.match(html, /清理旧连接数据/);
+});
+
+test('configured application keeps a temporarily disabled logout visible with its reason', () => {
+ const logout={...action('logout',false),title:'注销并清除飞书',reason:'原请求尚待核实，请刷新查询。'};
+ const {context}=harness(snapshot({actions:[logout]}));
+ const html=context.renderFeishuPage();
+ assert.match(html,/feishu-logout/);
+ assert.match(html,/data-action="feishu-config-logout"[^>]*disabled/);
+ assert.match(html,/原请求尚待核实，请刷新查询。/);
+});
+
+test('an unknown logout keeps the Core-authorized cleanup recovery actionable', async () => {
+  const create = { id: 'create_app', title: '扫码连接飞书', enabled: false, reason: '仍有活动飞书连接，请先完成注销清理。' };
+  const cleanup = { id: 'logout', title: '继续清理', enabled: true };
+  const value = snapshot({ facts: [{ id: 'application', title: '应用', state: 'missing' }], actions: [create, cleanup] });
+  const { context, calls } = harness(value);
+  context.state.feishuLastAction = 'logout';
+  context.state.feishuSetupError = '注销并清除飞书：结果待核实';
+  const html = context.renderFeishuPage();
+  assert.doesNotMatch(html, /feishu-config-logout[^>]*disabled/);
+  await context.performFeishuConfigurationAction('logout');
+  assert.equal(calls.filter((entry) => entry[0] === 'action').length, 1);
 });
 
 test('fact help exposes escaped source and check time without repeating the visible value', () => {
@@ -336,10 +358,13 @@ test('duplicate actions are blocked and a newer read invalidates late mutation r
 
 test('QR, link, finish and cancel are bound to the current flow; terminals and expired QR disappear', async () => {
   const { context, calls } = harness(snapshot({ flow: flow(), actions: [action('finish_auth'), action('cancel_flow')] }));
-  assert.match(context.renderFeishuPage(), /当前飞书会话二维码/);
+  const html = context.renderFeishuPage();
+  assert.match(html, /当前飞书会话二维码/);
+  const renderedFlow = html.match(/data-action="feishu-flow-open" data-flow-id="([^"]+)"/);
+  assert.equal(renderedFlow?.[1], 'flow-1');
   await context.handleAction('feishu-flow-open', { dataset: { flowId: 'old-flow' } });
   assert.equal(calls.length, 0);
-  await context.handleAction('feishu-flow-open', { dataset: { flowId: 'flow-1' } });
+  await context.handleAction('feishu-flow-open', { dataset: { flowId: renderedFlow[1] } });
   assert.equal(calls[0][1].flowId, 'flow-1');
   await context.performFeishuConfigurationAction('finish_auth');
   await context.performFeishuConfigurationAction('cancel_flow');

@@ -14,7 +14,7 @@ These packages are linked into Go binaries. Their source repositories and licens
 
 ## Frozen Node compatibility tests
 
-`Services/FeishuBridge` retains `@larksuiteoapi/node-sdk` 1.73.0 and `@larksuite/cli` 1.0.92 solely as a frozen offline regression baseline under their upstream licenses. They are not installed as a production service or bundled with the macOS application. Node.js 24.20.0 is the reviewed build/test runtime; Windows Electron supplies its own host runtime.
+Node.js 24.20.0 is the reviewed build/test runtime; Windows Electron supplies its own host runtime.
 
 ## go-winio
 

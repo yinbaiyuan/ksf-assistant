@@ -1,6 +1,0 @@
-interface:
-  display_name: "Feishu Bridge"
-  short_description: "Install and safely use the local Feishu work bridge"
-  default_prompt: "Use $feishu-bridge to install, diagnose, or perform this explicit Feishu action through the local bridge with bounded reads, dry-run writes, fixed capabilities, and redacted results."
-policy:
-  allow_implicit_invocation: true

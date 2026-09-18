@@ -49,39 +49,44 @@ type SupervisorStatus struct {
 }
 
 type Supervisor struct {
-	mu               sync.Mutex
-	options          SupervisorOptions
-	cmd              *exec.Cmd
-	stdin            io.WriteCloser
-	stdout           io.ReadCloser
-	peer             *privateipc.Peer
-	generation       uint64
-	generationCtx    context.Context
-	generationCancel context.CancelFunc
-	done             chan struct{}
-	restartToken     uint64
-	tree             processTree
-	state            string
-	configured       bool
-	stopping         bool
-	restartCount     int
-	lastError        string
-	lastDiagnostic   SupervisorDiagnostic
-	startedAt        time.Time
-	restartTimer     *time.Timer
-	restartDelays    []time.Duration
-	restartWindow    time.Duration
-	healthyReset     time.Duration
-	firstFailureAt   time.Time
+	mu                        sync.Mutex
+	options                   SupervisorOptions
+	cmd                       *exec.Cmd
+	stdin                     io.WriteCloser
+	stdout                    io.ReadCloser
+	peer                      *privateipc.Peer
+	generation                uint64
+	generationCtx             context.Context
+	generationCancel          context.CancelFunc
+	done                      chan struct{}
+	restartToken              uint64
+	tree                      processTree
+	state                     string
+	configured                bool
+	stopping                  bool
+	restartCount              int
+	lastError                 string
+	lastDiagnostic            SupervisorDiagnostic
+	startedAt                 time.Time
+	restartTimer              *time.Timer
+	restartDelays             []time.Duration
+	restartWindow             time.Duration
+	healthyReset              time.Duration
+	firstFailureAt            time.Time
+	instanceConflictStartedAt time.Time
+	instanceConflictDelay     time.Duration
+	instanceConflictWindow    time.Duration
 }
 
 func NewSupervisor(options SupervisorOptions) *Supervisor {
 	return &Supervisor{
-		options:       options,
-		state:         StateStopped,
-		restartDelays: []time.Duration{time.Second, 2 * time.Second, 5 * time.Second},
-		restartWindow: 5 * time.Minute,
-		healthyReset:  5 * time.Minute,
+		options:                options,
+		state:                  StateStopped,
+		restartDelays:          []time.Duration{time.Second, 2 * time.Second, 5 * time.Second},
+		restartWindow:          5 * time.Minute,
+		healthyReset:           5 * time.Minute,
+		instanceConflictDelay:  2 * time.Second,
+		instanceConflictWindow: 5 * time.Minute,
 	}
 }
 
@@ -127,6 +132,22 @@ func (supervisor *Supervisor) Start() error {
 }
 
 func (supervisor *Supervisor) startLocked() error {
+	if present, alive, _, _, err := InstanceStatus(supervisor.options.DataRoot); err == nil && present && alive {
+		now := time.Now()
+		if supervisor.instanceConflictStartedAt.IsZero() {
+			supervisor.instanceConflictStartedAt = now
+		}
+		if now.Sub(supervisor.instanceConflictStartedAt) < supervisor.instanceConflictWindow {
+			supervisor.state = StateStarting
+			supervisor.lastError = "waiting for previous KSFAssistant Feishu instance to exit"
+			supervisor.scheduleInstanceConflictRetryLocked()
+			return nil
+		}
+		supervisor.state = StateDegraded
+		supervisor.lastError = "previous KSFAssistant Feishu instance did not exit"
+		return errors.New(supervisor.lastError)
+	}
+	supervisor.instanceConflictStartedAt = time.Time{}
 	executable, err := validateExecutable(supervisor.options.Executable)
 	if err != nil {
 		supervisor.state = StateDegraded
@@ -198,6 +219,24 @@ func (supervisor *Supervisor) startLocked() error {
 		go supervisor.connected(ctx, generation, command, callback)
 	}
 	return nil
+}
+
+func (supervisor *Supervisor) scheduleInstanceConflictRetryLocked() {
+	supervisor.restartToken++
+	token := supervisor.restartToken
+	delay := supervisor.instanceConflictDelay
+	if delay <= 0 {
+		delay = 2 * time.Second
+	}
+	supervisor.restartTimer = time.AfterFunc(delay, func() {
+		supervisor.mu.Lock()
+		defer supervisor.mu.Unlock()
+		if token != supervisor.restartToken || supervisor.stopping || supervisor.cmd != nil {
+			return
+		}
+		supervisor.restartTimer = nil
+		_ = supervisor.startLocked()
+	})
 }
 
 func (supervisor *Supervisor) drainStderr(command *exec.Cmd, stderr io.ReadCloser) {

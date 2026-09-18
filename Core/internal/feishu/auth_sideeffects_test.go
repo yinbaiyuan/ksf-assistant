@@ -55,6 +55,34 @@ if [ "$4" = logout ]; then rm -f "$LARKSUITE_CLI_CONFIG_DIR/config.json"; printf
 	}
 }
 
+func TestNativeLogoutPurgesProductOwnedStateWithoutManagedCLI(t *testing.T) {
+	root := t.TempDir()
+	original := purgeManagedPlatformCredentials
+	purgeManagedPlatformCredentials = func() error { return nil }
+	t.Cleanup(func() { purgeManagedPlatformCredentials = original })
+	for _, relative := range []string{"auth/user-oauth.json", "client.json", SetupFilename, "credentials/official-sdk.json"} {
+		path := filepath.Join(root, relative)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	status, err := LogoutUserAuth(context.Background(), CapabilityExecutor{DataRoot: root, WorkingDirectory: root}, root)
+	if err != nil || status.Status != "unauthorized" || status.ProfileValid || status.RemoteRevocationConfirmed == nil || *status.RemoteRevocationConfirmed {
+		t.Fatalf("native logout result: %+v %v", status, err)
+	}
+	for _, relative := range []string{"auth", "client.json", SetupFilename, "credentials/official-sdk.json", "private-cache/feishu-logout-cleanup-v1.json"} {
+		if _, err := os.Lstat(filepath.Join(root, relative)); !os.IsNotExist(err) {
+			t.Fatalf("native logout left product authentication state: %s", relative)
+		}
+	}
+	if err := appCreationBusinessGuard(root); err != nil {
+		t.Fatalf("native logout still blocks a new connection: %v", err)
+	}
+}
+
 func TestLogoutCLIFailureLeavesCleanupFailClosed(t *testing.T) {
 	runner := fakeAuthCLI(t, `exit 1`)
 	if _, err := LogoutUserAuth(context.Background(), runner, runner.DataRoot); err == nil {

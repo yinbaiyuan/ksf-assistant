@@ -15,7 +15,6 @@ node "$repo_root/scripts/check-product-identity.mjs"
 bash "$repo_root/scripts/test-identity-migration.sh"
 
 (cd "$repo_root/Core" && go test ./...)
-(cd "$repo_root/Services/FeishuBridge" && npm test)
 (cd "$repo_root/Windows" && npm test)
 
 host_arch="$(uname -m)"

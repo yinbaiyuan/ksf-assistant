@@ -66,11 +66,13 @@ test('the old skipped distribution check is now an always-on retirement check', 
   for (const [file, pattern] of forbidden) assert.doesNotMatch(read(file), pattern, file);
 });
 
-test('both platform builds retain product-owned bridge, task and toolchain binaries', () => {
+test('both platform builds retain only the product-owned bridge and task helper', () => {
   const build = read('scripts/build-core.sh');
   assert.match(build, /darwin-arm64 darwin-x64 windows-x64 windows-arm64/);
-  assert.match(build, /for component in toolchain task/);
+  assert.match(build, /for component in task/);
+  assert.doesNotMatch(build, /ksf-assistant-toolchain|component in toolchain/);
   assert.equal((build.match(/go build -buildvcs=false/g) || []).length, 3);
   const windowsBuild = read('Windows/scripts/build-core.mjs');
+  assert.doesNotMatch(windowsBuild, /ksf-assistant-toolchain|'toolchain'/);
   assert.equal((windowsBuild.match(/'build', '-buildvcs=false'/g) || []).length, 3);
 });

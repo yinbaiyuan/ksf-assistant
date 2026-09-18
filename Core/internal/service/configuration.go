@@ -318,7 +318,10 @@ func (service *Service) refreshConfiguration(ctx context.Context, cancel context
 		if !state.closed && (service.managedFeishuSupervisor == nil || service.managedFeishuSupervisor.IsCurrentGeneration(bridgeEpoch)) {
 			state.data = current
 			snapshot := state.snapshot(time.Now())
-			defer func() { go service.reconcileConnectionRecovery(current, snapshot) }()
+			defer func() {
+				go service.retireInterruptedConfigurationFlowReceipts(current)
+				go service.reconcileConnectionRecovery(current, snapshot)
+			}()
 		} else {
 			state.data.evidenceFailed, state.data.quickFailed = true, true
 		}
@@ -360,7 +363,7 @@ func (state *configurationRuntime) snapshot(now time.Time) ConfigurationSnapshot
 		}
 		result.Facts = append(result.Facts, fact)
 	}
-	add("application", "接入应用", evidence.ApplicationState, "已验证", "未配置", "官方 CLI · default", stale, data.evidenceAt)
+	add("application", "接入应用", evidence.ApplicationState, "已验证", "未配置", "KSFAssistant 内部飞书连接", stale, data.evidenceAt)
 	if evidence.ApplicationID != "" {
 		result.Facts[len(result.Facts)-1].Value = evidence.ApplicationID
 	}
@@ -372,14 +375,14 @@ func (state *configurationRuntime) snapshot(now time.Time) ConfigurationSnapshot
 	} else if evidence.Auth != nil && evidence.Auth.Status == "failed" {
 		userState = "failed"
 	}
-	add("user", "用户授权", userState, "已授权", "未授权", "官方 CLI · user", stale, data.evidenceAt)
+	add("user", "用户授权", userState, "已授权", "未授权", "首次扫码身份", stale, data.evidenceAt)
 	if evidence.UserName != "" && userState == "present" {
 		result.Facts[len(result.Facts)-1].Value += " · " + evidence.UserName
 	}
 	if (userState == "failed" || userState == "unknown") && evidence.IdentityRevision != "" && evidence.IdentityRevision == data.priorUserIdentity && !data.priorUserAt.IsZero() {
 		result.Facts[len(result.Facts)-1].Value += "；此前已授权（" + data.priorUserAt.UTC().Format(time.RFC3339) + "）"
 	}
-	add("bot", "机器人身份", evidence.BotState, "已验证", "不可用", "官方 CLI · bot", stale, data.evidenceAt)
+	add("bot", "机器人身份", evidence.BotState, "已验证", "不可用", "飞书开放平台", stale, data.evidenceAt)
 	permissionState := "unknown"
 	if evidence.UserPermissions == "present" && evidence.ApplicationPermissions == "present" {
 		permissionState = "present"
@@ -387,7 +390,7 @@ func (state *configurationRuntime) snapshot(now time.Time) ConfigurationSnapshot
 	if evidence.UserPermissions == "missing" || evidence.ApplicationPermissions == "missing" {
 		permissionState = "missing"
 	}
-	add("permissions", "用户功能权限", permissionState, "已核验当前权限清单", "部分权限未具备", "官方 CLI · 应用权限与用户授权范围", stale, data.evidenceAt)
+	add("permissions", "基础功能权限", permissionState, "已核验当前权限清单", "部分权限未具备", "首次扫码申请的应用权限", stale, data.evidenceAt)
 	connectionState := "unknown"
 	if !data.quickAt.IsZero() {
 		connectionState = "missing"
@@ -491,15 +494,6 @@ func (state *configurationRuntime) snapshot(now time.Time) ConfigurationSnapshot
 		result.Actions = append(result.Actions, action)
 	}
 	addAction("create_app", "扫码连接飞书", ready && evidence.ApplicationState == "missing" && !evidence.CreationBlocked && !flowPending, "将在飞书官方网页创建或选择应用；首次扫码返回本人身份时会自动完成绑定。")
-	startAuthTitle := "补充本人授权"
-	startAuthEnabled := app && evidence.OperatorState == "missing" && len(evidence.MissingApplicationScopes) == 0 && !flowPending
-	startAuthConfirmation := "仅在首次扫码未返回本人身份时，补充申请 contact:user.base:readonly；绑定后立即清除临时用户令牌。"
-
-	addAction("start_auth", startAuthTitle, startAuthEnabled, startAuthConfirmation)
-	if len(evidence.MissingApplicationScopes) > 0 {
-		result.Actions[len(result.Actions)-1].Reason = "请先在飞书开放平台为当前应用开通所需权限。"
-	}
-
 	residualConnection := ready && evidence.ApplicationState == "missing" && evidence.CreationBlocked
 	logoutTitle := "注销并清除飞书"
 	if evidence.CleanupPending {
@@ -634,9 +628,6 @@ func (service *Service) applyFeishuConfiguration(ctx context.Context, request Co
 	if request.Action == "restart" {
 		contextMatches = true
 	}
-	if request.Action == "start_auth" && checkedAction.AuthorizationRequestID != request.AuthorizationRequestID {
-		contextMatches = false
-	}
 	if state.closed || ctx.Err() != nil || !contextMatches || !allowed || !checkedAction.Enabled || request.Action == "test_message" && (request.TargetAlias != fresh.evidence.OperatorAlias || !containsString(fresh.connection.TargetAliases, request.TargetAlias)) {
 		state.mu.Unlock()
 		return ConfigurationActionResult{Outcome: "failed", Snapshot: checked, Message: "操作前复核未通过或状态已变化；尚未执行，请检查当前状态。"}, nil
@@ -649,11 +640,8 @@ func (service *Service) applyFeishuConfiguration(ctx context.Context, request Co
 	state.mu.Unlock()
 	outcome, message, code := service.executeConfigurationAction(ctx, request, checked, fresh.settings, fresh.evidence)
 	receiptFlowID := request.FlowID
-	if outcome == "pending" && (request.Action == "create_app" || request.Action == "start_auth") {
+	if outcome == "pending" && request.Action == "create_app" {
 		kind := "app"
-		if request.Action == "start_auth" {
-			kind = "user"
-		}
 		var flow feishuprotocol.ConfigurationFlow
 		flowErr := service.managedFeishuSupervisor.Call(ctx, feishuprotocol.MethodConfigurationFlow, map[string]any{}, &flow)
 		if flowErr != nil || flow.ID == "" || flow.Kind != kind || flow.State != "pending" {
@@ -693,14 +681,6 @@ func (service *Service) executeConfigurationAction(ctx context.Context, request 
 		var result map[string]any
 		result, err = service.BeginFeishuSetup(ctx, managedfeishu.SetupModeNew, "", "")
 		pending = result["status"] == "pending"
-	case "start_auth":
-		var result feishuprotocol.AuthStatus
-		scope := "required"
-		if request.AuthorizationRequestID != "" {
-			scope = "request:" + request.AuthorizationRequestID
-		}
-		result, err = service.startManagedFeishuAuth(ctx, scope)
-		pending = result.Status == "pending"
 	case "finish_auth":
 		var result feishuprotocol.AuthStatus
 		result, err = service.FinishDesktopFeishuAuth(ctx)
@@ -771,7 +751,7 @@ func (service *Service) executeConfigurationAction(ctx context.Context, request 
 		return "unknown", "本次操作的回执尚未核实；可查询原请求，禁止重复执行。", "configuration_receipt_unverified"
 	}
 	if pending {
-		if request.Action == "start_auth" || request.Action == "finish_auth" {
+		if request.Action == "finish_auth" {
 			return "pending", "等待你在飞书完成授权，完成后会自动核验登录结果。", "authorization_interaction_pending"
 		}
 		return "pending", "等待飞书确认应用创建结果。", "authorization_interaction_pending"

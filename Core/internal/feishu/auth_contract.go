@@ -223,6 +223,16 @@ func LogoutUserAuth(ctx context.Context, runner CapabilityExecutor, dataRoot str
 	if err := ctx.Err(); err != nil {
 		return emptyAuthStatus("unknown"), err
 	}
+	if strings.TrimSpace(runner.Binary) == "" {
+		if err := PurgeLocalFeishuState(dataRoot); err != nil {
+			return emptyAuthStatus("unknown"), err
+		}
+		status := emptyAuthStatus("unauthorized")
+		status.ProfileValid = false
+		remoteRevocationConfirmed := false
+		status.RemoteRevocationConfirmed = &remoteRevocationConfirmed
+		return status, nil
+	}
 	if err := BeginLocalFeishuCleanup(dataRoot); err != nil {
 		return emptyAuthStatus("unknown"), err
 	}

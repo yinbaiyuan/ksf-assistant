@@ -374,11 +374,41 @@ func configurationFlowCompletedByCheck(r ConfigurationReceipt, all []Configurati
 	return "", false
 }
 
+// A later verified operation against an application proves that the product
+// has entered a new connected lifecycle after an unresolved logout.  It does
+// not tell us whether the old logout itself succeeded, so keep that history as
+// resolved rather than completed; it must no longer lock out a fresh,
+// explicitly requested logout forever.
+func configurationLogoutSupersededByConnection(r ConfigurationReceipt, all []ConfigurationReceipt) bool {
+	if r.Action != "logout" || (r.Outcome != "pending" && r.Outcome != "unknown") {
+		return false
+	}
+	started, err := time.Parse(time.RFC3339Nano, r.UpdatedAt)
+	if err != nil {
+		return false
+	}
+	for _, later := range all {
+		if later.Outcome != "completed" || later.Stage != "verified" || strings.TrimSpace(later.ApplicationID) == "" {
+			continue
+		}
+		switch later.Action {
+		case "finish_app", "finish_auth", "test_message":
+		default:
+			continue
+		}
+		verified, err := time.Parse(time.RFC3339Nano, later.UpdatedAt)
+		if err == nil && verified.After(started) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) configurationFailures() []ConfigurationReceipt {
 	all := s.loadConfigurationReceipts()
 	result := make([]ConfigurationReceipt, 0, len(all))
 	for _, r := range all {
-		if configurationFlowEndedByLogout(r, all) {
+		if configurationFlowEndedByLogout(r, all) || configurationLogoutSupersededByConnection(r, all) {
 			continue
 		}
 		r.Title = configurationOperationTitle(r.Action)
@@ -453,8 +483,77 @@ func (s *Service) persistLegacyConfigurationFlowOutcomes() {
 	}
 }
 
+func (s *Service) persistSupersededLogoutOutcomes() {
+	all := s.loadConfigurationReceipts()
+	for _, receipt := range all {
+		if !configurationLogoutSupersededByConnection(receipt, all) {
+			continue
+		}
+		path := s.receiptPath(receipt.RequestID)
+		_ = privatestore.WithFileLock(path+".lock", func() error {
+			var current ConfigurationReceipt
+			missing, err := privatestore.ReadJSON(path, &current)
+			if err != nil {
+				return err
+			}
+			if missing {
+				return errors.New("configuration_logout_receipt_missing")
+			}
+			if !configurationLogoutSupersededByConnection(current, s.loadConfigurationReceipts()) {
+				return nil
+			}
+			current.ApplicationID, current.FlowID, current.PermissionRevision, current.ContextRevision, current.Digest = "", "", "", "", ""
+			current.Outcome, current.Stage, current.Code = "resolved", "verified", "superseded_by_connection"
+			current.Message = "后续连接已核验可用；原注销请求不再阻止再次注销。"
+			return privatestore.WriteJSON(path, current)
+		})
+	}
+}
+
+// A configuration session lives only in the supervised Bridge process.  If
+// that process restarts, a durable root receipt can survive while the session
+// (and its device code) cannot.  Once a fresh Bridge read proves that there is
+// no live flow and durable configuration evidence proves that the requested
+// identity was not established, make the old receipt terminal.  This never
+// replays the remote write: a new attempt still requires an explicit click.
+func (s *Service) retireInterruptedConfigurationFlowReceipts(data configurationData) {
+	if data.quickFailed || data.flowFailed || data.evidenceFailed || data.invalidated || data.flow != nil || data.quickAt.IsZero() || data.evidenceAt.IsZero() {
+		return
+	}
+	for _, receipt := range s.loadConfigurationReceipts() {
+		interrupted := receipt.Stage == "submitted" && (receipt.Outcome == "pending" || receipt.Outcome == "unknown") && strings.TrimSpace(receipt.FlowID) != ""
+		switch receipt.Action {
+		case "create_app":
+			interrupted = interrupted && data.evidence.ApplicationState == "missing"
+		case "start_auth":
+			interrupted = interrupted && data.evidence.ApplicationState == "present" && data.evidence.OperatorState == "missing"
+		default:
+			interrupted = false
+		}
+		if !interrupted {
+			continue
+		}
+		path := s.receiptPath(receipt.RequestID)
+		_ = privatestore.WithFileLock(path+".lock", func() error {
+			var current ConfigurationReceipt
+			missing, err := privatestore.ReadJSON(path, &current)
+			if err != nil || missing {
+				return err
+			}
+			if current.Action != receipt.Action || current.Stage != "submitted" || (current.Outcome != "pending" && current.Outcome != "unknown") || strings.TrimSpace(current.FlowID) == "" {
+				return nil
+			}
+			current.ApplicationID, current.FlowID, current.PermissionRevision, current.ContextRevision, current.Digest = "", "", "", "", ""
+			current.Outcome, current.Stage, current.Code = "failed", "verified", "configuration_flow_interrupted"
+			current.Message = "扫码会话已因程序重启结束，且未形成可用连接；可以重新扫码，不会自动重放。"
+			return privatestore.WriteJSON(path, current)
+		})
+	}
+}
+
 func (s *Service) reconcileConfigurationReceipts() {
 	s.persistLegacyConfigurationFlowOutcomes()
+	s.persistSupersededLogoutOutcomes()
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
 	for _, receipt := range s.configurationFailures() {

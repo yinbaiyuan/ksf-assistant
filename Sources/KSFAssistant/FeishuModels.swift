@@ -2,36 +2,6 @@ import CryptoKit
 import Foundation
 import KSFAssistantCore
 
-struct ToolchainStatus: Decodable {
-    struct Skill: Decodable, Identifiable {
-        let name: String
-        let state: String
-        var id: String { name }
-    }
-
-    let schemaVersion: Int
-    let version: String
-    let installed: Bool
-    let healthy: Bool
-    let skills: [Skill]
-    let problemCount: Int
-    let installationState: String?
-    let installationTitle: String?
-    let installationAction: String?
-    let installationDetails: [String]?
-
-    var isHealthy: Bool { schemaVersion == 1 && healthy }
-
-    var summary: String {
-        if schemaVersion != 1 { return "状态格式不兼容，请更新应用。" }
-        if isHealthy { return "官方 CLI \(version) · \(skills.count) 项 Skills 已验证" }
-        if installed {
-            return "Skills 已安装 \(skills.filter { $0.state == "managed" }.count)/\(skills.count) 项；工具链需要处理。"
-        }
-        return "尚未安装官方 CLI 与 Skills。"
-    }
-}
-
 enum FeishuServiceAvailability: Equatable {
     case notConfigured
     case unavailable(String)

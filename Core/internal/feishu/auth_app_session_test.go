@@ -65,8 +65,11 @@ func TestNativeRegistrationURLIncludesCompleteTaskCardContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	parsed, _ := url.Parse(value)
-	if parsed.Query().Get("from") != "sdk" || parsed.Query().Get("tp") != "sdk" || parsed.Query().Get("createOnly") != "true" {
+	if parsed.Query().Get("from") != "sdk" || parsed.Query().Get("tp") != "sdk" {
 		t.Fatalf("SDK registration identity missing: %s", value)
+	}
+	if _, forced := parsed.Query()["createOnly"]; forced {
+		t.Fatalf("SDK registration must offer existing applications: %s", value)
 	}
 	compressed, err := base64.RawURLEncoding.DecodeString(parsed.Query().Get("addons"))
 	if err != nil {

@@ -43,11 +43,9 @@ macOS：SwiftUI / AppKit                 Windows：Electron
 | [Core/internal/bridge](../Core/internal/bridge/) | 调用外部 KSF 桥，消费版本化项目目录和任务投影，不直接解析 KSF Markdown。 |
 | [Core/internal/integration](../Core/internal/integration/) | Core 内部业务模块：任务链接唯一存储、Codex 动作、Plan/输入选择、观察器、卡片内容与持久事件接收。 |
 | [Core/internal/taskruntime](../Core/internal/taskruntime/) / [ksf-assistant-task](../Core/cmd/ksf-assistant-task/) | Core 关闭时仍可读写的中立任务记录；任务级锁、CAS、幂等及快照/历史原子提交。仅消费当前 KSF v6，不编排执行。 |
-| [Core/internal/toolchain](../Core/internal/toolchain/) / [ksf-assistant-toolchain](../Core/cmd/ksf-assistant-toolchain/) | 旧受管入口退役、所有权校验与备份；保留 KSF 任务上报入口。 |
 | [Core/internal/feishuprotocol](../Core/internal/feishuprotocol/) / [privateipc](../Core/internal/privateipc/) | 飞书 v2 通用契约与有界私有通信；corebridge 仅保留 Core 内部控制 DTO，不再暴露跨进程控制方法。 |
 | [Core/internal/feishucli](../Core/internal/feishucli/) / [localipc](../Core/internal/localipc/) | 原生 CLI 解析、静态目录和当前用户本机网关；feishucommands 只在受管飞书进程执行命令。 |
 | [Core/cmd/ksf-assistant-feishu-bridge](../Core/cmd/ksf-assistant-feishu-bridge/) / [Core/internal/feishu](../Core/internal/feishu/) | 飞书可执行入口及传输、授权、能力策略、通用卡片操作、工作队列、审计和子进程监管实现。 |
-| [Services/FeishuBridge](../Services/FeishuBridge/) | 旧 Node 飞书实现的冻结离线契约回放基线，不是生产服务或运行时回退路径。 |
 | [Tests](../Tests/) / [Windows/test](../Windows/test/) / [scripts](../scripts/) | Swift、Windows 回归以及构建、打包、身份检查和 SBOM 工具；Go 测试与实现放在对应包内。 |
 
 ### 两个 Core 的区别

@@ -65,6 +65,38 @@ func TestPurgeLocalFeishuStateRemovesAuthenticationAndPreservesHistory(t *testin
 	}
 }
 
+func TestPendingLogoutCleanupResumesOnlyFromDurableJournal(t *testing.T) {
+	root := t.TempDir()
+	original := purgeManagedPlatformCredentials
+	purgeManagedPlatformCredentials = func() error { return nil }
+	t.Cleanup(func() { purgeManagedPlatformCredentials = original })
+	credential := filepath.Join(root, "credentials", "official-sdk.json")
+	if err := os.MkdirAll(filepath.Dir(credential), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(credential, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecoverPendingLocalFeishuCleanup(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(credential); err != nil {
+		t.Fatal("authentication state changed without a logout journal")
+	}
+	if err := BeginLocalFeishuCleanup(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecoverPendingLocalFeishuCleanup(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(credential); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("journaled logout cleanup did not resume")
+	}
+	if LocalFeishuCleanupPending(root) {
+		t.Fatal("completed recovery retained the logout journal")
+	}
+}
+
 func TestPurgeFailureKeepsCleanupJournal(t *testing.T) {
 	root := t.TempDir()
 	original := purgeManagedPlatformCredentials

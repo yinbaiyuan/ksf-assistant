@@ -28,12 +28,10 @@ struct FeishuLayoutSnapshots {
             try bitmap.representation(using: .png, properties: [:])!.write(
                 to: URL(fileURLWithPath: output).appendingPathComponent("settings-\(dark ? "dark" : "light").png"))
         }
-        let toolchain = ToolchainStatus(schemaVersion: 1, version: "1.0.93", installed: true, healthy: true,
-            skills: (1...28).map { .init(name: "fixture-\($0)", state: "managed") }, problemCount: 0, installationState: "installed", installationTitle: "已安装", installationAction: "", installationDetails: [])
         let fixtureRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let fixtureData = try Data(contentsOf: fixtureRoot.appendingPathComponent("Fixtures/FeishuConfiguration/snapshot.json"))
         let original = try JSONSerialization.jsonObject(with: fixtureData) as! [String: Any]
-        try verifyConfigurationSurvivesWindowFocus(fixtureData: fixtureData, toolchain: toolchain)
+        try verifyConfigurationSurvivesWindowFocus(fixtureData: fixtureData)
         let filter = CIFilter.qrCodeGenerator()
         filter.message = Data("KSFAssistant isolated visual fixture, not an authorization code".utf8)
         let qr = filter.outputImage!.transformed(by: CGAffineTransform(scaleX: 6, y: 6))
@@ -114,7 +112,7 @@ struct FeishuLayoutSnapshots {
                 let snapshot = try JSONDecoder().decode(FeishuConfigurationSnapshot.self, from: JSONSerialization.data(withJSONObject: object))
                 let model = UsageViewModel(autoStart: false, cleanupLegacyWeChatData: false)
                 try model.loadFeishuLayoutPreview(snapshot: ["loading", "unknown"].contains(state) ? nil : snapshot,
-                    toolchain: state == "signed_out" ? ToolchainStatus(schemaVersion: 1, version: "1.0.93", installed: false, healthy: false, skills: [], problemCount: 0, installationState: "not_installed", installationTitle: "未安装", installationAction: "安装到 Codex", installationDetails: []) : toolchain, failed: ["unknown", "failed"].contains(state))
+                    failed: ["unknown", "failed"].contains(state))
                 let content = UsagePopoverView(viewModel: model, refreshOnAppear: false).feishuLayoutPreview(expandedSection: expandedSection)
                     .padding(12).frame(width: 336).fixedSize(horizontal: false, vertical: true)
                     .background(Color(nsColor: .windowBackgroundColor))
@@ -153,9 +151,9 @@ struct FeishuLayoutSnapshots {
     }
 
     @MainActor
-    static func verifyConfigurationSurvivesWindowFocus(fixtureData: Data, toolchain: ToolchainStatus) throws {
+    static func verifyConfigurationSurvivesWindowFocus(fixtureData: Data) throws {
         let model = UsageViewModel(autoStart: false, cleanupLegacyWeChatData: false)
-        try model.loadFeishuLayoutPreview(snapshot: JSONDecoder().decode(FeishuConfigurationSnapshot.self, from: fixtureData), toolchain: toolchain, failed: false)
+        try model.loadFeishuLayoutPreview(snapshot: JSONDecoder().decode(FeishuConfigurationSnapshot.self, from: fixtureData), failed: false)
         let host = NSHostingView(rootView: UsagePopoverView(viewModel: model, refreshOnAppear: false).feishuFocusPreview())
         host.frame = NSRect(origin: .zero, size: host.fittingSize)
         let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)

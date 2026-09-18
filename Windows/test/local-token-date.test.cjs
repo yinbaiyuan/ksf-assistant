@@ -15,6 +15,7 @@ function render(usage) {
     },
     selectedPricingPlan: () => ({}),
     compactPricingName: () => 'fixture',
+    renderPricingPlanMenu: () => '<span class="pricing-plan-menu">fixture</span>',
     escapeHTML: String,
     formatTokens: String,
     accountLatestLabel: (date) => `账号最新 ${date}`,

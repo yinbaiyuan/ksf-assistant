@@ -18,7 +18,7 @@ function harness() {
   const values = {
     response: 1, visible: true,
     snapshot: { schemaVersion: 2, epoch: 'core-1', revision: 8, contextRevision: 'context-1',
-      actions: ['create_app', 'start_auth', 'finish_auth', 'finish_app', 'cancel_flow', 'logout', 'test_message', 'restart']
+      actions: ['create_app', 'finish_auth', 'finish_app', 'cancel_flow', 'logout', 'test_message', 'restart']
         .map((id) => ({ id, title: 'Core ' + id, enabled: true, confirmation: 'Core 原生确认文案' })),
       diagnostics: {selfTarget:'fixture'}, flow: { id: 'flow-1', state: 'pending', verificationURL: 'https://accounts.feishu.cn/authorize', expiresAt: new Date(Date.now() + 60_000).toISOString() },
       connection: { targetAliases: ['fixture'], processState: 'degraded' },
@@ -45,13 +45,13 @@ function harness() {
 
 test('configuration writes are main-confirmed desktop actions with Core confirmation copy', async () => {
   const setup = harness();
-  for (const action of ['start_auth', 'test_message', 'logout']) {
+  for (const action of ['create_app', 'test_message', 'logout']) {
     await setup.act(request(action, action === 'test_message' ? { targetAlias: 'fixture' } : {}));
   }
   assert.equal(setup.dialogs.length, 3);
   const mutations = setup.calls.filter((call) => call.method === 'feishu/configuration/action');
   assert.equal(mutations.length, 3);
-  assert.deepEqual(mutations.map((call) => call.params.action), ['start_auth', 'test_message', 'logout']);
+  assert.deepEqual(mutations.map((call) => call.params.action), ['create_app', 'test_message', 'logout']);
   for (const options of setup.dialogs) {
     assert.equal(options.defaultId, 0);
     assert.equal(options.cancelId, 0);
@@ -103,7 +103,7 @@ test('foreign renderer, subframes, hidden and unavailable desktop fail closed', 
 test('renderer cannot forward scopes, arbitrary methods or generic approval capabilities', async () => {
   const setup = harness();
   for (const extra of [{ action: 'userApproval/decide' }, { scope: 'all' }, { profile: 'other' }, { deviceCode: 'private' }, { approve: true }, { confirmation: 'renderer copy' }, { revision: -1 }, { targetAlias: 'unexpected' }, { appSecret: 'unexpected' }]) {
-    await assert.rejects(setup.act(request('start_auth', extra)));
+    await assert.rejects(setup.act(request('create_app', extra)));
   }
   assert.equal(setup.calls.length, 0);
   assert.equal([...setup.handlers.keys()].some((name) => /approval|setup-|auth-|feature-update|supervisor-restart|^feishu:test$/.test(name)), false);

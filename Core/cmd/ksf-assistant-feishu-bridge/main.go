@@ -16,7 +16,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"ksfassistant/core/internal/feishu"
-	"ksfassistant/core/internal/feishucli"
 	"ksfassistant/core/internal/feishuprotocol"
 	"ksfassistant/core/internal/privateipc"
 	"ksfassistant/core/internal/productversion"
@@ -40,8 +39,8 @@ func run(arguments []string) error {
 	if err != nil {
 		return err
 	}
-	if len(arguments) > 0 && arguments[0] == "client" {
-		return feishucli.Run(context.Background(), dataRoot, arguments[1:], os.Stdin, os.Stdout)
+	if len(arguments) > 0 && !(len(arguments) == 1 && arguments[0] == "--check") {
+		return errors.New("unsupported ksf-assistant-feishu-bridge argument")
 	}
 	settings, err := feishu.NewSettingsStore(dataRoot).Load()
 	if err != nil {
@@ -74,9 +73,7 @@ func run(arguments []string) error {
 	defer feishu.CancelUserAuthFlow(dataRoot)
 	defer feishu.CancelAppConfiguration(dataRoot)
 	var messageClient *feishu.OfficialMessageClient
-	if feishu.LocalFeishuCleanupPending(dataRoot) {
-		err = errors.New("feishu_local_cleanup_pending")
-	} else {
+	if err = feishu.RecoverPendingLocalFeishuCleanup(dataRoot); err == nil {
 		messageClient, err = managedMessageClient(ctx, executor)
 	}
 	serviceExecutor := feishu.UnifiedCapabilityExecutor{LongTail: executor, DataRoot: dataRoot}

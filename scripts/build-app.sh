@@ -61,7 +61,7 @@ mkdir -p "$app_path/Contents/Resources/compliance"
 mkdir -p "$app_path/Contents/Resources/runtime/feishu-bridge/darwin-arm64" "$app_path/Contents/Resources/runtime/feishu-bridge/darwin-x64"
 cp "$repo_root/dist/runtime/feishu-bridge/darwin-arm64/ksf-assistant-feishu-bridge" "$app_path/Contents/Resources/runtime/feishu-bridge/darwin-arm64/ksf-assistant-feishu-bridge"
 cp "$repo_root/dist/runtime/feishu-bridge/darwin-x64/ksf-assistant-feishu-bridge" "$app_path/Contents/Resources/runtime/feishu-bridge/darwin-x64/ksf-assistant-feishu-bridge"
-for component in toolchain task; do
+for component in task; do
     for target in darwin-arm64 darwin-x64; do
         mkdir -p "$app_path/Contents/Resources/runtime/$component/$target"
         cp "$repo_root/dist/runtime/$component/$target/ksf-assistant-$component" "$app_path/Contents/Resources/runtime/$component/$target/ksf-assistant-$component"
@@ -100,7 +100,7 @@ case "$signing_mode" in
 esac
 
 identity="${signing_identity:--}"
-for component in toolchain task; do
+for component in task; do
     for target in darwin-arm64 darwin-x64; do
         /usr/bin/codesign --force --sign "$identity" --timestamp=none "$app_path/Contents/Resources/runtime/$component/$target/ksf-assistant-$component"
     done

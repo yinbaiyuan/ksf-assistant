@@ -58,6 +58,33 @@ func TestManagedSupervisorRestartsThreeTimesThenDegrades(t *testing.T) {
 	t.Fatalf("supervisor did not degrade: %#v", supervisor.Status())
 }
 
+func TestManagedSupervisorWaitsForPreviousInstanceWithoutSpendingCrashBudget(t *testing.T) {
+	supervisor := newTestSupervisor(t, "wait")
+	supervisor.instanceConflictDelay = 5 * time.Millisecond
+	supervisor.instanceConflictWindow = time.Second
+	lock, err := AcquireInstanceLock(supervisor.options.DataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(); err != nil {
+		lock.Close()
+		t.Fatal(err)
+	}
+	defer supervisor.Stop(context.Background())
+	status := supervisor.Status()
+	if status.State != StateStarting || status.PID != 0 || status.RestartCount != 0 {
+		lock.Close()
+		t.Fatalf("previous instance consumed crash budget: %#v", status)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	status = waitSupervisor(t, supervisor, func(status SupervisorStatus) bool { return status.PID > 0 && status.State == StateIdleUnconfigured })
+	if status.RestartCount != 0 {
+		t.Fatalf("conflict recovery was counted as a crash: %#v", status)
+	}
+}
+
 func TestManagedSupervisorOwnsBidirectionalPrivateRPC(t *testing.T) {
 	supervisor := newTestSupervisor(t, "rpc")
 	if err := supervisor.Start(); err != nil {

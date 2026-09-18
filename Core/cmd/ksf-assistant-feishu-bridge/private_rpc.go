@@ -206,14 +206,15 @@ func (server *bridgeRPCServer) HandlePrivateRPC(ctx context.Context, method stri
 		}
 		server.mu.RLock()
 		transport := server.transport
+		messages := server.messages
 		server.mu.RUnlock()
-		if transport == nil {
+		if transport == nil || messages == nil {
 			return nil, errors.New("Feishu transport unavailable")
 		}
 		if err := transport.CheckInbound(message); err != nil {
 			return nil, err
 		}
-		return feishu.StageInboundMessage(ctx, server.dataRoot, server.authRunner(), message, request.MaxBytes)
+		return feishu.StageInboundMessage(ctx, server.dataRoot, messages, message, request.MaxBytes)
 	case feishuprotocol.ConfigRead:
 		if err := requireNoBridgeParams(params); err != nil {
 			return nil, err
@@ -373,13 +374,10 @@ func (server *bridgeRPCServer) HandlePrivateRPC(ctx context.Context, method stri
 		if err := decodeBridgeParams(params, &request); err != nil {
 			return nil, err
 		}
-		var result map[string]any
-		var err error
-		if request.Kind == "config" {
-			result, err = feishu.StartAppConfiguration(ctx, server.authRunner(), server.dataRoot, request.Profile, request.CreateNew)
-		} else {
-			result, err = feishu.StartUserAuth(ctx, server.authRunner(), server.dataRoot, request.Scope)
+		if request.Kind != "config" {
+			return nil, privateipc.NewError(-32602, "supplemental_user_authorization_retired")
 		}
+		result, err := feishu.StartAppConfiguration(ctx, server.authRunner(), server.dataRoot, request.Profile, request.CreateNew)
 		if err != nil {
 			if feishu.IsAppConfigurationNotStarted(err) {
 				return nil, privateipc.NewError(-32066, "application_start_preflight_failed")

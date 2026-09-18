@@ -31,6 +31,13 @@ func LocalFeishuCleanupPending(dataRoot string) bool {
 	return !errors.Is(err, os.ErrNotExist)
 }
 
+func RecoverPendingLocalFeishuCleanup(dataRoot string) error {
+	if !LocalFeishuCleanupPending(dataRoot) {
+		return nil
+	}
+	return PurgeLocalFeishuState(dataRoot)
+}
+
 func BeginLocalFeishuCleanup(dataRoot string) error {
 	if !filepath.IsAbs(dataRoot) || filepath.Clean(dataRoot) != dataRoot {
 		return errors.New("飞书本地数据目录无效")

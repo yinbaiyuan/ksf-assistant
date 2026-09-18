@@ -4,7 +4,7 @@
 
 `ksf-assistant` is the only product, repository, installer, and release unit. KSFAssistant Desktop owns native UI behavior. KSFAssistant Core is the sole business service and the sole owner of Codex App Server, Desktop IPC, and KSF context resolution. It supervises KSFAssistant Feishu. The Feishu service owns only Feishu transport, cards, fixed `lark-cli` capabilities, queues, authorization, redaction, idempotency, and audit.
 
-The native Feishu service source lives under `Core`. All macOS and Windows packages carry the Go service and pinned `lark-cli 1.0.92` without a separate Node runtime, Feishu npm production dependencies, or JavaScript services. The frozen implementation under `Services/FeishuBridge` is an offline replay baseline only and is never packaged or started. Runtime code never downloads packages or invokes npm.
+The native Feishu service source lives under `Core`. All macOS and Windows packages carry the shared Go service without a separate Node runtime, Feishu npm production dependencies, JavaScript services, a managed `lark-cli`, or published CLI Skills. Runtime code never downloads packages or invokes npm.
 
 ## Lifecycle
 

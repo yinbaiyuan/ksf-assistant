@@ -156,8 +156,7 @@ function renderTokens(usage) {
     ['本机昨日', previous ? formatTokens(previous.tokens) : '—'],
     ['本机今日', local ? formatTokens(local.tokens) : '—'],
   ];
-  const plan = selectedPricingPlan();
-  return `<section class="card token-card">${metrics.map(([label, value]) => `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`).join('')}<div class="token-cost-row"><span><small>API 估算</small><strong>${escapeHTML(compactPricingName(plan))}</strong></span><b>今日 ${formatCostEstimate(local ? usage.localDailyCost : null)}</b></div></section>`;
+  return `<section class="card token-card">${metrics.map(([label, value]) => `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`).join('')}<div class="token-cost-row"><div class="token-cost-label"><small>API 估算</small>${renderPricingPlanMenu()}</div><b>今日 ${formatCostEstimate(local ? usage.localDailyCost : null)}</b></div></section>`;
 }
 
 function renderHistoryPage() {
@@ -185,11 +184,10 @@ function renderHistoryPage() {
     return `<button class="history-bar${selectedClass}" type="button" data-action="history-day" data-date="${escapeHTML(day.startDate)}" title="${escapeHTML(historyDateLabel(day.startDate))} · 服务器 ${escapeHTML(serverLabel)} · 本机 ${escapeHTML(formatTokens(day.localTokens))}" aria-label="${escapeHTML(historyDateLabel(day.startDate))}，服务器 ${escapeHTML(serverLabel)}，本机 ${escapeHTML(formatTokens(day.localTokens))}，本机占比 ${escapeHTML(shareLabel)}">${serverBar}<span class="history-local" data-height="${localHeight}"></span></button>`;
   }).join('');
   return `${header('每日 Token')}
-    <div class="pricing-toolbar"><select data-field="pricing-plan" aria-label="API 价格方案">${renderPricingOptions()}</select></div>
     <div class="history-scope"><span>最近 30 个自然日</span><span class="history-legend server">服务器</span><span class="history-legend local">本机</span></div>
     <section class="card history-card">
       <div class="history-summary"><div class="metric"><div class="metric-label">本机 30 日</div><div class="metric-value">${formatTokens(total)}</div></div><div class="metric"><div class="metric-label">本机日均</div><div class="metric-value">${formatTokens(average)}</div></div><div class="metric"><div class="metric-label">本机活跃</div><div class="metric-value">${activeDays} 天</div></div></div>
-      <div class="cost-summary"><span>30 日 API 估算</span><strong>${formatCostEstimate(state.historySummary)}</strong>${state.historySummary?.incompleteDayCount ? `<small>缺 ${state.historySummary.incompleteDayCount} 天</small>` : ''}</div>
+      <div class="cost-summary"><span class="cost-summary-label">30 日 API 估算</span>${renderPricingPlanMenu()}<span class="cost-summary-spacer"></span>${state.historySummary?.incompleteDayCount ? `<small>缺 ${state.historySummary.incompleteDayCount} 天</small>` : ''}<strong>${formatCostEstimate(state.historySummary)}</strong></div>
       <div class="history-current"><span>${escapeHTML(historyDateLabel(selected.startDate))}</span><strong>本机 ${formatTokens(selected.localTokens)} · ${formatCostEstimate(cost)}</strong></div>
       <div class="history-bars" role="list" aria-label="最近 30 天服务器与本机 Token 趋势">${bars}</div>
       <div class="history-axis"><span>${escapeHTML(shortDate(state.history[0].startDate))}</span><span>${escapeHTML(shortDate(state.history[Math.floor(state.history.length / 2)].startDate))}</span><span>${escapeHTML(shortDate(state.history.at(-1).startDate))}</span></div>
@@ -214,7 +212,7 @@ function renderPricingPage() {
   const custom = plans.filter((plan) => !plan.builtIn);
   const draft = state.pricingDraft;
   return `${header('API 估算价格')}
-    <section class="card setting pricing-current"><div class="setting-head"><div class="setting-copy"><label class="setting-title" for="pricing-current">当前方案</label><div class="setting-description">统一套用于本机 Token 历史。</div></div><select id="pricing-current" data-field="pricing-plan">${renderPricingOptions()}</select></div></section>
+    <section class="card setting pricing-current"><div class="setting-head"><div class="setting-copy"><span class="setting-title">当前方案</span><div class="setting-description">统一套用于本机 Token 历史。</div></div>${renderPricingPlanMenu({ id: 'pricing-current' })}</div></section>
     <div class="section-header"><h2 class="section-title">内置方案</h2><span class="section-meta">美元 / 百万 Token</span></div>
     <section class="card pricing-list">${builtIns.map((plan) => renderPricingRow(plan, false)).join('')}</section>
     <div class="section-header"><h2 class="section-title">自定义方案</h2><span class="section-meta">${custom.length}/20</span><span class="section-action"><button class="button" type="button" data-action="pricing-add" ${custom.length >= 20 ? 'disabled' : ''}>添加</button></span></div>
@@ -264,7 +262,17 @@ function compactPricingName(plan) {
 }
 
 function renderPricingOptions() {
-  return (state.pricingCatalog?.plans || []).map((plan) => `<option value="${escapeHTML(plan.id)}" ${plan.id === state.settings?.selectedPricingPlanId ? 'selected' : ''}>${escapeHTML(plan.displayName)}</option>`).join('');
+  const selectedPlanId = selectedPricingPlan()?.id;
+  return (state.pricingCatalog?.plans || []).map((plan) => `<option value="${escapeHTML(plan.id)}" ${plan.id === selectedPlanId ? 'selected' : ''}>${escapeHTML(plan.displayName)}</option>`).join('');
+}
+
+function renderPricingPlanMenu({ id = '' } = {}) {
+  const plan = selectedPricingPlan();
+  const plans = state.pricingCatalog?.plans || [];
+  const idAttribute = id ? ` id="${escapeHTML(id)}"` : '';
+  const disabled = plans.length ? '' : ' disabled';
+  const fullName = plan?.displayName || compactPricingName(plan);
+  return `<span class="pricing-plan-menu" title="${escapeHTML(fullName)}"><span class="pricing-plan-menu-label" aria-hidden="true">${escapeHTML(compactPricingName(plan))}</span><span class="pricing-plan-menu-chevron" aria-hidden="true"></span><select${idAttribute} data-field="pricing-plan" aria-label="API 估算模型"${disabled}>${renderPricingOptions()}</select></span>`;
 }
 
 function pricingDraft(plan = null) {
@@ -539,10 +547,15 @@ function feishuAction(id) {
   return state.feishuConfiguration?.actions.find((action) => action.id === id);
 }
 
+function feishuRecoveryAction(id) {
+  const action = feishuAction(id);
+  return id === 'logout' && action?.enabled === true && action.title !== '注销并清除飞书';
+}
+
 function renderFeishuAction(id, primary = false) {
   const action = feishuAction(id);
   if (!action) return '';
-  const disabled = action.enabled !== true || state.feishuSetupBusy || state.feishuReadError || state.feishuSetupError
+  const disabled = action.enabled !== true || state.feishuSetupBusy || state.feishuReadError || (state.feishuSetupError && !feishuRecoveryAction(id))
     || (id === 'test_message' && !state.feishuConfiguration?.connection?.targetAliases?.includes(state.feishuConfiguration?.diagnostics?.selfTarget));
   return '<button class="button ' + (primary ? 'primary feishu-primary' : id === 'logout' ? 'danger' : '') + '" type="button" data-action="feishu-config-' + escapeHTML(id) + '" ' + (disabled ? 'disabled' : '') + '>' + escapeHTML(action.title) + '</button>';
 }
@@ -568,7 +581,6 @@ function feishuPrimaryAction() {
     return finish && enabled(finish) ? finish : null;
   }
   if (enabled('create_app')) return 'create_app';
-  if (enabled('start_auth')) return 'start_auth';
   return null;
 }
 
@@ -627,7 +639,7 @@ function renderFeishuFlow() {
     + (flow.userCode ? '<p class="setting-description">验证码 ' + escapeHTML(flow.userCode) + '</p>' : '')
     + '<p class="setting-description feishu-wait" role="status">' + (state.feishuSetupBusy ? (state.feishuLastAction === 'cancel_flow' ? '正在取消登录…' : '正在确认登录…') : flow.kind === 'user' ? '请用飞书补充本人授权' : '请用飞书扫码连接') + '</p>'
     + '<div class="feishu-login-links">'
-    + (flow.verificationURL ? '<button class="button feishu-text" type="button" data-action="feishu-flow-open" ' + (state.feishuSetupBusy ? 'disabled' : '') + '>在浏览器中授权</button>' : '')
+    + (flow.verificationURL ? '<button class="button feishu-text" type="button" data-action="feishu-flow-open" data-flow-id="' + escapeHTML(flow.id) + '" ' + (state.feishuSetupBusy ? 'disabled' : '') + '>在浏览器中授权</button>' : '')
     + (feishuAction('cancel_flow')?.enabled ? '<button class="button feishu-text" type="button" data-action="feishu-config-cancel_flow" ' + (state.feishuSetupBusy ? 'disabled' : '') + '>' + (flow.kind === 'user' ? '取消登录' : '取消创建') + '</button>' : '') + '</div>'
     + '<p class="setting-description">' + (flow.kind === 'user' ? '取消本次登录，不撤销已有授权' : '取消本次等待，不删除已创建的应用') + '</p></div>';
 }
@@ -640,16 +652,19 @@ function renderFeishuPage() {
   let controls = applicationSetup ? renderFeishuApplicationSetup() : primaryID ? renderFeishuAction(primaryID, true) : '';
   const flow = renderFeishuFlow();
   let step = flow + controls;
-  if ((state.feishuSetupBusy || (state.feishuLastAction === 'start_auth' && state.feishuActionOutcome === 'pending' && !snapshot?.flow)) && !flow && state.feishuLastAction !== 'test_message') {
-    step = '<p class="feishu-wait setting-description" role="status"><span class="feishu-spinner" aria-hidden="true"></span>' + (state.feishuLastAction === 'start_auth' ? '正在准备登录…' : state.feishuLastAction === 'logout' ? '正在注销…' : '正在处理…') + '</p>';
+  if (state.feishuSetupBusy && !flow && state.feishuLastAction !== 'test_message') {
+    step = '<p class="feishu-wait setting-description" role="status"><span class="feishu-spinner" aria-hidden="true"></span>' + (state.feishuLastAction === 'logout' ? '正在注销…' : '正在处理…') + '</p>';
   } else if (!snapshot) step = '<p class="setting-description" role="status">正在读取配置…</p>';
   if (['expired', 'failed'].includes(snapshot?.flow?.state)) step = '<p class="feishu-step-error">登录未完成或二维码已过期，请重新登录。</p>' + step;
   if (step) step = '<div class="feishu-step" aria-label="当前配置操作">' + step + '</div>';
   const error = state.feishuReadError || (state.feishuLastAction !== 'test_message' ? state.feishuSetupError : '') || snapshot?.issues?.find((issue) => !(issue.component === 'operation' && issue.code === 'test_message'))?.message;
   if (error) step += '<p class="feishu-step-error" role="alert">' + escapeHTML(error) + '</p>';
+  const logout = feishuAction('logout');
+  const logoutControl = logout && !applicationSetup ? '<div class="feishu-logout">' + renderFeishuAction('logout')
+    + (!logout.enabled && logout.reason ? '<p class="setting-description">' + escapeHTML(logout.reason) + '</p>' : '') + '</div>' : '';
   return header('飞书配置', buttonIcon('feishu-configuration-check', 'refresh', state.feishuManualRefresh ? '正在刷新接入状态' : '刷新接入状态', state.feishuManualRefresh ? 'feishu-refreshing' : '', Boolean(disabled || state.feishuManualRefresh)))
     + '<div class="feishu-page">' + renderFeishuOverview(step) + renderFeishuDiagnostics() + renderFeishuVersions()
-    + (feishuAction('logout')?.enabled && !applicationSetup ? '<div class="feishu-logout">' + renderFeishuAction('logout') + '</div>' : '') + '</div>';
+    + logoutControl + '</div>';
 }
 
 function applyFeishuConfiguration(snapshot, generation) {
@@ -700,10 +715,9 @@ async function readFeishuConfiguration(refresh = false, quiet = false) {
 
 async function performFeishuConfigurationAction(action, options = {}) {
   if (["set_feature", "enable_outbound"].includes(action)) return;
-  if (state.feishuSetupBusy || state.feishuReadError || state.feishuSetupError || feishuAction(action)?.enabled !== true) return;
+  if (state.feishuSetupBusy || state.feishuReadError || (state.feishuSetupError && !feishuRecoveryAction(action)) || feishuAction(action)?.enabled !== true) return;
   const snapshot = state.feishuConfiguration;
   const payload = { action, requestId: crypto.randomUUID(), epoch: snapshot.epoch, revision: snapshot.revision, contextRevision: snapshot.contextRevision, confirm: false };
-  if (action === 'start_auth' && feishuAction(action)?.authorizationRequestId) payload.authorizationRequestId = feishuAction(action).authorizationRequestId;
   if (['finish_auth', 'finish_app', 'cancel_flow'].includes(action)) {
     if (!snapshot.flow?.id) return;
     payload.flowId = snapshot.flow.id;
@@ -729,7 +743,7 @@ async function performFeishuConfigurationAction(action, options = {}) {
       return;
     }
     const currentFlowSupersedesUnknown = result.outcome === 'unknown'
-      && ['create_app', 'start_auth'].includes(action)
+      && action === 'create_app'
       && result.snapshot?.flow?.id
       && result.snapshot.flow.state === 'pending'
       && (result.snapshot.flow.qrDataURL || result.snapshot.flow.verificationURL);

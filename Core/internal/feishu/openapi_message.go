@@ -9,10 +9,16 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 )
+
+var messageIDPattern = regexp.MustCompile(`^om_[A-Za-z0-9_-]+$`)
+var resourceKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // OpenAPIMessageTransport is the small, product-owned Feishu transport used by
 // task messages and CardKit. It intentionally is not an arbitrary OpenAPI
@@ -176,6 +182,70 @@ func (transport *OpenAPIMessageTransport) CallMessage(ctx context.Context, reque
 		envelope.Data = map[string]any{}
 	}
 	return envelope.Data, nil
+}
+
+// DownloadMessageResource is the product-owned attachment path for inbound
+// messages.  It deliberately exposes only Feishu's fixed message-resource
+// endpoint and streams into a caller-created private directory; the retired
+// general-purpose CLI is neither required nor reachable from this path.
+func (transport *OpenAPIMessageTransport) DownloadMessageResource(ctx context.Context, messageID, fileKey, resourceType, output string, timeout time.Duration) error {
+	if !messageIDPattern.MatchString(messageID) || len(fileKey) > 1024 || !resourceKeyPattern.MatchString(fileKey) || (resourceType != "image" && resourceType != "file") {
+		return errors.New("invalid_message_resource_request")
+	}
+	parent := filepath.Dir(output)
+	info, err := os.Lstat(parent)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("unsafe_message_resource_parent")
+	}
+	token, err := transport.tenantToken(ctx)
+	if err != nil {
+		return err
+	}
+	requestCtx := ctx
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		requestCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	path := "/open-apis/im/v1/messages/" + url.PathEscape(messageID) + "/resources/" + url.PathEscape(fileKey) + "?type=" + url.QueryEscape(resourceType)
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, transport.endpoint(path), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := transport.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, maximumCapabilityErrorBytes+1))
+		var envelope struct {
+			Code int `json:"code"`
+		}
+		_ = json.Unmarshal(data, &envelope)
+		return &CLIExecutionError{Code: "feishu_resource_download_failed", Started: true, Outcome: "rejected", Structured: map[string]any{"type": "api", "code": float64(envelope.Code), "http_status": resp.StatusCode}}
+	}
+	if resp.ContentLength > defaultInboundMaxBytes {
+		return errors.New("inbound_resources_exceed_size_limit")
+	}
+	file, err := os.OpenFile(output, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	written, copyErr := io.Copy(file, io.LimitReader(resp.Body, defaultInboundMaxBytes+1))
+	closeErr := file.Close()
+	if copyErr != nil || closeErr != nil || written > defaultInboundMaxBytes {
+		_ = os.Remove(output)
+		if written > defaultInboundMaxBytes {
+			return errors.New("inbound_resources_exceed_size_limit")
+		}
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	}
+	return nil
 }
 
 func openAPIMessageRequest(request MessageCLIRequest) (string, string, error) {

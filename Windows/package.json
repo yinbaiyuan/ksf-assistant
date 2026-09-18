@@ -1,6 +1,6 @@
 {
   "name": "ksfassistant-windows",
-  "version": "0.11.0-preview.17",
+  "version": "0.11.0-preview.26",
   "private": true,
   "description": "Windows system-tray host for KSFAssistant",
   "author": "KSFAssistant contributors",
@@ -28,13 +28,6 @@
       "package.json"
     ],
     "extraResources": [
-      {
-        "from": "../dist/runtime/toolchain/windows-${arch}",
-        "to": "runtime/toolchain/windows-${arch}",
-        "filter": [
-          "ksf-assistant-toolchain.exe"
-        ]
-      },
       {
         "from": "../dist/runtime/task/windows-${arch}",
         "to": "runtime/task/windows-${arch}",

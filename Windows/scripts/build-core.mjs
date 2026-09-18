@@ -57,7 +57,7 @@ for (const arch of ['amd64', 'arm64']) {
 		process.exit(1);
 	}
 	if (bridgeResult.status !== 0) process.exit(bridgeResult.status ?? 1);
-  for (const component of ['toolchain', 'task']) {
+  for (const component of ['task']) {
     const componentDir = path.join(repoRoot, 'dist', 'runtime', component, outputArch);
     mkdirSync(componentDir, { recursive: true });
     const componentResult = spawnSync(go, [

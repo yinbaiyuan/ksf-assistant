@@ -103,8 +103,7 @@ func TestConfigurationIgnoresRetiredBusinessAuthorization(t *testing.T) {
 	state.data.evidence.OperatorState = "present"
 	state.data.evidence.AuthorizationRequest = &feishuprotocol.AuthorizationRequest{ID: "0123456789abcdef0123456789abcdef", Purpose: "docs.fixture.read", Scopes: []string{"docx:document:readonly"}}
 	snapshot := configurationTestSnapshot(&state)
-	action, ok := configurationActionByID(snapshot, "start_auth")
-	if !ok || action.Enabled || action.AuthorizationRequestID != "" || len(action.Scopes) != 0 {
+	if action, ok := configurationActionByID(snapshot, "start_auth"); ok {
 		t.Fatalf("retired authorization exposed: %#v", action)
 	}
 }

@@ -399,7 +399,7 @@ function assertFeishuDesktopSender(event) {
 }
 
 const feishuConfigurationActions = new Set([
-  'create_app', 'start_auth', 'finish_auth', 'finish_app', 'cancel_flow',
+  'create_app', 'finish_auth', 'finish_app', 'cancel_flow',
   'logout', 'test_message', 'restart',
 ]);
 let feishuConfigurationActionBusy = false;
@@ -420,7 +420,7 @@ async function performFeishuConfigurationAction(event, payload) {
     if (payload[key] !== undefined && (typeof payload[key] !== 'string' || payload[key].length > 4096 || /[\u0000-\u001f\u007f]/.test(payload[key]))) throw new Error('配置参数无效');
   }
   const request = Object.fromEntries(fields.filter((key) => key !== 'confirm' && Object.hasOwn(payload, key)).map((key) => [key, payload[key]]));
-  const actionFields = { start_auth: ['authorizationRequestId'], test_message: ['targetAlias'], finish_auth: ['flowId'], finish_app: ['flowId'], cancel_flow: ['flowId'] };
+  const actionFields = { test_message: ['targetAlias'], finish_auth: ['flowId'], finish_app: ['flowId'], cancel_flow: ['flowId'] };
   if (['appId', 'appSecret', 'targetAlias', 'feature', 'mode', 'flowId', 'authorizationRequestId'].some((key) => Object.hasOwn(request, key) && !(actionFields[request.action] || []).includes(key))) throw new Error('操作参数不匹配');
   feishuConfigurationActionBusy = true;
   approvalUnavailableReasons.add('feishu-configuration');
@@ -432,7 +432,6 @@ async function performFeishuConfigurationAction(event, payload) {
       || snapshot.contextRevision !== request.contextRevision || action?.enabled !== true) throw new Error('配置已变化或操作不可用，请重新检查');
     if (['finish_auth', 'finish_app', 'cancel_flow'].includes(request.action)
       && (!request.flowId || request.flowId !== snapshot.flow?.id)) throw new Error('配置会话已变化，请重新检查');
-    if (request.action === 'start_auth' && (request.authorizationRequestId || '') !== (action.authorizationRequestId || '')) throw new Error('授权请求已变化，请重新检查');
     if (request.action === 'test_message' && (!request.targetAlias || request.targetAlias !== snapshot.diagnostics?.selfTarget || !snapshot.connection?.targetAliases?.includes(request.targetAlias))) throw new Error('请选择当前可用的测试目标');
     if (action.confirmation !== undefined && typeof action.confirmation !== 'string') throw new Error('核心确认文案无效，请重新检查');
     const confirmation = action.confirmation || '';

@@ -19,7 +19,7 @@ build_core() {
         [[ "$goos" == "windows" ]] && bridge_filename="ksf-assistant-feishu-bridge.exe"
         GOOS="$goos" GOARCH="$goarch" go build -buildvcs=false -trimpath -ldflags="-s -w" \
             -o "$repo_root/dist/runtime/feishu-bridge/$output_dir/$bridge_filename" ./cmd/ksf-assistant-feishu-bridge
-        for component in toolchain task; do
+        for component in task; do
             local component_filename="ksf-assistant-$component"
             [[ "$goos" == "windows" ]] && component_filename="$component_filename.exe"
             mkdir -p "$repo_root/dist/runtime/$component/$output_dir"

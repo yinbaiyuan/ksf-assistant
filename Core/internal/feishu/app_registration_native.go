@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -26,6 +27,14 @@ type nativeRegistrationStart struct {
 	VerificationURIComplete string
 	ExpiresIn               int
 	Interval                int
+}
+
+type nativeRegistrationResponse struct {
+	DeviceCode              string `json:"device_code"`
+	UserCode                string `json:"user_code"`
+	VerificationURIComplete string `json:"verification_uri_complete"`
+	ExpiresIn               int    `json:"expires_in"`
+	Interval                int    `json:"interval"`
 }
 
 func startNativeAppConfiguration(ctx context.Context, dataRoot, profile string) (map[string]any, error) {
@@ -82,13 +91,7 @@ func startNativeAppConfiguration(ctx context.Context, dataRoot, profile string) 
 
 func requestNativeRegistration(ctx context.Context) (nativeRegistrationStart, error) {
 	form := url.Values{"action": {"begin"}, "archetype": {"PersonalAgent"}, "auth_method": {"client_secret"}, "request_user_info": {"open_id"}}
-	var result struct {
-		DeviceCode              string `json:"device_code"`
-		UserCode                string `json:"user_code"`
-		VerificationURIComplete string `json:"verification_uri_complete"`
-		ExpiresIn               int    `json:"expire_in"`
-		Interval                int    `json:"interval"`
-	}
+	var result nativeRegistrationResponse
 	if err := nativeRegistrationRequest(ctx, form, &result); err != nil || result.DeviceCode == "" || result.VerificationURIComplete == "" {
 		return nativeRegistrationStart{}, errors.New("registration response incomplete")
 	}
@@ -103,7 +106,20 @@ func requestNativeRegistration(ctx context.Context) (nativeRegistrationStart, er
 
 func nativeRegistrationURL(raw string) (string, error) {
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "https" || parsed.Host != "open.feishu.cn" || parsed.Path != "/page/cli" {
+	if err != nil || parsed.Scheme != "https" || parsed.Host != "open.feishu.cn" || parsed.RawPath != "" || !validAuthVerificationURL(raw) {
+		return "", errors.New("invalid registration URL")
+	}
+	query := parsed.Query()
+	switch parsed.Path {
+	case "/page/cli":
+		if !validAppRegistrationURL(raw) {
+			return "", errors.New("invalid registration URL")
+		}
+	case "/page/launcher":
+		if len(query) != 1 || len(query["user_code"]) != 1 || !regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`).MatchString(query.Get("user_code")) {
+			return "", errors.New("invalid registration URL")
+		}
+	default:
 		return "", errors.New("invalid registration URL")
 	}
 	addons := map[string]any{
@@ -121,11 +137,14 @@ func nativeRegistrationURL(raw string) (string, error) {
 	if err := writer.Close(); err != nil {
 		return "", err
 	}
-	query := parsed.Query()
 	query.Set("from", "sdk")
 	query.Set("tp", "sdk")
 	query.Set("source", "go-sdk/ksfassistant")
-	query.Set("createOnly", "true")
+	// The official registration page defaults to offering both creation and
+	// selection of an existing app.  Never carry a createOnly value from a
+	// legacy verification URL: true hides the existing-app path, while omission
+	// preserves the cross-platform flow users already had on macOS.
+	query.Del("createOnly")
 	query.Set("addons", base64.RawURLEncoding.EncodeToString(compressed.Bytes()))
 	parsed.RawQuery = query.Encode()
 	if !validAuthVerificationURL(parsed.String()) {

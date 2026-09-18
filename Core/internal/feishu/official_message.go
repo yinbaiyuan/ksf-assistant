@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 )
 
 type MessageCLIRequest struct {
@@ -13,6 +14,14 @@ type MessageCLIRequest struct {
 	Params   map[string]string
 	Body     map[string]any
 	File     string
+}
+
+func (client *OfficialMessageClient) DownloadMessageResource(ctx context.Context, messageID, fileKey, resourceType, output string, timeout time.Duration) error {
+	downloader, ok := client.client.(ResourceDownloader)
+	if !ok {
+		return errors.New("official_message_resource_download_unavailable")
+	}
+	return downloader.DownloadMessageResource(ctx, messageID, fileKey, resourceType, output, timeout)
 }
 
 type MessageCLI interface {

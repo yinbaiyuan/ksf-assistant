@@ -13,7 +13,7 @@ macOS 与 Windows 安装包都会携带运行所需的 Go 飞书服务；服务�
 
 ## 验证
 
-`0.11.0-preview.17` 的发布边界、兼容入口和实机门槛见 [本机预览改造](architecture/preview-0.11.md)。本机预览使用 `bash scripts/package-preview.sh --mac` 冻结当前工作树；不要为了运行公共发布脚本而暂存、提交或用 HEAD 冒充新源码。产品版本规则见 [版本管理](architecture/versioning.md)。
+`0.11.0-preview.25` 的发布边界、兼容入口和实机门槛见 [本机预览改造](architecture/preview-0.11.md)。本机预览使用 `bash scripts/package-preview.sh --mac` 冻结当前工作树；不要为了运行公共发布脚本而暂存、提交或用 HEAD 冒充新源码。产品版本规则见 [版本管理](architecture/versioning.md)。
 
 统一入口为 `bash scripts/run-tests.sh`。Swift 测试只支持 Swift Package Manager / XCTest，不再支持缺少 SDK PlatformPath 时的旧 standalone 兜底分支；工具链不满足要求时立即报错，不切换旧测试。身份迁移、Core 管道和 AppKit 退出链路的独立隔离测试仍是正式测试，继续保留。应用包本身的构建方式不因测试入口收敛而改变。
 
