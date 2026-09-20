@@ -416,7 +416,7 @@ func deduplicateObservations(values []TaskObservation) []TaskObservation {
 		}
 		result[key] = current
 	}
-	values = values[:0]
+	values = make([]TaskObservation, 0, len(result))
 	for _, value := range result {
 		values = append(values, value)
 	}

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"ksfassistant/core/internal/codex"
 	"ksfassistant/core/internal/domain"
 	"sort"
 	"time"
@@ -13,6 +14,13 @@ import (
 // history, filesystem or network read is allowed on this fast path.
 func (service *Service) ActivityRevision() map[string]string {
 	snapshot := service.desktop.Snapshot(time.Now())
+	service.mu.Lock()
+	threads := append([]domain.CodexThread(nil), service.lastActivityThreads...)
+	codexAvailable := service.codex != nil
+	service.mu.Unlock()
+	if codexAvailable {
+		snapshot = domain.SummarizeActivity(mergeActivityObservations(snapshot.Observations, codex.Observations(threads)), snapshot.ObservedAt)
+	}
 	connections := ""
 	if service.integrationRuntime != nil {
 		connections = service.integrationRuntime.Store().ConnectionRevision()

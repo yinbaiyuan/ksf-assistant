@@ -28,12 +28,13 @@ import (
 const Version = productversion.Version
 
 const (
-	rateRefreshInterval      = 5 * time.Minute
-	activeLocalTokenInterval = 10 * time.Second
-	idleLocalTokenInterval   = 30 * time.Minute
-	threadRefreshInterval    = 10 * time.Second
-	projectRefreshInterval   = 15 * time.Second
-	feishuRefreshFloor       = 2500 * time.Millisecond
+	rateRefreshInterval       = 5 * time.Minute
+	activeLocalTokenInterval  = 10 * time.Second
+	idleLocalTokenInterval    = 30 * time.Minute
+	threadRefreshInterval     = 10 * time.Second
+	activityDiscoveryInterval = 3 * time.Second
+	projectRefreshInterval    = 15 * time.Second
+	feishuRefreshFloor        = 2500 * time.Millisecond
 )
 
 type DashboardRequest struct {
@@ -138,6 +139,7 @@ type Service struct {
 	accountReadMu           sync.Mutex
 	lastUsage               domain.UsageSnapshot
 	lastThreads             []domain.CodexThread
+	lastActivityThreads     []domain.CodexThread
 	lastCodexProjects       []domain.CodexProject
 	lastRateAttempt         time.Time
 	lastLocalTokenAttempt   time.Time
@@ -156,6 +158,8 @@ type Service struct {
 	trackingAt              map[string]time.Time
 	preparedTasks           map[string]preparedTask
 	workspaceUsage          workspaceUsageCache
+	activityDiscoveryCancel context.CancelFunc
+	activityDiscoveryDone   chan struct{}
 }
 
 type projectSourceCache struct {
@@ -239,6 +243,7 @@ func (service *Service) Initialize(ctx context.Context, request InitializeReques
 		_ = service.codex.Start(ctx)
 	}
 	_ = service.desktop.Start(ctx)
+	service.startActivityDiscovery()
 	hostContext, hostContextErr := service.UpdateIntegrationContext(request.Integrations)
 	integrationErr := service.initializeBusinessIntegration()
 	bridgeStartErr := service.startFeishuSupervisor()
@@ -285,6 +290,10 @@ func (service *Service) Dashboard(ctx context.Context, request DashboardRequest)
 	activity := service.desktop.Snapshot(now)
 	activeHint := activity.RunningCount > 0 || activity.WaitingCount > 0
 	usage, threads, codexProjects := service.readCodexState(ctx, now, activeHint, request.ForceAccountRefresh)
+	service.mu.Lock()
+	activityThreads := append([]domain.CodexThread(nil), service.lastActivityThreads...)
+	service.mu.Unlock()
+	threads = mergeCodexThreads(activityThreads, threads)
 	// Account and token reads can be slow. Do not return activity captured
 	// before those reads; a turn may have started or completed meanwhile.
 	now = time.Now()
@@ -296,14 +305,13 @@ func (service *Service) Dashboard(ctx context.Context, request DashboardRequest)
 		estimate := pricing.Estimate(plan, usage.LocalDailyUsage.Tokens, usage.LocalDailyUsage.Breakdown)
 		usage.LocalDailyCost = &estimate
 	}
-	fallbackObservations := codex.Observations(threads)
 	observations := activity.Observations
-	if activity.Availability != "available" || len(observations) == 0 {
-		observations = fallbackObservations
-		activity = domain.SummarizeActivity(observations, now)
-		if service.codex == nil {
-			activity.Availability = "offline"
-		}
+	if service.codex != nil {
+		observations = mergeActivityObservations(observations, codex.Observations(threads))
+	}
+	activity = domain.SummarizeActivity(observations, now)
+	if desktopActivity.Availability != "available" && service.codex == nil {
+		activity.Availability = desktopActivity.Availability
 	}
 	feishu := normalizedFeishuSnapshot(domain.FeishuSnapshot{Availability: "notConfigured"})
 	if service.hasFeishuRuntime() {
@@ -1206,6 +1214,7 @@ func (service *Service) Close() {
 	stopContext, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 	_ = service.stopFeishuSupervisor(stopContext)
+	service.stopActivityDiscovery()
 	if service.codex != nil {
 		_ = service.codex.Close()
 	}
@@ -1535,7 +1544,7 @@ func (service *Service) readProjects(ctx context.Context, request DashboardReque
 			service.mu.Unlock()
 		}
 	}
-	service.desktop.ReconcileCandidates(localTaskCandidates(source.catalog, threads, source.projections))
+	service.desktop.ReconcileCandidates(localTaskCandidates(threads))
 	pinned := map[string]bool{}
 	for _, id := range request.PinnedProjectIDs {
 		if id != "" {
@@ -1708,29 +1717,13 @@ func hasControl(value string) bool {
 	return false
 }
 
-func localTaskCandidates(projects []domain.Project, threads []domain.CodexThread, projections map[string]domain.TaskProjection) []string {
-	known := map[string]bool{}
-	roots := map[string]bool{}
-	for _, project := range projects {
-		known[project.ID] = true
-		for _, mapping := range project.EngineeringMappings {
-			roots[strings.ToLower(filepath.Clean(mapping.RootPath))] = true
-		}
-	}
+func localTaskCandidates(threads []domain.CodexThread) []string {
 	result := []string{}
 	for _, thread := range threads {
 		if thread.ParentThreadID != nil || (thread.AgentNickname != nil && *thread.AgentNickname != "") || thread.Path == nil {
 			continue
 		}
-		matched := roots[strings.ToLower(filepath.Clean(thread.CWD))]
-		if projection, ok := projections[thread.ID]; ok {
-			if binding := projection.CurrentBinding(); binding != nil && known[binding.ProjectCard] {
-				matched = true
-			}
-		}
-		if matched {
-			result = append(result, thread.ID)
-		}
+		result = append(result, thread.ID)
 	}
 	return result
 }

@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -18,6 +19,18 @@ func TestPinnedUnassignedRemainsOneVisibleGroupWithoutTasks(t *testing.T) {
 	}
 	if items := BuildProjectDashboard(nil, nil, nil, nil, nil, nil, nil, time.Now()); len(items) != 0 {
 		t.Fatal("unpinned empty group retained")
+	}
+}
+
+func TestProjectDashboardDoesNotMutateActivityObservations(t *testing.T) {
+	observations := []TaskObservation{
+		{ID: "running", HostID: "local", RuntimeStatus: "active"},
+		{ID: "waiting", HostID: "local", RuntimeStatus: "active", ActiveFlags: []string{"waitingOnUserInput"}},
+	}
+	want := append([]TaskObservation(nil), observations...)
+	_ = BuildProjectDashboard(nil, nil, nil, observations, nil, nil, nil, time.Now())
+	if !reflect.DeepEqual(observations, want) {
+		t.Fatalf("dashboard construction mutated activity observations: %#v", observations)
 	}
 }
 

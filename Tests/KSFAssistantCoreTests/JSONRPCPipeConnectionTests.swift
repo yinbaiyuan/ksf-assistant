@@ -4,6 +4,12 @@ import KSFAssistantCore
 import XCTest
 
 final class JSONRPCPipeConnectionTests: XCTestCase {
+    private func mallocBytesInUse() -> Int {
+        var statistics = malloc_statistics_t()
+        malloc_zone_statistics(nil, &statistics)
+        return statistics.size_in_use
+    }
+
     private final class Fixture: @unchecked Sendable {
         let requests = Pipe()
         let responses = Pipe()
@@ -161,5 +167,36 @@ final class JSONRPCPipeConnectionTests: XCTestCase {
         try await Task.sleep(nanoseconds: 150_000_000)
         XCTAssertEqual(Darwin.read(input, &buffer, buffer.count), -1, "A zero-offset timed-out request must not be sent later")
         XCTAssertEqual(errno, EAGAIN)
+    }
+
+    func testRepeatedResponsesReleaseFoundationJSONTemporaries() async throws {
+        let fixture = Fixture()
+        let client = fixture.client
+        defer { client.close() }
+        let responsePayload = String(repeating: "x", count: 32 * 1_024)
+        let responseCount = 400
+        let server = Task.detached {
+            for _ in 0..<responseCount {
+                try autoreleasepool {
+                    let request = try fixture.readRequests(1)[0]
+                    try fixture.reply([
+                        "jsonrpc": "2.0",
+                        "id": request["id"]!,
+                        "result": ["payload": responsePayload],
+                    ])
+                }
+            }
+        }
+
+        for _ in 0..<20 {
+            _ = try await client.request(method: "warmup", params: [:])
+        }
+        let baseline = mallocBytesInUse()
+        for _ in 20..<responseCount {
+            _ = try await client.request(method: "memory-regression", params: [:])
+        }
+        try await server.value
+        let retained = mallocBytesInUse() - baseline
+        XCTAssertLessThan(retained, 4 * 1_024 * 1_024, "RPC responses retained \(retained) bytes of temporary JSON objects")
     }
 }

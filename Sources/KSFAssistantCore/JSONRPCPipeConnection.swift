@@ -124,7 +124,9 @@ public final class JSONRPCPipeConnection: @unchecked Sendable {
                 let line = Data(buffer[..<newline])
                 buffer.removeSubrange(...newline)
                 guard line.count <= limit else { failAll(Failure.invalidResponse); return }
-                receive(line)
+                autoreleasepool {
+                    receive(line)
+                }
             }
             if buffer.count > limit { failAll(Failure.invalidResponse); return }
         }

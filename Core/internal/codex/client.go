@@ -228,6 +228,20 @@ func (client *Client) FetchThreads(ctx context.Context) ([]domain.CodexThread, e
 	return client.fetchThreads(ctx, false)
 }
 
+// FetchActivityThreads reads only the newest thread-list page. Active Desktop
+// tasks are updated recently, so the activity monitor does not need to reload
+// the complete historical catalog every few seconds.
+func (client *Client) FetchActivityThreads(ctx context.Context) ([]domain.CodexThread, error) {
+	var page struct {
+		Data []domain.CodexThread `json:"data"`
+	}
+	err := client.Call(ctx, "thread/list", map[string]any{
+		"limit": 100, "archived": false, "sortKey": "updated_at", "sortDirection": "desc",
+		"sourceKinds": []string{"cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"},
+	}, &page)
+	return page.Data, err
+}
+
 func (client *Client) FetchArchivedThreadIDs(ctx context.Context) ([]string, error) {
 	threads, err := client.fetchThreads(ctx, true)
 	if err != nil {
